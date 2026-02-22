@@ -1,5 +1,0 @@
-bin.name = "dir-tree-scanner"
-args = ["tree", "."]
-status = "success"
-stderr = ""
-fs.sandbox = true

@@ -1,5 +1,5 @@
-bin.name = "dir-tree-scanner"
-args = ["csv", "nonexistent_dir"]
+bin.name = "etp-csv"
+args = ["nonexistent_dir"]
 status.code = 1
 stdout = ""
 stderr = "error: nonexistent_dir is not a directory\n"

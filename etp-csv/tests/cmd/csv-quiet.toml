@@ -1,5 +1,5 @@
-bin.name = "dir-tree-scanner"
-args = ["csv", "."]
+bin.name = "etp-csv"
+args = ["."]
 status = "success"
 stdout = ""
 stderr = ""

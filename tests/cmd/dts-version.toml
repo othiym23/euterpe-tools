@@ -1,5 +1,0 @@
-bin.name = "dir-tree-scanner"
-args = ["--version"]
-status = "success"
-stdout = "dir-tree-scanner 0.0.4 ([..])\n"
-stderr = ""

@@ -1,0 +1,5 @@
+bin.name = "etp-tree"
+args = ["."]
+status = "success"
+stderr = ""
+fs.sandbox = true

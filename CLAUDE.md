@@ -1,11 +1,15 @@
-# caching-scanners
+# euterpe-tools
 
 Incremental CLI filesystem scanner that produces CSV metadata indexes and text
 representations of filesystem trees. Designed for NAS use (spinning disks, RAID
 6 with two parity disks) at 200K-500K file scale. For performance, intended to
 be run on a Synology DiskStation running DSM 7.3.
 
-Cargo package name is `caching-scanners` (library crate: `caching_scanners`).
+Cargo workspace with three crates:
+
+- `etp-lib` — library crate (all shared logic)
+- `etp-csv` — CSV output binary
+- `etp-tree` — tree output binary
 
 ## Build & run
 
@@ -16,30 +20,30 @@ just build-nas-cross  # alternative via cross tool
 just deploy           # check + test + build + mount NAS + copy everything
 
 # Usage
-dir-tree-scanner csv <directory> [--output <file.csv>] [--state <file.state>] [--exclude <name>...] [-v]
-dir-tree-scanner tree <directory> [--state <file.state>] [--exclude <name>...] [-N] [-I <pattern>...] [-a] [-v]
-dir-tree-scanner --version
+etp-csv <directory> [--output <file.csv>] [--state <file.state>] [--exclude <name>...] [-v]
+etp-tree <directory> [--state <file.state>] [--exclude <name>...] [-N] [-I <pattern>...] [-a] [-v]
 ```
 
 Defaults: output is `<dir>/index.csv`, state is `<dir>/.fsscan.state`, exclude
-is `@eaDir` (Synology metadata directories). The `tree` subcommand hides
-dotfiles by default (`-a` to show). State file and CSV output are written into
-the scanned directory by default (they become part of the scan).
+is `@eaDir` (Synology metadata directories). `etp-tree` hides dotfiles by
+default (`-a` to show). State file and CSV output are written into the scanned
+directory by default (they become part of the scan).
 
 ## Architecture
 
-Library crate (`src/lib.rs`) re-exports shared modules:
+Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
 
 - `ops.rs` — shared operations: `validate_directory`, `resolve_state_path`,
   `load_state`, `run_scan`, `save_state`, `write_csv`, `render_tree`,
   `parse_ignore_patterns`
-- `bin/dir_tree_scanner.rs` — CLI with `csv` and `tree` subcommands
 - `state.rs` — `ScanState`: `HashMap<String, DirEntry>`, rkyv serialized with
   `FSSN` magic + version header. `LoadOutcome` enum for validation
 - `scanner.rs` — walkdir-based scanning; skips unchanged directories by mtime
 - `csv_writer.rs` — sorted CSV (`path,size,ctime,mtime`)
 - `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
-- `build.rs` — embeds short git hash in `--version` output
+
+Each binary crate has a `build.rs` that embeds the short git hash in
+`--version`.
 
 ### Key design decisions
 
@@ -55,13 +59,16 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
   `.tmp` then renames for atomicity. Changing `FileEntry` or `DirEntry` structs
   invalidates state files; bump `VERSION` if the format changes.
 - **ICU4X collation** for tree sort order — see
-  `docs/adrs/2026-02-15-02-icu4x-collation.md`. The `csv` subcommand uses
-  byte-order sorting for determinism.
+  `docs/adrs/2026-02-15-02-icu4x-collation.md`. CSV uses byte-order sorting for
+  determinism.
 
 ## Testing
 
-Unit tests in each module. CLI snapshot tests use trycmd in `tests/cmd/` — see
+Unit tests in each module. CLI snapshot tests use trycmd — see
 `docs/adrs/2026-02-14-02-trycmd-snapshot-tests.md`.
+
+- `etp-csv/tests/cmd/` — CSV snapshot tests (4 tests)
+- `etp-tree/tests/cmd/` — tree snapshot tests (3 tests)
 
 ### trycmd tests
 
@@ -71,8 +78,8 @@ directory provides fixture files when `fs.sandbox = true`. Use
 paths.
 
 ```toml
-bin.name = "dir-tree-scanner"
-args = ["csv", ".", "--some-flag"]
+bin.name = "etp-csv"
+args = [".", "--some-flag"]
 status = "success"
 stdout = ""
 fs.sandbox = true
@@ -80,9 +87,9 @@ fs.sandbox = true
 
 ## Scripts
 
-`scripts/` contains a Python orchestrator (`catalog-nas.py`) that drives
-dir-tree-scanner across multiple directory trees, configured via `catalog.toml`.
-Tests in `test_catalog.py`.
+`scripts/` contains a Python orchestrator (`catalog-nas.py`) that drives the
+scanner across multiple directory trees, configured via `catalog.toml`. Tests in
+`test_catalog.py`.
 
 ```bash
 cd scripts && uv sync     # creates .venv with ruff, pyright, pytest

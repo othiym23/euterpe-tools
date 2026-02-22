@@ -1,23 +1,23 @@
 # Build for local machine (macOS ARM)
 build:
-    cargo build --release
+    cargo build --workspace --release
 
 # Build for NAS (x86_64 Linux, statically linked)
 build-nas:
-    cargo build --release --target x86_64-unknown-linux-musl
+    cargo build --workspace --release --target x86_64-unknown-linux-musl
 
 # Build for NAS using cross (if musl toolchain not installed)
 build-nas-cross:
-    cross build --release --target x86_64-unknown-linux-musl
+    cross build --workspace --release --target x86_64-unknown-linux-musl
 
 # Run a CSV scan on a given directory
 run dir:
-    cargo run --release -- csv {{dir}} -v
+    cargo run --release --bin etp-csv -- {{dir}} -v
 
 # Format sources
 format:
     # Rust
-    cargo fmt
+    cargo fmt --all
     # Python
     cd scripts && uv run ruff format
     # Markdown
@@ -26,8 +26,8 @@ format:
 # Lint, format-check, and typecheck source files
 check:
     # Rust
-    cargo fmt --check
-    cargo clippy -- -D warnings
+    cargo fmt --all --check
+    cargo clippy --workspace -- -D warnings
     # Python
     cd scripts && \
       uv run ruff check && \
@@ -39,7 +39,7 @@ check:
 
 # Run all tests (Rust + Python)
 test:
-    cargo test
+    cargo test --workspace
     cd scripts && uv run pytest test_catalog.py -v
 
 nas_home := "/Volumes/home"
@@ -56,7 +56,7 @@ mount-home:
         echo "Mounted {{ nas_home }}"
     fi
 
-# Build for NAS and deploy binary + scripts to NAS home directory
+# Build for NAS and deploy binaries + scripts to NAS home directory
 deploy: check test build-nas mount-home
     #!/usr/bin/env bash
     set -euo pipefail
@@ -66,7 +66,8 @@ deploy: check test build-nas mount-home
     rm -f "{{ nas_home }}/bin/fsscan"
     rm -f "{{ nas_home }}/bin/cached-tree"
     rm -f "{{ nas_home }}/bin/dir-tree-scanner"
-    cp target/x86_64-unknown-linux-musl/release/dir-tree-scanner "{{ nas_home }}/bin"
+    cp target/x86_64-unknown-linux-musl/release/etp-csv "{{ nas_home }}/bin"
+    cp target/x86_64-unknown-linux-musl/release/etp-tree "{{ nas_home }}/bin"
     # catalog-nas
     mkdir -p "{{ nas_home }}/scripts"
     cp scripts/catalog-nas.py "{{ nas_home }}/scripts"
