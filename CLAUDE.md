@@ -58,9 +58,8 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
   `String` keys (not `PathBuf`) for rkyv compatibility. `save()` writes to
   `.tmp` then renames for atomicity. Changing `FileEntry` or `DirEntry` structs
   invalidates state files; bump `VERSION` if the format changes.
-- **ICU4X collation** for tree sort order — see
-  `docs/adrs/2026-02-15-02-icu4x-collation.md`. CSV uses byte-order sorting for
-  determinism.
+- **ICU4X collation** for all output sorting (CSV and tree) — see
+  `docs/adrs/2026-02-15-02-icu4x-collation.md`.
 - **Explicit deletion** — all foreign keys use `ON DELETE RESTRICT`. Application
   code must delete child rows before parent rows. Never use `ON DELETE CASCADE`.
   See `docs/adrs/2026-02-22-10-explicit-deletion-no-cascade.md`.
@@ -68,7 +67,9 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
 ## Testing
 
 Unit tests in each module. CLI snapshot tests use trycmd — see
-`docs/adrs/2026-02-14-02-trycmd-snapshot-tests.md`.
+`docs/adrs/2026-02-14-02-trycmd-snapshot-tests.md`. Tests run via
+`cargo-nextest` (`cargo nextest run`) for parallel execution and concise output.
+Install with `cargo install --locked cargo-nextest`.
 
 - `etp-csv/tests/cmd/` — CSV snapshot tests (4 tests)
 - `etp-tree/tests/cmd/` — tree snapshot tests (3 tests)
@@ -109,6 +110,11 @@ Always run `just format` before finishing work. This runs `cargo fmt` (Rust),
 
 Branch protection is enabled on `main`. All changes must go through a feature
 branch and pull request — never commit directly to `main`.
+
+Large multi-subproject efforts (e.g., SP1.1–SP1.4) use a long-lived feature
+branch. Individual subproject branches merge into the feature branch via PR.
+Only merge the feature branch to `main` once the entire effort is complete and
+production-ready — never merge partial subprojects to `main`.
 
 ## Documentation
 

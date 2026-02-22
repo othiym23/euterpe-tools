@@ -1,6 +1,7 @@
 use crate::scanner;
 use crate::state::{LoadOutcome, ScanState};
 use crate::{csv_writer, tree};
+use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -104,5 +105,56 @@ pub fn render_tree(
 ) {
     let patterns = parse_ignore_patterns(ignore);
     let (dir_count, file_count) = tree::render_tree(state, root, &patterns, no_escape, show_hidden);
+    println!("\n{} directories, {} files", dir_count, file_count);
+}
+
+/// Run the DB-backed scanner and log stats. Returns scan_id. Exits on error.
+pub async fn run_scan_to_db(root: &Path, pool: &SqlitePool, run_type: &str, verbose: bool) -> i64 {
+    match scanner::scan_to_db(root, pool, run_type, verbose).await {
+        Ok((scan_id, stats)) => {
+            if verbose {
+                eprintln!(
+                    "dirs: {} cached, {} scanned, {} removed",
+                    stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
+                );
+            }
+            scan_id
+        }
+        Err(e) => {
+            eprintln!("error scanning: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+/// Write CSV output from database. Exits on error.
+pub async fn write_csv_from_db(
+    pool: &SqlitePool,
+    scan_id: i64,
+    output: &Path,
+    exclude: &[String],
+    verbose: bool,
+) {
+    if let Err(e) = csv_writer::write_csv_from_db(pool, scan_id, output, exclude).await {
+        eprintln!("error writing CSV: {}", e);
+        process::exit(1);
+    }
+    if verbose {
+        eprintln!("wrote {}", output.display());
+    }
+}
+
+/// Render tree output from database, printing summary line.
+pub async fn render_tree_from_db(
+    pool: &SqlitePool,
+    scan_id: i64,
+    root: &Path,
+    ignore: &[String],
+    no_escape: bool,
+    show_hidden: bool,
+) {
+    let patterns = parse_ignore_patterns(ignore);
+    let (dir_count, file_count) =
+        tree::render_tree_from_db(pool, scan_id, root, &patterns, no_escape, show_hidden).await;
     println!("\n{} directories, {} files", dir_count, file_count);
 }

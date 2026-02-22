@@ -1,5 +1,3 @@
-no previous state, starting fresh
 scanning: .
 dirs: 0 cached, 1 scanned, 0 removed
 wrote ./index.csv
-saved state to ./.fsscan.state

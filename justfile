@@ -39,8 +39,8 @@ check:
 
 # Run all tests (Rust + Python)
 test:
-    cargo test --workspace
-    cd scripts && uv run pytest test_catalog.py -v
+    cargo nextest run --workspace
+    cd scripts && uv run pytest test_catalog.py -q
 
 nas_home := "/Volumes/home"
 

@@ -1,4 +1,7 @@
+use crate::db::dao::{self, FileInput};
 use crate::state::{DirEntry, FileEntry, ScanState};
+use sqlx::SqlitePool;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -87,6 +90,92 @@ pub fn scan(
     }
 
     Ok(stats)
+}
+
+pub async fn scan_to_db(
+    root: &Path,
+    pool: &SqlitePool,
+    run_type: &str,
+    verbose: bool,
+) -> io::Result<(i64, ScanStats)> {
+    let root_str = root.to_string_lossy();
+    let scan_id = dao::upsert_scan(pool, run_type, &root_str)
+        .await
+        .map_err(io::Error::other)?;
+
+    let mut stats = ScanStats {
+        dirs_cached: 0,
+        dirs_scanned: 0,
+        dirs_removed: 0,
+    };
+    let mut seen_paths = HashSet::new();
+
+    let walker = WalkDir::new(root).sort_by_file_name();
+
+    for entry in walker {
+        let entry = entry.map_err(io::Error::other)?;
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+
+        let dir_path = entry.path().to_path_buf();
+        let relative = dir_path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        seen_paths.insert(relative.clone());
+
+        let dir_meta = fs::metadata(&dir_path)?;
+        let dir_mtime = dir_meta.mtime();
+        let dir_size = dir_meta.size();
+
+        let cached_mtime = dao::directory_mtime(pool, scan_id, &relative)
+            .await
+            .map_err(io::Error::other)?;
+
+        if cached_mtime == Some(dir_mtime) {
+            stats.dirs_cached += 1;
+            if verbose {
+                eprintln!("cache hit: {}", dir_path.display());
+            }
+            continue;
+        }
+
+        stats.dirs_scanned += 1;
+        if verbose {
+            eprintln!("scanning: {}", dir_path.display());
+        }
+
+        let files = scan_directory(&dir_path)?;
+        let dir_id = dao::upsert_directory(pool, scan_id, &relative, dir_mtime, dir_size)
+            .await
+            .map_err(io::Error::other)?;
+
+        let file_inputs: Vec<FileInput> = files
+            .iter()
+            .map(|f| FileInput {
+                filename: f.filename.clone(),
+                size: f.size,
+                ctime: f.ctime,
+                mtime: f.mtime,
+            })
+            .collect();
+        dao::replace_files(pool, dir_id, &file_inputs)
+            .await
+            .map_err(io::Error::other)?;
+    }
+
+    let removed = dao::remove_stale_directories(pool, scan_id, &seen_paths)
+        .await
+        .map_err(io::Error::other)?;
+    stats.dirs_removed = removed;
+
+    dao::finish_scan(pool, scan_id)
+        .await
+        .map_err(io::Error::other)?;
+
+    Ok((scan_id, stats))
 }
 
 fn scan_directory(dir: &Path) -> io::Result<Vec<FileEntry>> {

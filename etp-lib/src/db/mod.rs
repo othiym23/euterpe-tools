@@ -35,6 +35,9 @@ async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("migrations/001_initial.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!("migrations/002_add_directory_size.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

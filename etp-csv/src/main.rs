@@ -16,11 +16,15 @@ struct Cli {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// State file path for incremental scanning
-    #[arg(short, long)]
+    /// State file path (deprecated, ignored)
+    #[arg(short, long, hide = true)]
     state: Option<PathBuf>,
 
-    /// Directory names to exclude from scanning
+    /// Database path
+    #[arg(long)]
+    db: Option<PathBuf>,
+
+    /// Directory names to exclude from output
     #[arg(short, long, default_values_t = [String::from("@eaDir")])]
     exclude: Vec<String>,
 
@@ -29,18 +33,32 @@ struct Cli {
     verbose: bool,
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let cli = Cli::parse();
+
+    if cli.state.is_some() {
+        eprintln!("warning: --state is deprecated and ignored, using database");
+    }
 
     ops::validate_directory(&cli.directory);
 
     let output = cli
         .output
         .unwrap_or_else(|| cli.directory.join("index.csv"));
-    let state_path = ops::resolve_state_path(cli.state, &cli.directory);
+    let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
 
-    let mut scan_state = ops::load_state(&state_path, cli.verbose);
-    ops::run_scan(&cli.directory, &mut scan_state, &cli.exclude, cli.verbose);
-    ops::write_csv(&scan_state, &output, cli.verbose);
-    ops::save_state(&scan_state, &state_path, cli.verbose);
+    let pool = etp_lib::db::open_db(&db_path).await.unwrap_or_else(|e| {
+        eprintln!("error opening database: {}", e);
+        std::process::exit(1);
+    });
+
+    let canon = cli
+        .directory
+        .canonicalize()
+        .unwrap_or(cli.directory.clone());
+    let run_type = canon.to_string_lossy();
+
+    let scan_id = ops::run_scan_to_db(&cli.directory, &pool, &run_type, cli.verbose).await;
+    ops::write_csv_from_db(&pool, scan_id, &output, &cli.exclude, cli.verbose).await;
 }

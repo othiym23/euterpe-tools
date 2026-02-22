@@ -1,6 +1,9 @@
+use crate::db::dao::{self, FileRecord};
 use crate::state::ScanState;
 use icu_collator::CollatorBorrowed;
 use icu_collator::options::{AlternateHandling, CollatorOptions, Strength};
+use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
@@ -31,6 +34,70 @@ pub fn write_csv(state: &ScanState, output: &Path) -> io::Result<()> {
                 &file.size.to_string(),
                 &file.ctime.to_string(),
                 &file.mtime.to_string(),
+            ])
+            .map_err(io::Error::other)?;
+        }
+    }
+
+    wtr.flush().map_err(io::Error::other)?;
+    Ok(())
+}
+
+pub async fn write_csv_from_db(
+    pool: &SqlitePool,
+    scan_id: i64,
+    output: &Path,
+    exclude: &[String],
+) -> io::Result<()> {
+    let all_files = dao::list_files(pool, scan_id)
+        .await
+        .map_err(io::Error::other)?;
+
+    // Filter out files whose dir_path contains any excluded directory name
+    let files: Vec<FileRecord> = if exclude.is_empty() {
+        all_files
+    } else {
+        all_files
+            .into_iter()
+            .filter(|f| {
+                !exclude.iter().any(|ex| {
+                    Path::new(&f.dir_path)
+                        .components()
+                        .any(|c| c.as_os_str() == ex.as_str())
+                })
+            })
+            .collect()
+    };
+
+    // Group by dir_path
+    let mut by_dir: HashMap<String, Vec<&FileRecord>> = HashMap::new();
+    for f in &files {
+        by_dir.entry(f.dir_path.clone()).or_default().push(f);
+    }
+
+    let mut options = CollatorOptions::default();
+    options.strength = Some(Strength::Quaternary);
+    options.alternate_handling = Some(AlternateHandling::Shifted);
+    let collator = CollatorBorrowed::try_new(Default::default(), options).unwrap();
+
+    let mut dirs: Vec<String> = by_dir.keys().cloned().collect();
+    dirs.sort_by(|a, b| collator.compare(a, b));
+
+    let file = std::fs::File::create(output)?;
+    let mut wtr = csv::Writer::from_writer(file);
+    wtr.write_record(["path", "size", "ctime", "mtime"])
+        .map_err(io::Error::other)?;
+
+    for dir in &dirs {
+        let dir_files = by_dir.get_mut(dir.as_str()).unwrap();
+        dir_files.sort_by(|a, b| collator.compare(&a.filename, &b.filename));
+        for f in dir_files {
+            let path = Path::new(dir).join(&f.filename);
+            wtr.write_record([
+                path.to_string_lossy().as_ref(),
+                &f.size.to_string(),
+                &f.ctime.to_string(),
+                &f.mtime.to_string(),
             ])
             .map_err(io::Error::other)?;
         }

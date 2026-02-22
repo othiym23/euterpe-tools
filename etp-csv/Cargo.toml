@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 etp-lib = { path = "../etp-lib" }
 clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [dev-dependencies]
 trycmd = "1.0"

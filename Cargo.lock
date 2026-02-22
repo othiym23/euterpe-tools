@@ -497,6 +497,7 @@ version = "0.0.5"
 dependencies = [
  "clap",
  "etp-lib",
+ "tokio",
  "trycmd",
 ]
 
@@ -524,6 +525,7 @@ version = "0.0.5"
 dependencies = [
  "clap",
  "etp-lib",
+ "tokio",
  "trycmd",
 ]
 

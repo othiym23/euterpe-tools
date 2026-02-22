@@ -1,8 +1,10 @@
+use crate::db::dao;
 use crate::state::ScanState;
 use glob::Pattern;
 use icu_collator::CollatorBorrowed;
 use icu_collator::options::{AlternateHandling, CollatorOptions, Strength};
-use std::collections::{BTreeMap, BTreeSet};
+use sqlx::SqlitePool;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Escape non-printable and non-ASCII bytes to '?' (matching tree's default behavior).
@@ -24,12 +26,19 @@ fn maybe_escape(name: &str, no_escape: bool) -> String {
 
 /// Shared context for recursive tree rendering.
 struct TreeContext<'a> {
-    state: &'a ScanState,
+    files_by_dir: HashMap<String, Vec<String>>,
     children: BTreeMap<PathBuf, BTreeSet<String>>,
     patterns: &'a [Pattern],
     collator: CollatorBorrowed<'static>,
     no_escape: bool,
     show_hidden: bool,
+}
+
+fn make_collator() -> CollatorBorrowed<'static> {
+    let mut options = CollatorOptions::default();
+    options.strength = Some(Strength::Quaternary);
+    options.alternate_handling = Some(AlternateHandling::Shifted);
+    CollatorBorrowed::try_new(Default::default(), options).unwrap()
 }
 
 /// Render a tree view of the scan state, printing to stdout.
@@ -55,16 +64,20 @@ pub fn render_tree(
         }
     }
 
-    let mut options = CollatorOptions::default();
-    options.strength = Some(Strength::Quaternary);
-    options.alternate_handling = Some(AlternateHandling::Shifted);
-    let collator = CollatorBorrowed::try_new(Default::default(), options).unwrap();
+    // Build files_by_dir from ScanState
+    let mut files_by_dir: HashMap<String, Vec<String>> = HashMap::new();
+    for (dir_key, entry) in &state.dirs {
+        files_by_dir.insert(
+            dir_key.clone(),
+            entry.files.iter().map(|f| f.filename.clone()).collect(),
+        );
+    }
 
     let ctx = TreeContext {
-        state,
+        files_by_dir,
         children,
         patterns,
-        collator,
+        collator: make_collator(),
         no_escape,
         show_hidden,
     };
@@ -72,6 +85,57 @@ pub fn render_tree(
     println!("{}", root.display());
 
     let mut dir_count = 1; // count the root directory itself, matching tree's behavior
+    let mut file_count = 0;
+    render_dir(&ctx, root, "", &mut dir_count, &mut file_count);
+    (dir_count, file_count)
+}
+
+pub async fn render_tree_from_db(
+    pool: &SqlitePool,
+    scan_id: i64,
+    root: &Path,
+    patterns: &[Pattern],
+    no_escape: bool,
+    show_hidden: bool,
+) -> (usize, usize) {
+    let dir_paths = dao::list_directory_paths(pool, scan_id).await.unwrap();
+    let file_records = dao::list_files(pool, scan_id).await.unwrap();
+
+    // Build child-directory map from full dir paths
+    let mut children: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    for dir_path_str in &dir_paths {
+        let dir_path = Path::new(dir_path_str);
+        if let Some(parent) = dir_path.parent()
+            && let Some(name) = dir_path.file_name()
+        {
+            children
+                .entry(parent.to_path_buf())
+                .or_default()
+                .insert(name.to_string_lossy().into_owned());
+        }
+    }
+
+    // Build files_by_dir from file records
+    let mut files_by_dir: HashMap<String, Vec<String>> = HashMap::new();
+    for f in &file_records {
+        files_by_dir
+            .entry(f.dir_path.clone())
+            .or_default()
+            .push(f.filename.clone());
+    }
+
+    let ctx = TreeContext {
+        files_by_dir,
+        children,
+        patterns,
+        collator: make_collator(),
+        no_escape,
+        show_hidden,
+    };
+
+    println!("{}", root.display());
+
+    let mut dir_count = 1;
     let mut file_count = 0;
     render_dir(&ctx, root, "", &mut dir_count, &mut file_count);
     (dir_count, file_count)
@@ -118,10 +182,9 @@ fn render_dir(
 ) {
     let dir_key = dir_path.to_string_lossy();
     let files: Vec<String> = ctx
-        .state
-        .dirs
+        .files_by_dir
         .get(dir_key.as_ref())
-        .map(|d| d.files.iter().map(|f| f.filename.clone()).collect())
+        .cloned()
         .unwrap_or_default();
     let empty = BTreeSet::new();
     let child_dirs = ctx.children.get(dir_path).unwrap_or(&empty);

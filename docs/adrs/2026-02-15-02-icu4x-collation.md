@@ -28,5 +28,5 @@ runtime data files.
 - Works identically on macOS (development) and musl Linux (NAS) — no
   platform-dependent sort order.
 - Adds ~2 MB to the static binary from embedded collation data.
-- CSV output deliberately does NOT use ICU4X — it uses byte-order sorting for
-  determinism and diff-friendliness.
+- ICU4X collation is used for ALL output sorting — both CSV and tree. This
+  ensures consistent sort order across output formats and platforms.
