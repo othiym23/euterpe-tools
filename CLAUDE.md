@@ -61,6 +61,9 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
 - **ICU4X collation** for tree sort order — see
   `docs/adrs/2026-02-15-02-icu4x-collation.md`. CSV uses byte-order sorting for
   determinism.
+- **Explicit deletion** — all foreign keys use `ON DELETE RESTRICT`. Application
+  code must delete child rows before parent rows. Never use `ON DELETE CASCADE`.
+  See `docs/adrs/2026-02-22-10-explicit-deletion-no-cascade.md`.
 
 ## Testing
 
