@@ -1,5 +1,4 @@
 use crate::db::dao;
-use crate::state::ScanState;
 use glob::Pattern;
 use icu_collator::CollatorBorrowed;
 use icu_collator::options::{AlternateHandling, CollatorOptions, Strength};
@@ -39,55 +38,6 @@ fn make_collator() -> CollatorBorrowed<'static> {
     options.strength = Some(Strength::Quaternary);
     options.alternate_handling = Some(AlternateHandling::Shifted);
     CollatorBorrowed::try_new(Default::default(), options).unwrap()
-}
-
-/// Render a tree view of the scan state, printing to stdout.
-/// Returns `(dir_count, file_count)`.
-pub fn render_tree(
-    state: &ScanState,
-    root: &Path,
-    patterns: &[Pattern],
-    no_escape: bool,
-    show_hidden: bool,
-) -> (usize, usize) {
-    // Build child-directory map: for each dir in state, register it as a child of its parent
-    let mut children: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
-    for dir_key in state.dirs.keys() {
-        let dir_path = Path::new(dir_key);
-        if let Some(parent) = dir_path.parent()
-            && let Some(name) = dir_path.file_name()
-        {
-            children
-                .entry(parent.to_path_buf())
-                .or_default()
-                .insert(name.to_string_lossy().into_owned());
-        }
-    }
-
-    // Build files_by_dir from ScanState
-    let mut files_by_dir: HashMap<String, Vec<String>> = HashMap::new();
-    for (dir_key, entry) in &state.dirs {
-        files_by_dir.insert(
-            dir_key.clone(),
-            entry.files.iter().map(|f| f.filename.clone()).collect(),
-        );
-    }
-
-    let ctx = TreeContext {
-        files_by_dir,
-        children,
-        patterns,
-        collator: make_collator(),
-        no_escape,
-        show_hidden,
-    };
-
-    println!("{}", root.display());
-
-    let mut dir_count = 1; // count the root directory itself, matching tree's behavior
-    let mut file_count = 0;
-    render_dir(&ctx, root, "", &mut dir_count, &mut file_count);
-    (dir_count, file_count)
 }
 
 pub async fn render_tree_from_db(

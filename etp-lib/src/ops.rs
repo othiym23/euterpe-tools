@@ -1,8 +1,8 @@
+use crate::db::dao;
 use crate::scanner;
-use crate::state::{LoadOutcome, ScanState};
 use crate::{csv_writer, tree};
 use sqlx::SqlitePool;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process;
 
 /// Verify that a path is a directory, exiting with an error if not.
@@ -10,52 +10,6 @@ pub fn validate_directory(root: &Path) {
     if !root.is_dir() {
         eprintln!("error: {} is not a directory", root.display());
         process::exit(1);
-    }
-}
-
-/// Resolve the state file path, defaulting to `<root>/.fsscan.state`.
-pub fn resolve_state_path(state: Option<PathBuf>, root: &Path) -> PathBuf {
-    state.unwrap_or_else(|| root.join(".fsscan.state"))
-}
-
-/// Load scan state from disk, handling all three outcomes.
-/// Exits the process on unrecoverable errors.
-pub fn load_state(path: &Path, verbose: bool) -> ScanState {
-    match ScanState::load(path) {
-        LoadOutcome::Loaded(s) => {
-            if verbose {
-                eprintln!("loaded state from {}", path.display());
-            }
-            s
-        }
-        LoadOutcome::NotFound => {
-            if verbose {
-                eprintln!("no previous state, starting fresh");
-            }
-            ScanState::default()
-        }
-        LoadOutcome::Invalid(reason) => {
-            eprintln!("warning: {}: {}, rescanning", path.display(), reason);
-            ScanState::default()
-        }
-    }
-}
-
-/// Run the scanner and log stats. Exits on error.
-pub fn run_scan(root: &Path, state: &mut ScanState, exclude: &[String], verbose: bool) {
-    match scanner::scan(root, state, exclude, verbose) {
-        Ok(stats) => {
-            if verbose {
-                eprintln!(
-                    "dirs: {} cached, {} scanned, {} removed",
-                    stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
-                );
-            }
-        }
-        Err(e) => {
-            eprintln!("error scanning: {}", e);
-            process::exit(1);
-        }
     }
 }
 
@@ -73,49 +27,14 @@ pub fn parse_ignore_patterns(patterns: &[String]) -> Vec<glob::Pattern> {
         .collect()
 }
 
-/// Save scan state to disk. Exits on error.
-pub fn save_state(state: &ScanState, path: &Path, verbose: bool) {
-    if let Err(e) = state.save(path) {
-        eprintln!("error saving state: {}", e);
-        process::exit(1);
-    }
-    if verbose {
-        eprintln!("saved state to {}", path.display());
-    }
-}
-
-/// Write CSV output from scan state. Exits on error.
-pub fn write_csv(state: &ScanState, output: &Path, verbose: bool) {
-    if let Err(e) = csv_writer::write_csv(state, output) {
-        eprintln!("error writing CSV: {}", e);
-        process::exit(1);
-    }
-    if verbose {
-        eprintln!("wrote {}", output.display());
-    }
-}
-
-/// Render tree output from scan state, printing summary line.
-pub fn render_tree(
-    state: &ScanState,
-    root: &Path,
-    ignore: &[String],
-    no_escape: bool,
-    show_hidden: bool,
-) {
-    let patterns = parse_ignore_patterns(ignore);
-    let (dir_count, file_count) = tree::render_tree(state, root, &patterns, no_escape, show_hidden);
-    println!("\n{} directories, {} files", dir_count, file_count);
-}
-
 /// Run the DB-backed scanner and log stats. Returns scan_id. Exits on error.
 pub async fn run_scan_to_db(root: &Path, pool: &SqlitePool, run_type: &str, verbose: bool) -> i64 {
     match scanner::scan_to_db(root, pool, run_type, verbose).await {
         Ok((scan_id, stats)) => {
             if verbose {
                 eprintln!(
-                    "dirs: {} cached, {} scanned, {} removed",
-                    stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
+                    "scan complete in {}ms: {} cached, {} scanned, {} removed",
+                    stats.elapsed_ms, stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
                 );
             }
             scan_id
@@ -135,7 +54,7 @@ pub async fn write_csv_from_db(
     exclude: &[String],
     verbose: bool,
 ) {
-    if let Err(e) = csv_writer::write_csv_from_db(pool, scan_id, output, exclude).await {
+    if let Err(e) = csv_writer::write_csv_from_db(pool, scan_id, output, exclude, verbose).await {
         eprintln!("error writing CSV: {}", e);
         process::exit(1);
     }
@@ -157,4 +76,83 @@ pub async fn render_tree_from_db(
     let (dir_count, file_count) =
         tree::render_tree_from_db(pool, scan_id, root, &patterns, no_escape, show_hidden).await;
     println!("\n{} directories, {} files", dir_count, file_count);
+}
+
+/// Format a byte count as a human-readable string with two significant digits.
+fn format_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const TIB: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+
+    let b = bytes as f64;
+    if b >= TIB {
+        format!("{:.2} TiB", b / TIB)
+    } else if b >= GIB {
+        format!("{:.2} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.2} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.2} KiB", b / KIB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Render size summary (du replacement). Exits on error.
+pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) {
+    let total = dao::subtree_size(pool, scan_id, "")
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error querying size: {}", e);
+            process::exit(1);
+        });
+    println!("Size: {} (root)", format_size(total));
+
+    if show_subs {
+        let subs = dao::immediate_subdirectory_sizes(pool, scan_id)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("error querying subdirectory sizes: {}", e);
+                process::exit(1);
+            });
+        for (name, size) in &subs {
+            println!("  {}  {}", format_size(*size), name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kib() {
+        assert_eq!(format_size(1024), "1.00 KiB");
+        assert_eq!(format_size(1536), "1.50 KiB");
+    }
+
+    #[test]
+    fn format_size_mib() {
+        assert_eq!(format_size(1024 * 1024), "1.00 MiB");
+        assert_eq!(format_size(500 * 1024 * 1024), "500.00 MiB");
+    }
+
+    #[test]
+    fn format_size_gib() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GiB");
+        assert_eq!(format_size(2_500_000_000), "2.33 GiB");
+    }
+
+    #[test]
+    fn format_size_tib() {
+        assert_eq!(format_size(1024 * 1024 * 1024 * 1024), "1.00 TiB");
+    }
 }

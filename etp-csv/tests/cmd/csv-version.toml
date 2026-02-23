@@ -1,5 +1,5 @@
 bin.name = "etp-csv"
 args = ["--version"]
 status = "success"
-stdout = "etp-csv 0.0.5 ([..])\n"
+stdout = "etp-csv 0.1.0 ([..])\n"
 stderr = ""

@@ -1,3 +1,8 @@
-scanning: .
-dirs: 0 cached, 1 scanned, 0 removed
+creating new database: ./.etp.db
+applying 2 database migration(s):
+  initial
+  add directory size
+starting scan: .
+scanning: . (4 files)
+scan complete in [..]ms: 0 cached, 1 scanned, 0 removed
 wrote ./index.csv

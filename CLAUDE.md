@@ -14,33 +14,34 @@ Cargo workspace with three crates:
 ## Build & run
 
 ```bash
+just build-smoketest  # native (aarch64-apple-darwin), verify all crates compile
 just build            # native (aarch64-apple-darwin)
 just build-nas        # NAS (static binary)
 just build-nas-cross  # alternative via cross tool
 just deploy           # check + test + build + mount NAS + copy everything
 
 # Usage
-etp-csv <directory> [--output <file.csv>] [--state <file.state>] [--exclude <name>...] [-v]
-etp-tree <directory> [--state <file.state>] [--exclude <name>...] [-N] [-I <pattern>...] [-a] [-v]
+etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [--no-scan] [-v]
+etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--no-scan] [--du [--du-subs]] [-N] [-I <pattern>...] [-a] [-v]
 ```
 
-Defaults: output is `<dir>/index.csv`, state is `<dir>/.fsscan.state`, exclude
-is `@eaDir` (Synology metadata directories). `etp-tree` hides dotfiles by
-default (`-a` to show). State file and CSV output are written into the scanned
-directory by default (they become part of the scan).
+Defaults: output is `<dir>/index.csv`, database is `<dir>/.etp.db`, exclude is
+`@eaDir` (Synology metadata directories). `etp-tree` hides dotfiles by default
+(`-a` to show). Database and CSV output are written into the scanned directory
+by default (they become part of the scan).
 
 ## Architecture
 
 Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
 
-- `ops.rs` — shared operations: `validate_directory`, `resolve_state_path`,
-  `load_state`, `run_scan`, `save_state`, `write_csv`, `render_tree`,
-  `parse_ignore_patterns`
-- `state.rs` — `ScanState`: `HashMap<String, DirEntry>`, rkyv serialized with
-  `FSSN` magic + version header. `LoadOutcome` enum for validation
+- `ops.rs` — shared operations: `validate_directory`, `parse_ignore_patterns`,
+  `run_scan_to_db`, `write_csv_from_db`, `render_tree_from_db`, `render_du`
 - `scanner.rs` — walkdir-based scanning; skips unchanged directories by mtime
 - `csv_writer.rs` — sorted CSV (`path,size,ctime,mtime`)
 - `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
+- `db/` — SQLite database layer (`dao.rs` for queries, `mod.rs` for connection)
+- `config.rs` — KDL configuration parsing
+- `paths.rs` — XDG-based path resolution
 
 Each binary crate has a `build.rs` that embeds the short git hash in
 `--version`.
@@ -53,11 +54,9 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
 - **Incremental scanning**: directory mtime is the cache key. Unchanged
   directories cost one stat call instead of N.
 - **Unix-only**: uses `std::os::unix::fs::MetadataExt` for ctime/mtime.
-- **rkyv 0.8** for state serialization — see
-  `docs/adrs/2026-02-15-01-rkyv-state-serialization.md`. `ScanState.dirs` uses
-  `String` keys (not `PathBuf`) for rkyv compatibility. `save()` writes to
-  `.tmp` then renames for atomicity. Changing `FileEntry` or `DirEntry` structs
-  invalidates state files; bump `VERSION` if the format changes.
+- **SQLite database** for scan state persistence — see
+  `docs/adrs/2026-02-22-01-sqlx-sqlite-database.md`. Uses sqlx with WAL mode and
+  foreign keys enabled.
 - **ICU4X collation** for all output sorting (CSV and tree) — see
   `docs/adrs/2026-02-15-02-icu4x-collation.md`.
 - **Explicit deletion** — all foreign keys use `ON DELETE RESTRICT`. Application
@@ -96,9 +95,9 @@ scanner across multiple directory trees, configured via `catalog.toml`. Tests in
 `test_catalog.py`.
 
 ```bash
-cd scripts && uv sync     # creates .venv with ruff, pyright, pytest
-just check                 # clippy + ruff + pyright
-just test                  # cargo test + pytest
+cd scripts && uv sync  # creates .venv with ruff, pyright, pytest
+just check             # clippy + ruff + pyright
+just test              # cargo test + pytest
 ```
 
 ## Formatting
@@ -124,6 +123,13 @@ production-ready — never merge partial subprojects to `main`.
 Record new architectural decisions as ADRs. Use the Nygard template (Status,
 Context, Decision, Consequences). Keep each ADR concise. When a decision
 supersedes an earlier one, update the status of both ADRs with cross-references.
+
+After an implementation plan is decided upon, but before beginning
+implementation work, save it in the implementation plan directory. Before
+committing, check whether there significant enough changes to the plan to
+justify updating or correcting it. Implementation plans should be considered
+immutable after the branch related to the subproject has been merged or the PR
+related to the implementation plan has been closed.
 
 ## Cross-compilation
 

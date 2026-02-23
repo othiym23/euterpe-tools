@@ -1,7 +1,6 @@
 use etp_lib::csv_writer;
 use etp_lib::db;
 use etp_lib::scanner;
-use etp_lib::state::ScanState;
 use std::fs;
 
 fn make_fixture(dir: &std::path::Path) {
@@ -18,35 +17,32 @@ fn make_fixture(dir: &std::path::Path) {
 }
 
 #[tokio::test]
-async fn csv_output_is_byte_identical() {
+async fn csv_output_from_db_is_correct() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("fixture");
     fs::create_dir(&root).unwrap();
     make_fixture(&root);
 
-    // Old path: scan → ScanState → write_csv
-    let old_csv = tmp.path().join("old.csv");
-    let mut state = ScanState::default();
-    scanner::scan(&root, &mut state, &[], false).unwrap();
-    csv_writer::write_csv(&state, &old_csv).unwrap();
-
-    // New path: scan_to_db → write_csv_from_db
-    let new_csv = tmp.path().join("new.csv");
     let pool = db::open_memory().await.unwrap();
     let run_type = root.to_string_lossy();
     let (scan_id, _stats) = scanner::scan_to_db(&root, &pool, &run_type, false)
         .await
         .unwrap();
-    csv_writer::write_csv_from_db(&pool, scan_id, &new_csv, &[])
+
+    let csv_path = tmp.path().join("out.csv");
+    csv_writer::write_csv_from_db(&pool, scan_id, &csv_path, &[], false)
         .await
         .unwrap();
 
-    let old_content = fs::read_to_string(&old_csv).unwrap();
-    let new_content = fs::read_to_string(&new_csv).unwrap();
-    assert_eq!(
-        old_content, new_content,
-        "CSV output must be byte-identical between old and new path"
-    );
+    let content = fs::read_to_string(&csv_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    // header + 3 files
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[0], "path,size,ctime,mtime");
+    // Files should be present with correct paths
+    assert!(lines.iter().any(|l| l.contains("/a.txt,")));
+    assert!(lines.iter().any(|l| l.contains("/sub/b.txt,")));
+    assert!(lines.iter().any(|l| l.contains("/sub/deeper/c.txt,")));
 }
 
 #[tokio::test]
@@ -60,30 +56,24 @@ async fn csv_output_with_exclude_filters_correctly() {
     fs::create_dir(root.join("@eaDir")).unwrap();
     fs::write(root.join("@eaDir/junk.txt"), "junk").unwrap();
 
-    // Old path with exclude
-    let old_csv = tmp.path().join("old.csv");
-    let mut state = ScanState::default();
-    let exclude = vec!["@eaDir".to_string()];
-    scanner::scan(&root, &mut state, &exclude, false).unwrap();
-    csv_writer::write_csv(&state, &old_csv).unwrap();
-
-    // New path: scan everything, exclude in CSV writer
-    let new_csv = tmp.path().join("new.csv");
     let pool = db::open_memory().await.unwrap();
     let run_type = root.to_string_lossy();
     let (scan_id, _stats) = scanner::scan_to_db(&root, &pool, &run_type, false)
         .await
         .unwrap();
-    csv_writer::write_csv_from_db(&pool, scan_id, &new_csv, &exclude)
+
+    let csv_path = tmp.path().join("out.csv");
+    let exclude = vec!["@eaDir".to_string()];
+    csv_writer::write_csv_from_db(&pool, scan_id, &csv_path, &exclude, false)
         .await
         .unwrap();
 
-    let old_content = fs::read_to_string(&old_csv).unwrap();
-    let new_content = fs::read_to_string(&new_csv).unwrap();
-    assert_eq!(
-        old_content, new_content,
-        "CSV with exclude must match between old and new path"
-    );
+    let content = fs::read_to_string(&csv_path).unwrap();
+    // Should not contain @eaDir files
+    assert!(!content.contains("@eaDir"));
+    // Should still contain the other 3 files
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 4); // header + 3 files
 }
 
 #[tokio::test]

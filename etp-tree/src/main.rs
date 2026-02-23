@@ -12,10 +12,6 @@ struct Cli {
     /// Root directory to display
     directory: PathBuf,
 
-    /// State file path (deprecated, ignored)
-    #[arg(short, long, hide = true)]
-    state: Option<PathBuf>,
-
     /// Database path
     #[arg(long)]
     db: Option<PathBuf>,
@@ -36,7 +32,19 @@ struct Cli {
     #[arg(short, long)]
     all: bool,
 
-    /// Print scan info on stderr
+    /// Skip scanning, use existing DB data
+    #[arg(long, hide = true)]
+    no_scan: bool,
+
+    /// Print size summary after tree output
+    #[arg(long)]
+    du: bool,
+
+    /// With --du, also print per-subdirectory sizes
+    #[arg(long)]
+    du_subs: bool,
+
+    /// Print diagnostic info on stderr
     #[arg(short, long)]
     verbose: bool,
 }
@@ -45,10 +53,6 @@ struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    if cli.state.is_some() {
-        eprintln!("warning: --state is deprecated and ignored, using database");
-    }
-
     if cli.verbose {
         eprintln!("root is {}", cli.directory.display());
     }
@@ -56,10 +60,12 @@ async fn main() {
 
     let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
 
-    let pool = etp_lib::db::open_db(&db_path).await.unwrap_or_else(|e| {
-        eprintln!("error opening database: {}", e);
-        std::process::exit(1);
-    });
+    let pool = etp_lib::db::open_db(&db_path, cli.verbose)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error opening database: {}", e);
+            std::process::exit(1);
+        });
 
     let canon = cli
         .directory
@@ -67,7 +73,26 @@ async fn main() {
         .unwrap_or(cli.directory.clone());
     let run_type = canon.to_string_lossy();
 
-    let scan_id = ops::run_scan_to_db(&cli.directory, &pool, &run_type, cli.verbose).await;
+    let scan_id = if cli.no_scan {
+        if cli.verbose {
+            eprintln!("--no-scan: skipping scan, using cached data");
+        }
+        match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                eprintln!(
+                    "error: --no-scan specified but no previous scan exists for this directory"
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("error querying database: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        ops::run_scan_to_db(&cli.directory, &pool, &run_type, cli.verbose).await
+    };
 
     // Combine exclude and ignore into patterns for tree rendering
     let mut all_ignore = cli.ignore.clone();
@@ -82,4 +107,10 @@ async fn main() {
         cli.all,
     )
     .await;
+
+    if cli.du {
+        ops::render_du(&pool, scan_id, cli.du_subs).await;
+    }
+
+    etp_lib::db::close_db(pool).await;
 }

@@ -219,6 +219,80 @@ pub async fn list_directory_paths(
         .collect())
 }
 
+/// Find the most recent finished scan for a given run_type.
+pub async fn latest_scan_id(pool: &SqlitePool, run_type: &str) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM scans WHERE run_type = ? AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+    )
+    .bind(run_type)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+/// Sum of all file sizes under a given directory prefix for a scan.
+/// Empty prefix means total for the entire scan.
+pub async fn subtree_size(
+    pool: &SqlitePool,
+    scan_id: i64,
+    relative_path_prefix: &str,
+) -> Result<u64, sqlx::Error> {
+    let row: (i64,) = if relative_path_prefix.is_empty() {
+        sqlx::query_as(
+            "SELECT COALESCE(SUM(f.size), 0)
+             FROM files f
+             JOIN directories d ON f.dir_id = d.id
+             WHERE d.scan_id = ?",
+        )
+        .bind(scan_id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT COALESCE(SUM(f.size), 0)
+             FROM files f
+             JOIN directories d ON f.dir_id = d.id
+             WHERE d.scan_id = ? AND (d.path = ? OR d.path LIKE ? || '/%')",
+        )
+        .bind(scan_id)
+        .bind(relative_path_prefix)
+        .bind(relative_path_prefix)
+        .fetch_one(pool)
+        .await?
+    };
+    Ok(row.0 as u64)
+}
+
+/// Sizes grouped by top-level subdirectory name for a scan.
+pub async fn immediate_subdirectory_sizes(
+    pool: &SqlitePool,
+    scan_id: i64,
+) -> Result<Vec<(String, u64)>, sqlx::Error> {
+    // Get all directories that are immediate children of the root (path has no '/')
+    // plus all deeper directories grouped by their first path component
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT
+           CASE WHEN INSTR(d.path, '/') > 0
+             THEN SUBSTR(d.path, 1, INSTR(d.path, '/') - 1)
+             ELSE d.path
+           END AS top_dir,
+           COALESCE(SUM(f.size), 0) AS total_size
+         FROM directories d
+         LEFT JOIN files f ON f.dir_id = d.id
+         WHERE d.scan_id = ? AND d.path != ''
+         GROUP BY top_dir
+         ORDER BY top_dir",
+    )
+    .bind(scan_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, size)| (name, size as u64))
+        .collect())
+}
+
 fn chrono_now() -> String {
     // Simple ISO 8601 timestamp without external dependency.
     // For the purposes of this application, second precision is sufficient.
@@ -557,6 +631,197 @@ mod tests {
             .execute(&pool)
             .await;
         assert!(result.is_err(), "expected foreign key violation");
+    }
+
+    #[tokio::test]
+    async fn latest_scan_id_returns_none_when_no_scan() {
+        let pool = open_memory().await.unwrap();
+        let result = latest_scan_id(&pool, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_scan_id_returns_none_for_unfinished() {
+        let pool = open_memory().await.unwrap();
+        upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        // Not finished yet
+        let result = latest_scan_id(&pool, "test").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_scan_id_returns_finished_scan() {
+        let pool = open_memory().await.unwrap();
+        let id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        finish_scan(&pool, id).await.unwrap();
+        let result = latest_scan_id(&pool, "test").await.unwrap();
+        assert_eq!(result, Some(id));
+    }
+
+    #[tokio::test]
+    async fn subtree_size_empty_prefix_is_total() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[
+                FileInput {
+                    filename: "a.txt".into(),
+                    size: 100,
+                    ctime: 0,
+                    mtime: 0,
+                },
+                FileInput {
+                    filename: "b.txt".into(),
+                    size: 200,
+                    ctime: 0,
+                    mtime: 0,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let sub_id = upsert_directory(&pool, scan_id, "sub", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            sub_id,
+            &[FileInput {
+                filename: "c.txt".into(),
+                size: 300,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let total = subtree_size(&pool, scan_id, "").await.unwrap();
+        assert_eq!(total, 600);
+    }
+
+    #[tokio::test]
+    async fn subtree_size_with_prefix() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let root_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            root_id,
+            &[FileInput {
+                filename: "root.txt".into(),
+                size: 100,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let sub_id = upsert_directory(&pool, scan_id, "sub", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            sub_id,
+            &[FileInput {
+                filename: "a.txt".into(),
+                size: 200,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let deep_id = upsert_directory(&pool, scan_id, "sub/deep", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            deep_id,
+            &[FileInput {
+                filename: "b.txt".into(),
+                size: 300,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let sub_total = subtree_size(&pool, scan_id, "sub").await.unwrap();
+        assert_eq!(sub_total, 500); // 200 + 300
+    }
+
+    #[tokio::test]
+    async fn immediate_subdirectory_sizes_groups_correctly() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let root_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            root_id,
+            &[FileInput {
+                filename: "root.txt".into(),
+                size: 50,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let a_id = upsert_directory(&pool, scan_id, "alpha", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            a_id,
+            &[FileInput {
+                filename: "a.txt".into(),
+                size: 100,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let a_deep_id = upsert_directory(&pool, scan_id, "alpha/deep", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            a_deep_id,
+            &[FileInput {
+                filename: "d.txt".into(),
+                size: 150,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let b_id = upsert_directory(&pool, scan_id, "beta", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            b_id,
+            &[FileInput {
+                filename: "b.txt".into(),
+                size: 200,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let subs = immediate_subdirectory_sizes(&pool, scan_id).await.unwrap();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0], ("alpha".to_string(), 250)); // 100 + 150
+        assert_eq!(subs[1], ("beta".to_string(), 200));
     }
 
     #[tokio::test]

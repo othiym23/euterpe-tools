@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# Build for local machine with a dev profile to ensure it still can be compiled
+build-smoketest:
+    cargo build --workspace
+
 # Build for local machine (macOS ARM)
 build:
     cargo build --workspace --release
@@ -12,7 +18,7 @@ build-nas-cross:
 
 # Run a CSV scan on a given directory
 run dir:
-    cargo run --release --bin etp-csv -- {{dir}} -v
+    cargo run --release --bin etp-csv -- "{{dir}}" -v
 
 # Format sources
 format:
