@@ -11,26 +11,46 @@ pub async fn write_csv_from_db(
     scan_id: i64,
     output: &Path,
     exclude: &[String],
+    verbose: bool,
 ) -> io::Result<()> {
     let all_files = dao::list_files(pool, scan_id)
         .await
         .map_err(io::Error::other)?;
 
     // Filter out files whose dir_path contains any excluded directory name
+    let total_before = all_files.len();
+    let mut excluded_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
     let files: Vec<FileRecord> = if exclude.is_empty() {
         all_files
     } else {
         all_files
             .into_iter()
             .filter(|f| {
-                !exclude.iter().any(|ex| {
+                let dominated = exclude.iter().any(|ex| {
                     Path::new(&f.dir_path)
                         .components()
                         .any(|c| c.as_os_str() == ex.as_str())
-                })
+                });
+                if dominated && verbose {
+                    excluded_dirs.insert(f.dir_path.clone());
+                }
+                !dominated
             })
             .collect()
     };
+    if verbose && !excluded_dirs.is_empty() {
+        let excluded_count = total_before - files.len();
+        let mut dirs: Vec<&str> = excluded_dirs.iter().map(|s| s.as_str()).collect();
+        dirs.sort();
+        for dir in &dirs {
+            eprintln!("excluding directory from CSV output: {}", dir);
+        }
+        eprintln!(
+            "excluded {} files from {} directories",
+            excluded_count,
+            dirs.len()
+        );
+    }
 
     // Group by dir_path
     let mut by_dir: HashMap<String, Vec<&FileRecord>> = HashMap::new();
@@ -87,7 +107,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let csv_path = tmp.path().join("out.csv");
-        write_csv_from_db(&pool, scan_id, &csv_path, &[])
+        write_csv_from_db(&pool, scan_id, &csv_path, &[], false)
             .await
             .unwrap();
 
@@ -116,7 +136,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let csv_path = tmp.path().join("out.csv");
-        write_csv_from_db(&pool, scan_id, &csv_path, &[])
+        write_csv_from_db(&pool, scan_id, &csv_path, &[], false)
             .await
             .unwrap();
 
@@ -152,7 +172,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let csv_path = tmp.path().join("out.csv");
-        write_csv_from_db(&pool, scan_id, &csv_path, &[])
+        write_csv_from_db(&pool, scan_id, &csv_path, &[], false)
             .await
             .unwrap();
 
@@ -200,7 +220,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let csv_path = tmp.path().join("out.csv");
-        write_csv_from_db(&pool, scan_id, &csv_path, &[])
+        write_csv_from_db(&pool, scan_id, &csv_path, &[], false)
             .await
             .unwrap();
 

@@ -5,12 +5,14 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::Instant;
 use walkdir::WalkDir;
 
 pub struct ScanStats {
     pub dirs_cached: usize,
     pub dirs_scanned: usize,
     pub dirs_removed: usize,
+    pub elapsed_ms: u128,
 }
 
 pub async fn scan_to_db(
@@ -19,6 +21,12 @@ pub async fn scan_to_db(
     run_type: &str,
     verbose: bool,
 ) -> io::Result<(i64, ScanStats)> {
+    let start = Instant::now();
+
+    if verbose {
+        eprintln!("starting scan: {}", root.display());
+    }
+
     let root_str = root.to_string_lossy();
     let scan_id = dao::upsert_scan(pool, run_type, &root_str)
         .await
@@ -28,6 +36,7 @@ pub async fn scan_to_db(
         dirs_cached: 0,
         dirs_scanned: 0,
         dirs_removed: 0,
+        elapsed_ms: 0,
     };
     let mut seen_paths = HashSet::new();
 
@@ -58,17 +67,18 @@ pub async fn scan_to_db(
         if cached_mtime == Some(dir_mtime) {
             stats.dirs_cached += 1;
             if verbose {
-                eprintln!("cache hit: {}", dir_path.display());
+                eprintln!("directory unchanged, skipping: {}", dir_path.display());
             }
             continue;
         }
 
         stats.dirs_scanned += 1;
-        if verbose {
-            eprintln!("scanning: {}", dir_path.display());
-        }
 
         let files = scan_directory(&dir_path)?;
+        if verbose {
+            eprintln!("scanning: {} ({} files)", dir_path.display(), files.len());
+        }
+
         let dir_id = dao::upsert_directory(pool, scan_id, &relative, dir_mtime, dir_size)
             .await
             .map_err(io::Error::other)?;
@@ -86,6 +96,8 @@ pub async fn scan_to_db(
     dao::finish_scan(pool, scan_id)
         .await
         .map_err(io::Error::other)?;
+
+    stats.elapsed_ms = start.elapsed().as_millis();
 
     Ok((scan_id, stats))
 }

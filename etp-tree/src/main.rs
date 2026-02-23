@@ -44,7 +44,7 @@ struct Cli {
     #[arg(long)]
     du_subs: bool,
 
-    /// Print scan info on stderr
+    /// Print diagnostic info on stderr
     #[arg(short, long)]
     verbose: bool,
 }
@@ -60,10 +60,12 @@ async fn main() {
 
     let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
 
-    let pool = etp_lib::db::open_db(&db_path).await.unwrap_or_else(|e| {
-        eprintln!("error opening database: {}", e);
-        std::process::exit(1);
-    });
+    let pool = etp_lib::db::open_db(&db_path, cli.verbose)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error opening database: {}", e);
+            std::process::exit(1);
+        });
 
     let canon = cli
         .directory
@@ -72,6 +74,9 @@ async fn main() {
     let run_type = canon.to_string_lossy();
 
     let scan_id = if cli.no_scan {
+        if cli.verbose {
+            eprintln!("--no-scan: skipping scan, using cached data");
+        }
         match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
             Ok(Some(id)) => id,
             Ok(None) => {

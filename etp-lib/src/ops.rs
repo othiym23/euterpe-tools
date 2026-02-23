@@ -33,8 +33,8 @@ pub async fn run_scan_to_db(root: &Path, pool: &SqlitePool, run_type: &str, verb
         Ok((scan_id, stats)) => {
             if verbose {
                 eprintln!(
-                    "dirs: {} cached, {} scanned, {} removed",
-                    stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
+                    "scan complete in {}ms: {} cached, {} scanned, {} removed",
+                    stats.elapsed_ms, stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
                 );
             }
             scan_id
@@ -54,7 +54,7 @@ pub async fn write_csv_from_db(
     exclude: &[String],
     verbose: bool,
 ) {
-    if let Err(e) = csv_writer::write_csv_from_db(pool, scan_id, output, exclude).await {
+    if let Err(e) = csv_writer::write_csv_from_db(pool, scan_id, output, exclude, verbose).await {
         eprintln!("error writing CSV: {}", e);
         process::exit(1);
     }

@@ -30,7 +30,7 @@ async fn csv_output_from_db_is_correct() {
         .unwrap();
 
     let csv_path = tmp.path().join("out.csv");
-    csv_writer::write_csv_from_db(&pool, scan_id, &csv_path, &[])
+    csv_writer::write_csv_from_db(&pool, scan_id, &csv_path, &[], false)
         .await
         .unwrap();
 
@@ -64,7 +64,7 @@ async fn csv_output_with_exclude_filters_correctly() {
 
     let csv_path = tmp.path().join("out.csv");
     let exclude = vec!["@eaDir".to_string()];
-    csv_writer::write_csv_from_db(&pool, scan_id, &csv_path, &exclude)
+    csv_writer::write_csv_from_db(&pool, scan_id, &csv_path, &exclude, false)
         .await
         .unwrap();
 
