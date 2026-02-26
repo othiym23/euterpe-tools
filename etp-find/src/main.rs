@@ -9,11 +9,12 @@ use std::path::PathBuf;
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")")
 )]
 struct Cli {
-    /// Root directory to search
-    directory: PathBuf,
-
     /// Regex pattern to match against full file paths
     pattern: String,
+
+    /// Root directory to search (omit to search all scans in --db)
+    #[arg(short = 'R', long = "root")]
+    directory: Option<PathBuf>,
 
     /// Write matching files as a tree to file (use - for stdout)
     #[arg(long)]
@@ -27,7 +28,7 @@ struct Cli {
     #[arg(long)]
     size: bool,
 
-    /// Database path
+    /// Database path (required when no directory is given)
     #[arg(long)]
     db: Option<PathBuf>,
 
@@ -52,8 +53,6 @@ struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    ops::validate_directory(&cli.directory);
-
     let pattern = match regex::RegexBuilder::new(&cli.pattern)
         .case_insensitive(cli.insensitive)
         .build()
@@ -65,7 +64,22 @@ async fn main() {
         }
     };
 
-    let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
+    // When no directory is given, --db is required and we search all scans.
+    let db_path = match (&cli.directory, &cli.db) {
+        (Some(dir), Some(db)) => {
+            ops::validate_directory(dir);
+            db.clone()
+        }
+        (Some(dir), None) => {
+            ops::validate_directory(dir);
+            dir.join(".etp.db")
+        }
+        (None, Some(db)) => db.clone(),
+        (None, None) => {
+            eprintln!("error: --db is required when no directory is given");
+            std::process::exit(1);
+        }
+    };
 
     // Check before open_db, which creates the file if missing.
     let db_existed = db_path.exists();
@@ -77,40 +91,44 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let canon = cli
-        .directory
-        .canonicalize()
-        .unwrap_or(cli.directory.clone());
-    let run_type = canon.to_string_lossy();
+    // Resolve scan_id when a directory is given; None means search all scans.
+    let scan_id: Option<i64> = if let Some(ref dir) = cli.directory {
+        let canon = dir.canonicalize().unwrap_or(dir.clone());
+        let run_type = canon.to_string_lossy();
 
-    // Skip scanning if DB already existed (etp-find is read-heavy; scan only
-    // when no data is available yet). --no-scan forces skip even for new DBs.
-    let skip_scan = cli.no_scan || db_existed;
+        let skip_scan = cli.no_scan || db_existed;
 
-    let scan_id = if skip_scan {
-        if cli.verbose {
-            if cli.no_scan {
-                eprintln!("--no-scan: skipping scan, using cached data");
-            } else {
-                eprintln!("database exists, skipping scan");
+        let id = if skip_scan {
+            if cli.verbose {
+                if cli.no_scan {
+                    eprintln!("--no-scan: skipping scan, using cached data");
+                } else {
+                    eprintln!("database exists, skipping scan");
+                }
             }
-        }
-        match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
-            Ok(Some(id)) => id,
-            Ok(None) => {
-                eprintln!(
-                    "error: no previous scan exists for this directory in {}",
-                    db_path.display()
-                );
-                std::process::exit(1);
+            match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!(
+                        "error: no previous scan exists for this directory in {}",
+                        db_path.display()
+                    );
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("error querying database: {}", e);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!("error querying database: {}", e);
-                std::process::exit(1);
-            }
-        }
+        } else {
+            ops::run_scan_to_db(dir, &pool, &run_type, cli.verbose).await
+        };
+        Some(id)
     } else {
-        ops::run_scan_to_db(&cli.directory, &pool, &run_type, cli.verbose).await
+        if cli.verbose {
+            eprintln!("no directory given, searching all scans");
+        }
+        None
     };
 
     // Determine if any output goes to stdout via "-"
@@ -120,7 +138,10 @@ async fn main() {
 
     if needs_collect {
         // Collect all matches
-        let matches = ops::collect_find_matches(&pool, scan_id, &pattern).await;
+        let matches = match scan_id {
+            Some(id) => ops::collect_find_matches(&pool, id, &pattern).await,
+            None => ops::collect_find_all_matches(&pool, &pattern).await,
+        };
         let count = matches.len();
         let total_size: u64 = matches.iter().map(|m| m.size).sum();
 
@@ -131,9 +152,14 @@ async fn main() {
             }
         }
 
-        // Write tree output
+        // Write tree output (requires a root directory for the tree)
         if let Some(ref tree_path) = cli.tree {
-            ops::render_find_tree(&matches, &cli.directory, tree_path);
+            if let Some(ref dir) = cli.directory {
+                ops::render_find_tree(&matches, dir, tree_path);
+            } else {
+                eprintln!("error: --tree requires --root <directory>");
+                std::process::exit(1);
+            }
         }
 
         // Write CSV output
@@ -146,7 +172,10 @@ async fn main() {
         }
     } else {
         // Stream matches to stdout
-        let (count, total_size) = ops::stream_find_matches(&pool, scan_id, &pattern).await;
+        let (count, total_size) = match scan_id {
+            Some(id) => ops::stream_find_matches(&pool, id, &pattern).await,
+            None => ops::stream_find_all_matches(&pool, &pattern).await,
+        };
 
         if cli.size {
             println!("\n{} matches, {}", count, ops::format_size(total_size));

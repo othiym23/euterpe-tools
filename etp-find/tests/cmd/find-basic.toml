@@ -1,5 +1,5 @@
 bin.name = "etp-find"
-args = [".", "\\.txt$"]
+args = ["\\.txt$", "-R", "."]
 status = "success"
 stderr = ""
 fs.sandbox = true

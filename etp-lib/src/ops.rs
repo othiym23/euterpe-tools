@@ -180,6 +180,58 @@ pub async fn collect_find_matches(
         .collect()
 }
 
+/// Stream files from all scans in DB, printing matching paths. Returns (count, total_size).
+pub async fn stream_find_all_matches(pool: &SqlitePool, pattern: &regex::Regex) -> (usize, u64) {
+    use crate::finder;
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    let mut stream = dao::stream_all_files(pool);
+    let mut count = 0;
+    let mut total_size = 0u64;
+
+    while let Some(result) = poll_fn(|cx| {
+        use futures_core::Stream;
+        Pin::new(&mut stream).poll_next(cx)
+    })
+    .await
+    {
+        match result {
+            Ok(record) => {
+                if let Some(m) = finder::matches_pattern(&record, pattern) {
+                    println!("{}", m.full_path);
+                    total_size += m.size;
+                    count += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("error reading from database: {}", e);
+                process::exit(1);
+            }
+        }
+    }
+
+    (count, total_size)
+}
+
+/// Collect all matching files across all scans into a Vec.
+pub async fn collect_find_all_matches(
+    pool: &SqlitePool,
+    pattern: &regex::Regex,
+) -> Vec<crate::finder::FindMatch> {
+    use crate::finder;
+
+    let files = dao::list_all_files(pool).await.unwrap_or_else(|e| {
+        eprintln!("error reading from database: {}", e);
+        process::exit(1);
+    });
+
+    files
+        .iter()
+        .filter_map(|record| finder::matches_pattern(record, pattern))
+        .collect()
+}
+
 /// Write matched files as CSV to a file path, or stdout when `output == "-"`.
 pub fn write_find_csv(matches: &[crate::finder::FindMatch], output: &str) {
     let writer: Box<dyn std::io::Write> = if output == "-" {

@@ -1,5 +1,5 @@
 bin.name = "etp-find"
-args = ["nonexistent_dir", "pattern"]
+args = ["pattern", "-R", "nonexistent_dir"]
 status.code = 1
 stdout = ""
 stderr = "error: nonexistent_dir is not a directory\n"

@@ -30,11 +30,11 @@ just deploy           # check + test + build + mount NAS + copy everything
 # Usage
 etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [--no-scan] [-v]
 etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--no-scan] [--du [--du-subs]] [-N] [-I <pattern>...] [-a] [-v]
-etp-find <directory> <pattern> [--tree=<file>] [--csv=<file>] [--size] [-I] [--db <path>] [--exclude <name>...] [--no-scan] [-v]
+etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-I] [--db <path>] [--exclude <name>...] [--no-scan] [-v]
 
 # Via dispatcher
 etp tree <directory> [args...]
-etp find <directory> <pattern> [args...]
+etp find <pattern> [-R <directory>] [args...]
 etp catalog [--dry-run] [config.kdl]
 ```
 

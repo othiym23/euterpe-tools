@@ -240,6 +240,53 @@ impl Stream for MapStream<'_> {
     }
 }
 
+/// List all files across all scans. Same as `list_files` but without scan filter.
+pub async fn list_all_files(pool: &SqlitePool) -> Result<Vec<FileRecord>, sqlx::Error> {
+    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(root, dir_path, filename, size, ctime, mtime)| {
+            let full_path = if dir_path.is_empty() {
+                root
+            } else {
+                format!("{}/{}", root, dir_path)
+            };
+            FileRecord {
+                dir_path: full_path,
+                filename,
+                size: size as u64,
+                ctime,
+                mtime,
+            }
+        })
+        .collect())
+}
+
+/// Stream all files across all scans. Same as `stream_files` but without scan filter.
+pub fn stream_all_files(
+    pool: &SqlitePool,
+) -> Pin<Box<dyn Stream<Item = Result<FileRecord, sqlx::Error>> + Send + '_>> {
+    let raw = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
+        "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id",
+    )
+    .fetch(pool);
+
+    Box::pin(MapStream {
+        inner: Box::pin(raw),
+    })
+}
+
 /// Get the total size of all files in a scan.
 pub async fn total_size(pool: &SqlitePool, scan_id: i64) -> Result<u64, sqlx::Error> {
     let row: (i64,) = sqlx::query_as(
