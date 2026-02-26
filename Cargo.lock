@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "etp-csv"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "etp-lib",
@@ -447,18 +447,17 @@ dependencies = [
 
 [[package]]
 name = "etp-find"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "etp-lib",
- "regex",
  "tokio",
  "trycmd",
 ]
 
 [[package]]
 name = "etp-lib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "csv",
@@ -476,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "etp-tree"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "etp-lib",

@@ -24,6 +24,14 @@ struct Cli {
     #[arg(short, long, default_values_t = [String::from("@eaDir")])]
     exclude: Vec<String>,
 
+    /// Filter output to files matching this regex pattern
+    #[arg(long)]
+    find: Option<String>,
+
+    /// Case-insensitive --find matching
+    #[arg(short = 'i', long = "insensitive")]
+    insensitive: bool,
+
     /// Skip scanning, use existing DB data
     #[arg(long, hide = true)]
     no_scan: bool,
@@ -78,7 +86,14 @@ async fn main() {
         ops::run_scan_to_db(&cli.directory, &pool, &run_type, cli.verbose).await
     };
 
-    ops::write_csv_from_db(&pool, scan_id, &output, &cli.exclude, cli.verbose).await;
+    if let Some(ref find_pattern) = cli.find {
+        let pattern = ops::compile_pattern(find_pattern, cli.insensitive);
+        let matches = ops::collect_find_matches(&pool, scan_id, &pattern).await;
+        let output_str = output.to_string_lossy();
+        ops::write_find_csv(&matches, &output_str);
+    } else {
+        ops::write_csv_from_db(&pool, scan_id, &output, &cli.exclude, cli.verbose).await;
+    }
 
     etp_lib::db::close_db(pool).await;
 }

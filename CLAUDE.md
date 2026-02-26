@@ -28,9 +28,9 @@ just build-nas-cross  # alternative via cross tool
 just deploy           # check + test + build + mount NAS + copy everything
 
 # Usage
-etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [--no-scan] [-v]
-etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--no-scan] [--du [--du-subs]] [-N] [-I <pattern>...] [-a] [-v]
-etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-I] [--db <path>] [--exclude <name>...] [--no-scan] [-v]
+etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [--find <pattern> [-i]] [--no-scan] [-v]
+etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--find <pattern> [-i]] [--no-scan] [--du [--du-subs]] [-N] [-I <pattern>...] [-a] [-v]
+etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [--exclude <name>...] [--no-scan] [-v]
 
 # Via dispatcher
 etp tree <directory> [args...]

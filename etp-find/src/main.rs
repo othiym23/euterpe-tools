@@ -37,7 +37,7 @@ struct Cli {
     exclude: Vec<String>,
 
     /// Case-insensitive pattern matching
-    #[arg(short = 'I', long = "insensitive")]
+    #[arg(short = 'i', long = "insensitive")]
     insensitive: bool,
 
     /// Skip scanning, use existing DB data
@@ -53,16 +53,7 @@ struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    let pattern = match regex::RegexBuilder::new(&cli.pattern)
-        .case_insensitive(cli.insensitive)
-        .build()
-    {
-        Ok(re) => re,
-        Err(e) => {
-            eprintln!("error: invalid regex '{}': {}", cli.pattern, e);
-            std::process::exit(1);
-        }
-    };
+    let pattern = ops::compile_pattern(&cli.pattern, cli.insensitive);
 
     // When no directory is given, --db is required and we search all scans.
     let db_path = match (&cli.directory, &cli.db) {

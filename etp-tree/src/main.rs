@@ -32,6 +32,14 @@ struct Cli {
     #[arg(short, long)]
     all: bool,
 
+    /// Filter output to files matching this regex pattern
+    #[arg(long)]
+    find: Option<String>,
+
+    /// Case-insensitive --find matching
+    #[arg(short = 'i', long = "insensitive")]
+    insensitive: bool,
+
     /// Skip scanning, use existing DB data
     #[arg(long, hide = true)]
     no_scan: bool,
@@ -94,19 +102,25 @@ async fn main() {
         ops::run_scan_to_db(&cli.directory, &pool, &run_type, cli.verbose).await
     };
 
-    // Combine exclude and ignore into patterns for tree rendering
-    let mut all_ignore = cli.ignore.clone();
-    all_ignore.extend(cli.exclude.iter().cloned());
+    if let Some(ref find_pattern) = cli.find {
+        let pattern = ops::compile_pattern(find_pattern, cli.insensitive);
+        let matches = ops::collect_find_matches(&pool, scan_id, &pattern).await;
+        ops::render_find_tree(&matches, &cli.directory, "-");
+    } else {
+        // Combine exclude and ignore into patterns for tree rendering
+        let mut all_ignore = cli.ignore.clone();
+        all_ignore.extend(cli.exclude.iter().cloned());
 
-    ops::render_tree_from_db(
-        &pool,
-        scan_id,
-        &cli.directory,
-        &all_ignore,
-        cli.no_escape,
-        cli.all,
-    )
-    .await;
+        ops::render_tree_from_db(
+            &pool,
+            scan_id,
+            &cli.directory,
+            &all_ignore,
+            cli.no_escape,
+            cli.all,
+        )
+        .await;
+    }
 
     if cli.du {
         ops::render_du(&pool, scan_id, cli.du_subs).await;

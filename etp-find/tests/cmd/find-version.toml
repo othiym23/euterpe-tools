@@ -1,5 +1,5 @@
 bin.name = "etp-find"
 args = ["--version"]
 status = "success"
-stdout = "etp-find 0.1.0 ([..])\n"
+stdout = "etp-find 0.2.0 ([..])\n"
 stderr = ""

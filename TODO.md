@@ -24,7 +24,7 @@ implemented.
 - [x] etp-find feature: add '-I' / '--insensitive' for case-insensitive matching
 - [x] etp-find feature: don't require a directory parameter (match against all
       paths in the db)
-- [ ] etp-csv, etp-tree: add a `--find` option to both `etp-tree` and `etp-csv`
+- [x] etp-csv, etp-tree: add a `--find` option to both `etp-tree` and `etp-csv`
       that uses the same search logic as `etp-find` – just a different way to
       invoke the same functionality
 

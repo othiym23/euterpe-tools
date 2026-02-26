@@ -6,6 +6,17 @@ use std::io::Write;
 use std::path::Path;
 use std::process;
 
+/// Compile a regex pattern, optionally case-insensitive. Exits on invalid pattern.
+pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> regex::Regex {
+    regex::RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .unwrap_or_else(|e| {
+            eprintln!("error: invalid regex '{}': {}", pattern, e);
+            process::exit(1);
+        })
+}
+
 /// Verify that a path is a directory, exiting with an error if not.
 pub fn validate_directory(root: &Path) {
     if !root.is_dir() {
