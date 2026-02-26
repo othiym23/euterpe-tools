@@ -20,10 +20,10 @@ implemented.
         --tree=- and/or --csv=- are invoked) of etp-find output
 - [x] etp-find bug: `--tree` should print the files matched and not just the
       directories (also the number of files should be included in the count)
-- [ ] etp-find feature: don't do a scan unless the database doesn't exist
+- [x] etp-find feature: don't do a scan unless the database doesn't exist
+- [ ] etp-find feature: add '-I' / '--insensitive' for case-insensitive matching
 - [ ] etp-find feature: don't require a directory parameter (match against all
       paths in the db)
-- [ ] etp-find feature: add '-I' / '--insensitive' for case-insensitive matching
 - [ ] etp-csv, etp-tree: add a `--find` option to both `etp-tree` and `etp-csv`
       that uses the same search logic as `etp-find` – just a different way to
       invoke the same functionality

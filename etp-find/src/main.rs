@@ -60,6 +60,9 @@ async fn main() {
 
     let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
 
+    // Check before open_db, which creates the file if missing.
+    let db_existed = db_path.exists();
+
     let pool = etp_lib::db::open_db(&db_path, cli.verbose)
         .await
         .unwrap_or_else(|e| {
@@ -73,15 +76,24 @@ async fn main() {
         .unwrap_or(cli.directory.clone());
     let run_type = canon.to_string_lossy();
 
-    let scan_id = if cli.no_scan {
+    // Skip scanning if DB already existed (etp-find is read-heavy; scan only
+    // when no data is available yet). --no-scan forces skip even for new DBs.
+    let skip_scan = cli.no_scan || db_existed;
+
+    let scan_id = if skip_scan {
         if cli.verbose {
-            eprintln!("--no-scan: skipping scan, using cached data");
+            if cli.no_scan {
+                eprintln!("--no-scan: skipping scan, using cached data");
+            } else {
+                eprintln!("database exists, skipping scan");
+            }
         }
         match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
             Ok(Some(id)) => id,
             Ok(None) => {
                 eprintln!(
-                    "error: --no-scan specified but no previous scan exists for this directory"
+                    "error: no previous scan exists for this directory in {}",
+                    db_path.display()
                 );
                 std::process::exit(1);
             }
