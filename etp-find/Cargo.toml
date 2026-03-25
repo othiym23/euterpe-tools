@@ -3,6 +3,9 @@ name = "etp-find"
 version = "0.2.0"
 edition = "2024"
 
+[features]
+profiling = ["etp-lib/profiling"]
+
 [dependencies]
 etp-lib = { path = "../etp-lib" }
 clap = { version = "4", features = ["derive"] }

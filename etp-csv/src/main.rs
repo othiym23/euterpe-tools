@@ -39,11 +39,25 @@ struct Cli {
     /// Print diagnostic info on stderr
     #[arg(short, long)]
     verbose: bool,
+
+    /// Write Chrome Trace profiling data to a file
+    #[cfg(feature = "profiling")]
+    #[arg(long)]
+    profile: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
+
+    #[cfg(feature = "profiling")]
+    let _profiling_guard = if cli.profile {
+        Some(etp_lib::profiling::init_profiling(
+            &etp_lib::profiling::trace_path("etp-csv"),
+        ))
+    } else {
+        None
+    };
 
     ops::validate_directory(&cli.directory);
 
@@ -99,4 +113,9 @@ async fn main() {
     }
 
     etp_lib::db::close_db(pool).await;
+
+    #[cfg(feature = "profiling")]
+    if let Some(guard) = _profiling_guard {
+        guard.finish();
+    }
 }

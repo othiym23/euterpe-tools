@@ -15,6 +15,10 @@ pub struct ScanStats {
     pub elapsed_ms: u128,
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "scan_to_db", skip_all)
+)]
 pub async fn scan_to_db(
     root: &Path,
     pool: &SqlitePool,
@@ -83,6 +87,15 @@ pub async fn scan_to_db(
 
         if cached_mtimes.get(&relative) == Some(&dir_mtime) {
             stats.dirs_cached += 1;
+            #[cfg(feature = "profiling")]
+            if (stats.dirs_scanned + stats.dirs_cached).is_multiple_of(1000) {
+                tracing::info!(
+                    scanned = stats.dirs_scanned,
+                    cached = stats.dirs_cached,
+                    "scan_progress"
+                );
+                crate::profiling::sample_proc_metrics("scan_progress");
+            }
             if verbose {
                 eprintln!("directory unchanged, skipping: {}", dir_path.display());
             }
@@ -90,6 +103,16 @@ pub async fn scan_to_db(
         }
 
         stats.dirs_scanned += 1;
+
+        #[cfg(feature = "profiling")]
+        if (stats.dirs_scanned + stats.dirs_cached).is_multiple_of(1000) {
+            tracing::info!(
+                scanned = stats.dirs_scanned,
+                cached = stats.dirs_cached,
+                "scan_progress"
+            );
+            crate::profiling::sample_proc_metrics("scan_progress");
+        }
 
         let files = scan_directory(&dir_path)?;
         if verbose {
@@ -117,9 +140,15 @@ pub async fn scan_to_db(
             .map_err(io::Error::other)?;
     }
 
-    let removed = dao::remove_stale_directories(pool, scan_id, &seen_paths)
-        .await
-        .map_err(io::Error::other)?;
+    // If nothing was scanned, every directory matched its cached mtime —
+    // the DB is already in sync and no directories can be stale.
+    let removed = if stats.dirs_scanned > 0 {
+        dao::remove_stale_directories(pool, scan_id, &seen_paths)
+            .await
+            .map_err(io::Error::other)?
+    } else {
+        0
+    };
     stats.dirs_removed = removed;
 
     dao::finish_scan(pool, scan_id)
@@ -132,6 +161,7 @@ pub async fn scan_to_db(
 }
 
 /// Flush a batch of pending directory updates in a single transaction.
+#[cfg_attr(feature = "profiling", tracing::instrument(name = "flush_pending", skip_all, fields(batch_size = pending.len())))]
 async fn flush_pending(
     pool: &SqlitePool,
     scan_id: i64,

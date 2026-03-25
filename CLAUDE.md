@@ -25,6 +25,8 @@ just build-smoketest  # native (aarch64-apple-darwin), verify all crates compile
 just build            # native (aarch64-apple-darwin)
 just build-nas        # NAS (static binary)
 just build-nas-cross  # alternative via cross tool
+just build-profile    # native with profiling instrumentation
+just build-nas-profile # NAS with profiling instrumentation
 just deploy           # check + test + build + mount NAS + copy everything
 
 # Usage
@@ -58,6 +60,7 @@ Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
 - `db/` — SQLite database layer (`dao.rs` for queries, `mod.rs` for connection)
 - `config.rs` — KDL configuration parsing
 - `paths.rs` — XDG-based path resolution
+- `profiling.rs` — self-instrumentation (feature-gated, see below)
 
 Each binary crate has a `build.rs` that embeds the short git hash in
 `--version`.
@@ -104,6 +107,31 @@ status = "success"
 stdout = ""
 fs.sandbox = true
 ```
+
+## Profiling
+
+Self-instrumented profiling via `tracing` + `tracing-chrome`, gated behind the
+`profiling` Cargo feature. See
+`docs/adrs/2026-03-25-01-self-instrumented-profiling.md`.
+
+```bash
+just build-profile      # native with profiling
+just build-nas-profile  # NAS with profiling
+
+# Run with profiling enabled (writes trace file to cwd)
+etp-csv /path/to/dir --profile
+etp-tree /path/to/dir --profile
+etp-find pattern -R /path/to/dir --profile
+etp catalog --profile
+
+# Open trace in Perfetto: https://ui.perfetto.dev
+```
+
+Trace files are named `etp-trace-<binary>-<timestamp>.json` and written to the
+current working directory. On Linux, `/proc/self/io` and `/proc/self/status`
+metrics are sampled at phase boundaries. The `profiling` feature adds no runtime
+cost when `--profile` is not passed (tracing macros are no-ops without a
+subscriber).
 
 ## Scripts
 

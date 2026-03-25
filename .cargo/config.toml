@@ -1,5 +1,8 @@
 [target.x86_64-unknown-linux-musl]
 linker = "x86_64-linux-musl-gcc"
 
+# v0 mangling produces shorter symbol names, avoiding a macOS linker assertion
+# failure (makeSymbolStringInPlace length limit) when tracing-subscriber's deep
+# generic layer types are compiled in with the "profiling" feature.
 [target.'cfg(target_os = "macos")']
 rustflags = ["-C", "symbol-mangling-version=v0"]

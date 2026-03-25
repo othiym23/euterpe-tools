@@ -193,6 +193,7 @@ def generate_tree(
     global_cfg: dict[str, str],
     *,
     verbose: bool = False,
+    profile: bool = False,
 ) -> None:
     """Generate a tree file for a scan entry.
 
@@ -219,6 +220,8 @@ def generate_tree(
         cmd.append("--du-subs")
     if verbose:
         cmd.append("-v")
+    if profile:
+        cmd.append("--profile")
 
     tree_out = run_cmd(cmd, capture=True, verbose=verbose) or ""
 
@@ -247,6 +250,7 @@ def run_scan(
     global_cfg: dict[str, str],
     *,
     verbose: bool = False,
+    profile: bool = False,
 ) -> bool:
     _validate_scan_cfg(name, scan_cfg)
     disk = scan_cfg["disk"]
@@ -271,7 +275,7 @@ def run_scan(
     with Timer() as total:
         with Timer() as tree_t:
             try:
-                generate_tree(name, scan_cfg, global_cfg, verbose=verbose)
+                generate_tree(name, scan_cfg, global_cfg, verbose=verbose, profile=profile)
             except subprocess.CalledProcessError as exc:
                 print(
                     f"warning: {exc.cmd} failed (code {exc.returncode}): {exc.stderr or ''}",
@@ -292,6 +296,8 @@ def run_scan(
         ]
         if verbose:
             cmd.append("-v")
+        if profile:
+            cmd.append("--profile")
 
         with Timer() as scan_t:
             try:
@@ -340,6 +346,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-v",
         action="store_true",
         help="Verbose output; passes -v to etp-tree/etp-csv",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Pass --profile to etp-tree/etp-csv for Chrome Trace output",
     )
     return parser
 
@@ -413,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
         failed: list[str] = []
         for name, scan_cfg in scans.items():
             try:
-                ok = run_scan(name, scan_cfg, global_cfg, verbose=args.verbose)
+                ok = run_scan(name, scan_cfg, global_cfg, verbose=args.verbose, profile=args.profile)
                 if not ok:
                     failed.append(name)
             except subprocess.CalledProcessError as exc:

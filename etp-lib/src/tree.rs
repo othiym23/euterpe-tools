@@ -43,6 +43,10 @@ fn make_collator() -> io::Result<CollatorBorrowed<'static>> {
         .map_err(|e| io::Error::other(format!("collator initialization failed: {e}")))
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "tree_render_tree_from_db", skip_all)
+)]
 pub async fn render_tree_from_db(
     pool: &SqlitePool,
     scan_id: i64,

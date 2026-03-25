@@ -12,6 +12,14 @@ build:
 build-nas:
     cargo build --workspace --release --target x86_64-unknown-linux-musl
 
+# Build for local machine with profiling instrumentation
+build-profile:
+    cargo build --workspace --release --features profiling
+
+# Build for NAS with profiling instrumentation
+build-nas-profile:
+    cargo build --workspace --release --target x86_64-unknown-linux-musl --features profiling
+
 # Build for NAS using cross (if musl toolchain not installed)
 build-nas-cross:
     cross build --workspace --release --target x86_64-unknown-linux-musl

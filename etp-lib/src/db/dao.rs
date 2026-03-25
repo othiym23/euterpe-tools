@@ -14,6 +14,10 @@ pub struct FileRecord {
 }
 
 /// Insert or update a scan entry. Returns the scan ID.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "upsert_scan", skip_all)
+)]
 pub async fn upsert_scan(
     pool: &SqlitePool,
     run_type: &str,
@@ -35,6 +39,10 @@ pub async fn upsert_scan(
 }
 
 /// Mark a scan as finished.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "finish_scan", skip_all)
+)]
 pub async fn finish_scan(pool: &SqlitePool, scan_id: i64) -> Result<(), sqlx::Error> {
     let now = chrono_now();
     sqlx::query("UPDATE scans SET finished_at = ? WHERE id = ?")
@@ -62,6 +70,10 @@ pub async fn directory_mtime(
 
 /// Bulk-load all cached directory mtimes for a scan into a HashMap.
 /// Replaces per-directory `directory_mtime` queries during scanning.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "all_directory_mtimes", skip_all)
+)]
 pub async fn all_directory_mtimes(
     pool: &SqlitePool,
     scan_id: i64,
@@ -138,6 +150,10 @@ pub async fn replace_files(
 }
 
 /// Remove directories that are no longer present on disk. Returns the count removed.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "remove_stale_directories", skip_all)
+)]
 pub async fn remove_stale_directories(
     pool: &SqlitePool,
     scan_id: i64,
@@ -168,6 +184,10 @@ pub async fn remove_stale_directories(
 
 /// List all files for a scan, with full paths reconstructed by joining
 /// `scans.root_path` and `directories.path`.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "list_files", skip_all)
+)]
 pub async fn list_files(pool: &SqlitePool, scan_id: i64) -> Result<Vec<FileRecord>, sqlx::Error> {
     let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
@@ -360,6 +380,10 @@ pub async fn latest_scan_id(pool: &SqlitePool, run_type: &str) -> Result<Option<
 
 /// Sum of all file sizes under a given directory prefix for a scan.
 /// Empty prefix means total for the entire scan.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "subtree_size", skip_all)
+)]
 pub async fn subtree_size(
     pool: &SqlitePool,
     scan_id: i64,
@@ -392,6 +416,10 @@ pub async fn subtree_size(
 }
 
 /// Sizes grouped by top-level subdirectory name for a scan.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "immediate_subdirectory_sizes", skip_all)
+)]
 pub async fn immediate_subdirectory_sizes(
     pool: &SqlitePool,
     scan_id: i64,

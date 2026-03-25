@@ -7,6 +7,10 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "csv_write_csv_from_db", skip_all)
+)]
 pub async fn write_csv_from_db(
     pool: &SqlitePool,
     scan_id: i64,

@@ -51,6 +51,10 @@ pub fn parse_ignore_patterns(patterns: &[String]) -> Vec<glob::Pattern> {
 }
 
 /// Run the DB-backed scanner and log stats. Returns scan_id. Exits on error.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "run_scan_to_db", skip_all)
+)]
 pub async fn run_scan_to_db(
     root: &Path,
     pool: &SqlitePool,
@@ -76,6 +80,10 @@ pub async fn run_scan_to_db(
 }
 
 /// Write CSV output from database. Exits on error.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "write_csv_from_db", skip_all)
+)]
 pub async fn write_csv_from_db(
     pool: &SqlitePool,
     scan_id: i64,
@@ -93,6 +101,10 @@ pub async fn write_csv_from_db(
 }
 
 /// Render tree output from database, printing summary line.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "render_tree_from_db", skip_all)
+)]
 pub async fn render_tree_from_db(
     pool: &SqlitePool,
     scan_id: i64,
@@ -130,6 +142,10 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Render size summary (du replacement). Exits on error.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "render_du", skip_all)
+)]
 pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) {
     let total = dao::subtree_size(pool, scan_id, "")
         .await
@@ -153,6 +169,10 @@ pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) {
 }
 
 /// Stream files from DB, printing matching paths immediately. Returns (count, total_size).
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "stream_find_matches", skip_all)
+)]
 pub async fn stream_find_matches(
     pool: &SqlitePool,
     scan_id: i64,
@@ -195,6 +215,10 @@ pub async fn stream_find_matches(
 }
 
 /// Collect all matching files into a Vec. Returns the matches.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "collect_find_matches", skip_all)
+)]
 pub async fn collect_find_matches(
     pool: &SqlitePool,
     scan_id: i64,
@@ -216,6 +240,10 @@ pub async fn collect_find_matches(
 }
 
 /// Stream files from all scans in DB, printing matching paths. Returns (count, total_size).
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "stream_find_all_matches", skip_all)
+)]
 pub async fn stream_find_all_matches(
     pool: &SqlitePool,
     pattern: &regex::Regex,
@@ -257,6 +285,10 @@ pub async fn stream_find_all_matches(
 }
 
 /// Collect all matching files across all scans into a Vec.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "collect_find_all_matches", skip_all)
+)]
 pub async fn collect_find_all_matches(
     pool: &SqlitePool,
     pattern: &regex::Regex,
@@ -277,6 +309,10 @@ pub async fn collect_find_all_matches(
 }
 
 /// Write matched files as CSV to a file path, or stdout when `output == "-"`.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "write_find_csv", skip_all)
+)]
 pub fn write_find_csv(matches: &[crate::finder::FindMatch], output: &str) -> std::io::Result<()> {
     let writer: Box<dyn std::io::Write> = if output == "-" {
         Box::new(std::io::stdout().lock())
@@ -303,6 +339,10 @@ pub fn write_find_csv(matches: &[crate::finder::FindMatch], output: &str) -> std
 }
 
 /// Render matched files as a tree to a file path, or stdout when `output == "-"`.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "render_find_tree", skip_all)
+)]
 pub fn render_find_tree(
     matches: &[crate::finder::FindMatch],
     root: &Path,
