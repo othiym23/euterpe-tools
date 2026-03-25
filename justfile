@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# Build for local machine with a dev profile to ensure it still can be compiled
+build-smoketest:
+    cargo build --workspace
+
 # Build for local machine (macOS ARM)
 build:
     cargo build --workspace --release
@@ -6,13 +12,21 @@ build:
 build-nas:
     cargo build --workspace --release --target x86_64-unknown-linux-musl
 
+# Build for local machine with profiling instrumentation
+build-profile:
+    cargo build --workspace --release --features profiling
+
+# Build for NAS with profiling instrumentation
+build-nas-profile:
+    cargo build --workspace --release --target x86_64-unknown-linux-musl --features profiling
+
 # Build for NAS using cross (if musl toolchain not installed)
 build-nas-cross:
     cross build --workspace --release --target x86_64-unknown-linux-musl
 
 # Run a CSV scan on a given directory
 run dir:
-    cargo run --release --bin etp-csv -- {{dir}} -v
+    cargo run --release --bin etp-csv -- "{{dir}}" -v
 
 # Format sources
 format:
@@ -20,6 +34,7 @@ format:
     cargo fmt --all
     # Python
     cd scripts && uv run ruff format
+    cd etp && uv run ruff format
     # Markdown
     prettier --write "**/*.md"
 
@@ -28,19 +43,30 @@ check:
     # Rust
     cargo fmt --all --check
     cargo clippy --workspace -- -D warnings
-    # Python
+    # Python (scripts)
     cd scripts && \
       uv run ruff check && \
       uv run ruff format --check
     cd scripts && \
       uv run pyright
+    cd scripts && \
+      uv run ty check
+    # Python (etp)
+    cd etp && \
+      uv run ruff check && \
+      uv run ruff format --check
+    cd etp && \
+      uv run pyright
+    cd etp && \
+      uv run ty check
     # Markdown
     prettier --check "**/*.md"
 
 # Run all tests (Rust + Python)
 test:
-    cargo test --workspace
-    cd scripts && uv run pytest test_catalog.py -v
+    cargo nextest run --workspace
+    cd scripts && uv run pytest test_catalog.py -q
+    cd etp && uv run pytest test_catalog.py -q
 
 nas_home := "/Volumes/home"
 
@@ -68,9 +94,25 @@ deploy: check test build-nas mount-home
     rm -f "{{ nas_home }}/bin/dir-tree-scanner"
     cp target/x86_64-unknown-linux-musl/release/etp-csv "{{ nas_home }}/bin"
     cp target/x86_64-unknown-linux-musl/release/etp-tree "{{ nas_home }}/bin"
-    # catalog-nas
-    mkdir -p "{{ nas_home }}/scripts"
-    cp scripts/catalog-nas.py "{{ nas_home }}/scripts"
-    cp scripts/catalog.toml "{{ nas_home }}/scripts"
-    # permissions – current invocation is via the python interpreter
-    chmod 0640 "{{ nas_home }}/scripts/catalog-nas.py"
+    cp target/x86_64-unknown-linux-musl/release/etp-find "{{ nas_home }}/bin"
+    # etp porcelain
+    mkdir -p "{{ nas_home }}/bin"
+    cp etp/etp "{{ nas_home }}/bin"
+    cp etp/etp-catalog "{{ nas_home }}/bin"
+    chmod +x "{{ nas_home }}/bin/etp" "{{ nas_home }}/bin/etp-catalog"
+    # shared Python libraries ($HOME/.local/lib/etp/)
+    mkdir -p "{{ nas_home }}/.local/lib/etp"
+    cp etp/paths.py "{{ nas_home }}/.local/lib/etp"
+    cp -R etp/kdl "{{ nas_home }}/.local/lib/etp/kdl"
+    # config ($HOME/.config/euterpe-tools/) — don't overwrite existing
+    mkdir -p "{{ nas_home }}/.config/euterpe-tools"
+    if [ ! -f "{{ nas_home }}/.config/euterpe-tools/catalog.kdl" ]; then
+        cp conf/catalog.kdl "{{ nas_home }}/.config/euterpe-tools"
+    else
+        echo "catalog.kdl already exists, skipping"
+    fi
+    # clean out legacy paths
+    rm -f "{{ nas_home }}/scripts/catalog-nas.py"
+    rm -f "{{ nas_home }}/scripts/catalog.toml"
+    rm -rf "{{ nas_home }}/bin/kdl"
+    rm -f "{{ nas_home }}/conf/catalog.kdl"

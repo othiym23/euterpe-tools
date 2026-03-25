@@ -1,0 +1,5 @@
+bin.name = "etp-find"
+args = ["\\.txt$", "-R", ".", "--size"]
+status = "success"
+stderr = ""
+fs.sandbox = true

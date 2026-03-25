@@ -44,7 +44,7 @@ The binary consolidation is complete (commit `70599bb`). The project has:
 
 ## Workspace Structure
 
-```
+```txt
 euterpe-tools/                      # Cargo workspace root (same repo, preserved history)
 ├── Cargo.toml                      # workspace manifest
 ├── etp-lib/                        # Library crate — ALL shared functionality
@@ -444,7 +444,7 @@ metadata frames). Store raw content in `cue_sheets` table.
 
 `etp-query` binary (or `etp query` via porcelain):
 
-```
+```bash
 etp query files <directory>                 # list files
 etp query tags <file>                       # show all tags
 etp query find --tag artist --value "X"     # find by tag
@@ -534,7 +534,7 @@ the same coalesced write pipeline.
 
 ## Phase Dependencies
 
-```
+```txt
 SP1.1 Workspace Restructure
  └→ SP1.2 SQLite Layer + KDL Config
      └→ SP1.3 DB-Backed Output (BYTE-IDENTICAL GATE)

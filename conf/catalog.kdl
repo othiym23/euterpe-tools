@@ -1,0 +1,55 @@
+global {
+    home-base "/volume1/data/downloads/(music)"
+    trees-path "{home_base}/catalogs/trees"
+    csvs-path "{trees_path}/csv"
+    db-path "{trees_path}/db"
+}
+
+/- scan "laptop-music" {
+    mode "used"
+    disk "/Users/ogd/Downloads/music"
+    desc "laptop music directory"
+    header "local music processing directory"
+}
+
+/- scan "xphear" {
+    mode "subs"
+    disk "/Volumes/XPHEAR"
+    desc "XPHEAR (2TB blue Seagate Backup Plus)"
+    header "2TB blue Seagate Backup Plus HD formatted with APFS (offline music archive)"
+}
+
+scan "music-archives" {
+    mode "df"
+    disk "/volume1/data/backups/atropos"
+    desc "euterpe atropos (NAS directory)"
+    header "2TB blue Seagate Backup Plus HD formatted with HFS+ (FLAC archive)"
+}
+
+scan "television" {
+    mode "df"
+    disk "/volume1/data/video/Television"
+    desc "euterpe television (NAS directory)"
+    header "Synology NAS //data/video/Television share"
+}
+
+scan "movies" {
+    mode "df"
+    disk "/volume1/data/video/Movies"
+    desc "euterpe movies (NAS directory)"
+    header "Synology NAS //data/video/Movies"
+}
+
+scan "anime" {
+    mode "df"
+    disk "/volume1/video/anime"
+    desc "euterpe anime (NAS directory)"
+    header "Synology NAS //video/anime"
+}
+
+scan "music" {
+    mode "subs"
+    disk "/volume1/music"
+    desc "euterpe music (NAS volume)"
+    header "Synology NAS //music"
+}

@@ -1,8 +1,10 @@
 pub mod config;
 pub mod csv_writer;
 pub mod db;
+pub mod finder;
 pub mod ops;
 pub mod paths;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 pub mod scanner;
-pub mod state;
 pub mod tree;

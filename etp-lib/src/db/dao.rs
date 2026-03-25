@@ -1,17 +1,23 @@
+use futures_core::Stream;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
+use std::pin::Pin;
 
 /// A file record as returned by `list_files`, with the full path reconstructed.
 #[derive(Debug, Clone)]
 pub struct FileRecord {
     pub dir_path: String,
     pub filename: String,
-    pub size: i64,
+    pub size: u64,
     pub ctime: i64,
     pub mtime: i64,
 }
 
 /// Insert or update a scan entry. Returns the scan ID.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "upsert_scan", skip_all)
+)]
 pub async fn upsert_scan(
     pool: &SqlitePool,
     run_type: &str,
@@ -33,6 +39,10 @@ pub async fn upsert_scan(
 }
 
 /// Mark a scan as finished.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "finish_scan", skip_all)
+)]
 pub async fn finish_scan(pool: &SqlitePool, scan_id: i64) -> Result<(), sqlx::Error> {
     let now = chrono_now();
     sqlx::query("UPDATE scans SET finished_at = ? WHERE id = ?")
@@ -58,22 +68,42 @@ pub async fn directory_mtime(
     Ok(row.map(|r| r.0))
 }
 
+/// Bulk-load all cached directory mtimes for a scan into a HashMap.
+/// Replaces per-directory `directory_mtime` queries during scanning.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "all_directory_mtimes", skip_all)
+)]
+pub async fn all_directory_mtimes(
+    pool: &SqlitePool,
+    scan_id: i64,
+) -> Result<std::collections::HashMap<String, i64>, sqlx::Error> {
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT path, mtime FROM directories WHERE scan_id = ?")
+            .bind(scan_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// Insert or update a directory entry. Returns the directory ID.
 pub async fn upsert_directory(
     pool: &SqlitePool,
     scan_id: i64,
     path: &str,
     mtime: i64,
+    size: u64,
 ) -> Result<i64, sqlx::Error> {
     let result = sqlx::query(
-        "INSERT INTO directories (scan_id, path, mtime)
-         VALUES (?, ?, ?)
-         ON CONFLICT(scan_id, path) DO UPDATE SET mtime = excluded.mtime
+        "INSERT INTO directories (scan_id, path, mtime, size)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(scan_id, path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size
          RETURNING id",
     )
     .bind(scan_id)
     .bind(path)
     .bind(mtime)
+    .bind(size as i64)
     .fetch_one(pool)
     .await?;
     Ok(sqlx::Row::get(&result, 0))
@@ -82,21 +112,24 @@ pub async fn upsert_directory(
 /// A file to be inserted into the database.
 pub struct FileInput {
     pub filename: String,
-    pub size: i64,
+    pub size: u64,
     pub ctime: i64,
     pub mtime: i64,
 }
 
 /// Replace all files in a directory — deletes existing files for the dir_id,
-/// then inserts the new set.
+/// then inserts the new set. Wrapped in a transaction so the DELETE + all
+/// INSERTs are a single WAL commit instead of N+1 separate fsyncs.
 pub async fn replace_files(
     pool: &SqlitePool,
     dir_id: i64,
     files: &[FileInput],
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
     sqlx::query("DELETE FROM files WHERE dir_id = ?")
         .bind(dir_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     for f in files {
@@ -105,16 +138,22 @@ pub async fn replace_files(
         )
         .bind(dir_id)
         .bind(&f.filename)
-        .bind(f.size)
+        .bind(f.size as i64)
         .bind(f.ctime)
         .bind(f.mtime)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+
+    tx.commit().await?;
     Ok(())
 }
 
 /// Remove directories that are no longer present on disk. Returns the count removed.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "remove_stale_directories", skip_all)
+)]
 pub async fn remove_stale_directories(
     pool: &SqlitePool,
     scan_id: i64,
@@ -145,6 +184,10 @@ pub async fn remove_stale_directories(
 
 /// List all files for a scan, with full paths reconstructed by joining
 /// `scans.root_path` and `directories.path`.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "list_files", skip_all)
+)]
 pub async fn list_files(pool: &SqlitePool, scan_id: i64) -> Result<Vec<FileRecord>, sqlx::Error> {
     let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
@@ -168,7 +211,7 @@ pub async fn list_files(pool: &SqlitePool, scan_id: i64) -> Result<Vec<FileRecor
             FileRecord {
                 dir_path: full_path,
                 filename,
-                size,
+                size: size as u64,
                 ctime,
                 mtime,
             }
@@ -176,8 +219,115 @@ pub async fn list_files(pool: &SqlitePool, scan_id: i64) -> Result<Vec<FileRecor
         .collect())
 }
 
+/// Stream all files for a scan, yielding `FileRecord` values one at a time
+/// via a database cursor instead of loading everything into memory.
+pub fn stream_files(
+    pool: &SqlitePool,
+    scan_id: i64,
+) -> Pin<Box<dyn Stream<Item = Result<FileRecord, sqlx::Error>> + Send + '_>> {
+    let raw = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
+        "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id
+         WHERE d.scan_id = ?",
+    )
+    .bind(scan_id)
+    .fetch(pool);
+
+    Box::pin(MapStream {
+        inner: Box::pin(raw),
+    })
+}
+
+type RawRowStream<'a> = Pin<
+    Box<
+        dyn Stream<Item = Result<(String, String, String, i64, i64, i64), sqlx::Error>> + Send + 'a,
+    >,
+>;
+
+/// Adapter that maps raw query rows to `FileRecord`.
+struct MapStream<'a> {
+    inner: RawRowStream<'a>,
+}
+
+impl Stream for MapStream<'_> {
+    type Item = Result<FileRecord, sqlx::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx).map(|opt| {
+            opt.map(|res| {
+                res.map(|(root, dir_path, filename, size, ctime, mtime)| {
+                    let full_path = if dir_path.is_empty() {
+                        root
+                    } else {
+                        format!("{}/{}", root, dir_path)
+                    };
+                    FileRecord {
+                        dir_path: full_path,
+                        filename,
+                        size: size as u64,
+                        ctime,
+                        mtime,
+                    }
+                })
+            })
+        })
+    }
+}
+
+/// List all files across all scans. Same as `list_files` but without scan filter.
+pub async fn list_all_files(pool: &SqlitePool) -> Result<Vec<FileRecord>, sqlx::Error> {
+    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(root, dir_path, filename, size, ctime, mtime)| {
+            let full_path = if dir_path.is_empty() {
+                root
+            } else {
+                format!("{}/{}", root, dir_path)
+            };
+            FileRecord {
+                dir_path: full_path,
+                filename,
+                size: size as u64,
+                ctime,
+                mtime,
+            }
+        })
+        .collect())
+}
+
+/// Stream all files across all scans. Same as `stream_files` but without scan filter.
+pub fn stream_all_files(
+    pool: &SqlitePool,
+) -> Pin<Box<dyn Stream<Item = Result<FileRecord, sqlx::Error>> + Send + '_>> {
+    let raw = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
+        "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id",
+    )
+    .fetch(pool);
+
+    Box::pin(MapStream {
+        inner: Box::pin(raw),
+    })
+}
+
 /// Get the total size of all files in a scan.
-pub async fn total_size(pool: &SqlitePool, scan_id: i64) -> Result<i64, sqlx::Error> {
+pub async fn total_size(pool: &SqlitePool, scan_id: i64) -> Result<u64, sqlx::Error> {
     let row: (i64,) = sqlx::query_as(
         "SELECT COALESCE(SUM(f.size), 0)
          FROM files f
@@ -187,7 +337,116 @@ pub async fn total_size(pool: &SqlitePool, scan_id: i64) -> Result<i64, sqlx::Er
     .bind(scan_id)
     .fetch_one(pool)
     .await?;
-    Ok(row.0)
+    Ok(row.0 as u64)
+}
+
+/// List all directory full paths for a scan, including empty directories.
+pub async fn list_directory_paths(
+    pool: &SqlitePool,
+    scan_id: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT s.root_path, d.path
+         FROM directories d
+         JOIN scans s ON d.scan_id = s.id
+         WHERE d.scan_id = ?",
+    )
+    .bind(scan_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(root, dir_path)| {
+            if dir_path.is_empty() {
+                root
+            } else {
+                format!("{}/{}", root, dir_path)
+            }
+        })
+        .collect())
+}
+
+/// Find the most recent finished scan for a given run_type.
+pub async fn latest_scan_id(pool: &SqlitePool, run_type: &str) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM scans WHERE run_type = ? AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+    )
+    .bind(run_type)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+/// Sum of all file sizes under a given directory prefix for a scan.
+/// Empty prefix means total for the entire scan.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "subtree_size", skip_all)
+)]
+pub async fn subtree_size(
+    pool: &SqlitePool,
+    scan_id: i64,
+    relative_path_prefix: &str,
+) -> Result<u64, sqlx::Error> {
+    let row: (i64,) = if relative_path_prefix.is_empty() {
+        sqlx::query_as(
+            "SELECT COALESCE(SUM(f.size), 0)
+             FROM files f
+             JOIN directories d ON f.dir_id = d.id
+             WHERE d.scan_id = ?",
+        )
+        .bind(scan_id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT COALESCE(SUM(f.size), 0)
+             FROM files f
+             JOIN directories d ON f.dir_id = d.id
+             WHERE d.scan_id = ? AND (d.path = ? OR d.path LIKE ? || '/%')",
+        )
+        .bind(scan_id)
+        .bind(relative_path_prefix)
+        .bind(relative_path_prefix)
+        .fetch_one(pool)
+        .await?
+    };
+    Ok(row.0 as u64)
+}
+
+/// Sizes grouped by top-level subdirectory name for a scan.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "immediate_subdirectory_sizes", skip_all)
+)]
+pub async fn immediate_subdirectory_sizes(
+    pool: &SqlitePool,
+    scan_id: i64,
+) -> Result<Vec<(String, u64)>, sqlx::Error> {
+    // Get all directories that are immediate children of the root (path has no '/')
+    // plus all deeper directories grouped by their first path component
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT
+           CASE WHEN INSTR(d.path, '/') > 0
+             THEN SUBSTR(d.path, 1, INSTR(d.path, '/') - 1)
+             ELSE d.path
+           END AS top_dir,
+           COALESCE(SUM(f.size), 0) AS total_size
+         FROM directories d
+         LEFT JOIN files f ON f.dir_id = d.id
+         WHERE d.scan_id = ? AND d.path != ''
+         GROUP BY top_dir
+         ORDER BY top_dir",
+    )
+    .bind(scan_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, size)| (name, size as u64))
+        .collect())
 }
 
 fn chrono_now() -> String {
@@ -196,7 +455,7 @@ fn chrono_now() -> String {
     use std::time::SystemTime;
     let duration = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
+        .expect("system clock before Unix epoch");
     let secs = duration.as_secs();
     // Format as ISO 8601 using simple arithmetic
     let days = secs / 86400;
@@ -286,7 +545,7 @@ mod tests {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
 
-        let dir_id = upsert_directory(&pool, scan_id, "subdir", 1000)
+        let dir_id = upsert_directory(&pool, scan_id, "subdir", 1000, 4096)
             .await
             .unwrap();
         assert!(dir_id > 0);
@@ -294,21 +553,37 @@ mod tests {
         let mtime = directory_mtime(&pool, scan_id, "subdir").await.unwrap();
         assert_eq!(mtime, Some(1000));
 
-        // Update mtime
-        let dir_id2 = upsert_directory(&pool, scan_id, "subdir", 2000)
+        // Verify size was stored
+        let row: (i64,) = sqlx::query_as("SELECT size FROM directories WHERE id = ?")
+            .bind(dir_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0, 4096);
+
+        // Update mtime and size
+        let dir_id2 = upsert_directory(&pool, scan_id, "subdir", 2000, 8192)
             .await
             .unwrap();
         assert_eq!(dir_id, dir_id2);
 
         let mtime = directory_mtime(&pool, scan_id, "subdir").await.unwrap();
         assert_eq!(mtime, Some(2000));
+
+        // Verify size was updated
+        let row: (i64,) = sqlx::query_as("SELECT size FROM directories WHERE id = ?")
+            .bind(dir_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0, 8192);
     }
 
     #[tokio::test]
     async fn replace_files_inserts_and_replaces() {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
-        let dir_id = upsert_directory(&pool, scan_id, "", 1000).await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
 
         let files = vec![
             FileInput {
@@ -355,10 +630,10 @@ mod tests {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
 
-        upsert_directory(&pool, scan_id, "keep", 1000)
+        upsert_directory(&pool, scan_id, "keep", 1000, 4096)
             .await
             .unwrap();
-        let stale_id = upsert_directory(&pool, scan_id, "stale", 1000)
+        let stale_id = upsert_directory(&pool, scan_id, "stale", 1000, 4096)
             .await
             .unwrap();
 
@@ -393,7 +668,7 @@ mod tests {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/volume1/music").await.unwrap();
 
-        let root_dir_id = upsert_directory(&pool, scan_id, "", 1000).await.unwrap();
+        let root_dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
         replace_files(
             &pool,
             root_dir_id,
@@ -407,7 +682,7 @@ mod tests {
         .await
         .unwrap();
 
-        let sub_dir_id = upsert_directory(&pool, scan_id, "sub/dir", 2000)
+        let sub_dir_id = upsert_directory(&pool, scan_id, "sub/dir", 2000, 0)
             .await
             .unwrap();
         replace_files(
@@ -448,7 +723,7 @@ mod tests {
     async fn total_size_sums_correctly() {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
-        let dir_id = upsert_directory(&pool, scan_id, "", 1000).await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
 
         replace_files(
             &pool,
@@ -488,7 +763,7 @@ mod tests {
     async fn delete_directory_with_files_is_rejected() {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
-        let dir_id = upsert_directory(&pool, scan_id, "has-files", 1000)
+        let dir_id = upsert_directory(&pool, scan_id, "has-files", 1000, 0)
             .await
             .unwrap();
 
@@ -515,10 +790,268 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn latest_scan_id_returns_none_when_no_scan() {
+        let pool = open_memory().await.unwrap();
+        let result = latest_scan_id(&pool, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_scan_id_returns_none_for_unfinished() {
+        let pool = open_memory().await.unwrap();
+        upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        // Not finished yet
+        let result = latest_scan_id(&pool, "test").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_scan_id_returns_finished_scan() {
+        let pool = open_memory().await.unwrap();
+        let id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        finish_scan(&pool, id).await.unwrap();
+        let result = latest_scan_id(&pool, "test").await.unwrap();
+        assert_eq!(result, Some(id));
+    }
+
+    #[tokio::test]
+    async fn subtree_size_empty_prefix_is_total() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[
+                FileInput {
+                    filename: "a.txt".into(),
+                    size: 100,
+                    ctime: 0,
+                    mtime: 0,
+                },
+                FileInput {
+                    filename: "b.txt".into(),
+                    size: 200,
+                    ctime: 0,
+                    mtime: 0,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let sub_id = upsert_directory(&pool, scan_id, "sub", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            sub_id,
+            &[FileInput {
+                filename: "c.txt".into(),
+                size: 300,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let total = subtree_size(&pool, scan_id, "").await.unwrap();
+        assert_eq!(total, 600);
+    }
+
+    #[tokio::test]
+    async fn subtree_size_with_prefix() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let root_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            root_id,
+            &[FileInput {
+                filename: "root.txt".into(),
+                size: 100,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let sub_id = upsert_directory(&pool, scan_id, "sub", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            sub_id,
+            &[FileInput {
+                filename: "a.txt".into(),
+                size: 200,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let deep_id = upsert_directory(&pool, scan_id, "sub/deep", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            deep_id,
+            &[FileInput {
+                filename: "b.txt".into(),
+                size: 300,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let sub_total = subtree_size(&pool, scan_id, "sub").await.unwrap();
+        assert_eq!(sub_total, 500); // 200 + 300
+    }
+
+    #[tokio::test]
+    async fn immediate_subdirectory_sizes_groups_correctly() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let root_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            root_id,
+            &[FileInput {
+                filename: "root.txt".into(),
+                size: 50,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let a_id = upsert_directory(&pool, scan_id, "alpha", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            a_id,
+            &[FileInput {
+                filename: "a.txt".into(),
+                size: 100,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let a_deep_id = upsert_directory(&pool, scan_id, "alpha/deep", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            a_deep_id,
+            &[FileInput {
+                filename: "d.txt".into(),
+                size: 150,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        let b_id = upsert_directory(&pool, scan_id, "beta", 1000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            b_id,
+            &[FileInput {
+                filename: "b.txt".into(),
+                size: 200,
+                ctime: 0,
+                mtime: 0,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let subs = immediate_subdirectory_sizes(&pool, scan_id).await.unwrap();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0], ("alpha".to_string(), 250)); // 100 + 150
+        assert_eq!(subs[1], ("beta".to_string(), 200));
+    }
+
+    #[tokio::test]
+    async fn stream_files_yields_all_records() {
+        use std::future::poll_fn;
+        use std::pin::Pin;
+
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/volume1/music").await.unwrap();
+
+        let root_dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            root_dir_id,
+            &[FileInput {
+                filename: "root.txt".into(),
+                size: 10,
+                ctime: 100,
+                mtime: 200,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let sub_dir_id = upsert_directory(&pool, scan_id, "sub/dir", 2000, 0)
+            .await
+            .unwrap();
+        replace_files(
+            &pool,
+            sub_dir_id,
+            &[FileInput {
+                filename: "deep.txt".into(),
+                size: 20,
+                ctime: 300,
+                mtime: 400,
+            }],
+        )
+        .await
+        .unwrap();
+
+        // Collect from stream using poll_fn
+        let mut stream = stream_files(&pool, scan_id);
+        let mut streamed: Vec<FileRecord> = Vec::new();
+        while let Some(result) = poll_fn(|cx| {
+            use futures_core::Stream;
+            Pin::new(&mut stream).poll_next(cx)
+        })
+        .await
+        {
+            streamed.push(result.unwrap());
+        }
+
+        // Compare with list_files
+        let listed = list_files(&pool, scan_id).await.unwrap();
+        assert_eq!(streamed.len(), listed.len());
+
+        let mut stream_paths: Vec<String> = streamed
+            .iter()
+            .map(|f| format!("{}/{}", f.dir_path, f.filename))
+            .collect();
+        stream_paths.sort();
+        let mut list_paths: Vec<String> = listed
+            .iter()
+            .map(|f| format!("{}/{}", f.dir_path, f.filename))
+            .collect();
+        list_paths.sort();
+        assert_eq!(stream_paths, list_paths);
+    }
+
+    #[tokio::test]
     async fn delete_scan_with_directories_is_rejected() {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
-        upsert_directory(&pool, scan_id, "child", 1000)
+        upsert_directory(&pool, scan_id, "child", 1000, 0)
             .await
             .unwrap();
 

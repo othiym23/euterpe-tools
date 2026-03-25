@@ -14,17 +14,13 @@ pub struct Config {
 #[derive(Debug, knuffel::Decode)]
 pub struct Global {
     #[knuffel(child, unwrap(argument))]
-    pub scanner: Option<String>,
-    #[knuffel(child, unwrap(argument))]
-    pub tree: Option<String>,
-    #[knuffel(child, unwrap(argument))]
     pub home_base: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub trees_path: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub csvs_path: Option<String>,
     #[knuffel(child, unwrap(argument))]
-    pub state_path: Option<String>,
+    pub db_path: Option<String>,
 }
 
 /// A single scan target.
@@ -78,12 +74,10 @@ mod tests {
     fn parse_full_config() {
         let kdl = r#"
 global {
-    scanner "$HOME/bin/etp-csv"
-    tree "$HOME/bin/etp-tree"
     home-base "/volume1/data/downloads/(music)"
     trees-path "{home-base}/catalogs/trees"
     csvs-path "{trees-path}/csv"
-    state-path "{trees-path}/state"
+    db-path "{trees-path}/db"
 }
 
 scan "music" {
@@ -103,11 +97,11 @@ scan "television" {
         let config = parse_config(kdl, "test.kdl").unwrap();
 
         let global = config.global.unwrap();
-        assert_eq!(global.scanner.as_deref(), Some("$HOME/bin/etp-csv"));
         assert_eq!(
             global.home_base.as_deref(),
             Some("/volume1/data/downloads/(music)")
         );
+        assert_eq!(global.db_path.as_deref(), Some("{trees-path}/db"));
 
         assert_eq!(config.scans.len(), 2);
         assert_eq!(config.scans[0].name, "music");

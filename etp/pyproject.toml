@@ -1,0 +1,18 @@
+[project]
+name = "etp"
+version = "0.1.0"
+description = "Python porcelain for euterpe-tools"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff>=0.9", "pytest>=8", "pyright>=1.1", "ty>=0.0.25"]
+
+[tool.ruff]
+exclude = ["kdl/"]
+
+[tool.pyright]
+exclude = ["kdl/", ".venv/"]
+
+[tool.ty.src]
+exclude = ["kdl/"]

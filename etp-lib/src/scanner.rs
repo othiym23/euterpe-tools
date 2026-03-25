@@ -1,43 +1,71 @@
-use crate::state::{DirEntry, FileEntry, ScanState};
+use crate::db::dao::{self, FileInput};
+use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::Instant;
 use walkdir::WalkDir;
 
 pub struct ScanStats {
     pub dirs_cached: usize,
     pub dirs_scanned: usize,
     pub dirs_removed: usize,
+    pub elapsed_ms: u128,
 }
 
-pub fn scan(
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "scan_to_db", skip_all)
+)]
+pub async fn scan_to_db(
     root: &Path,
-    state: &mut ScanState,
+    pool: &SqlitePool,
+    run_type: &str,
     exclude: &[String],
     verbose: bool,
-) -> io::Result<ScanStats> {
+) -> io::Result<(i64, ScanStats)> {
+    let start = Instant::now();
+
+    if verbose {
+        eprintln!("starting scan: {}", root.display());
+    }
+
+    let root_str = root.to_string_lossy();
+    let scan_id = dao::upsert_scan(pool, run_type, &root_str)
+        .await
+        .map_err(io::Error::other)?;
+
     let mut stats = ScanStats {
         dirs_cached: 0,
         dirs_scanned: 0,
         dirs_removed: 0,
+        elapsed_ms: 0,
     };
+    let mut seen_paths = HashSet::new();
 
-    let mut seen_dirs = std::collections::HashSet::new();
+    // Bulk-load all cached mtimes in one query instead of per-directory SELECTs.
+    let cached_mtimes: HashMap<String, i64> = dao::all_directory_mtimes(pool, scan_id)
+        .await
+        .map_err(io::Error::other)?;
 
-    let walker = WalkDir::new(root)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir()
-                && let Some(name) = e.path().file_name()
-            {
-                return !exclude
-                    .iter()
-                    .any(|ex| ex == name.to_string_lossy().as_ref());
-            }
-            true
-        });
+    // Walk without sorting — order doesn't matter for scanning (output reads
+    // from DB with its own sort). Skipping sort avoids buffering + extra
+    // syscalls per directory. filter_entry skips excluded directories so
+    // walkdir never descends into them (e.g. Synology @eaDir).
+    let exclude_set: HashSet<&str> = exclude.iter().map(|s| s.as_str()).collect();
+    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
+        if e.file_type().is_dir()
+            && let Some(name) = e.file_name().to_str()
+        {
+            return !exclude_set.contains(name);
+        }
+        true
+    });
+
+    let mut pending: Vec<DirUpdate> = Vec::new();
+    const BATCH_SIZE: usize = 256;
 
     for entry in walker {
         let entry = entry.map_err(io::Error::other)?;
@@ -46,50 +74,150 @@ pub fn scan(
         }
 
         let dir_path = entry.path().to_path_buf();
-        let dir_key = dir_path.to_string_lossy().into_owned();
-        seen_dirs.insert(dir_key.clone());
+        let relative = dir_path
+            .strip_prefix(root)
+            .map_err(|e| io::Error::other(format!("path not under root: {}", e)))?
+            .to_string_lossy()
+            .into_owned();
+        seen_paths.insert(relative.clone());
 
         let dir_meta = fs::metadata(&dir_path)?;
         let dir_mtime = dir_meta.mtime();
+        let dir_size = dir_meta.size();
 
-        if let Some(cached) = state.dirs.get(&dir_key)
-            && cached.dir_mtime == dir_mtime
-        {
+        if cached_mtimes.get(&relative) == Some(&dir_mtime) {
             stats.dirs_cached += 1;
+            #[cfg(feature = "profiling")]
+            if (stats.dirs_scanned + stats.dirs_cached).is_multiple_of(1000) {
+                tracing::info!(
+                    scanned = stats.dirs_scanned,
+                    cached = stats.dirs_cached,
+                    "scan_progress"
+                );
+                crate::profiling::sample_proc_metrics("scan_progress");
+            }
             if verbose {
-                eprintln!("cache hit: {}", dir_path.display());
+                eprintln!("directory unchanged, skipping: {}", dir_path.display());
             }
             continue;
         }
 
         stats.dirs_scanned += 1;
-        if verbose {
-            eprintln!("scanning: {}", dir_path.display());
+
+        #[cfg(feature = "profiling")]
+        if (stats.dirs_scanned + stats.dirs_cached).is_multiple_of(1000) {
+            tracing::info!(
+                scanned = stats.dirs_scanned,
+                cached = stats.dirs_cached,
+                "scan_progress"
+            );
+            crate::profiling::sample_proc_metrics("scan_progress");
         }
 
         let files = scan_directory(&dir_path)?;
-        state.dirs.insert(dir_key, DirEntry { dir_mtime, files });
-    }
-
-    // Remove directories that no longer exist
-    let to_remove: Vec<_> = state
-        .dirs
-        .keys()
-        .filter(|k| !seen_dirs.contains(k.as_str()))
-        .cloned()
-        .collect();
-    stats.dirs_removed = to_remove.len();
-    for k in &to_remove {
         if verbose {
-            eprintln!("removed: {k}");
+            eprintln!("scanning: {} ({} files)", dir_path.display(), files.len());
         }
-        state.dirs.remove(k);
+
+        pending.push(DirUpdate {
+            relative,
+            mtime: dir_mtime,
+            size: dir_size,
+            files,
+        });
+
+        if pending.len() >= BATCH_SIZE {
+            flush_pending(pool, scan_id, &mut pending)
+                .await
+                .map_err(io::Error::other)?;
+        }
     }
 
-    Ok(stats)
+    // Flush any remaining directories
+    if !pending.is_empty() {
+        flush_pending(pool, scan_id, &mut pending)
+            .await
+            .map_err(io::Error::other)?;
+    }
+
+    // If nothing was scanned, every directory matched its cached mtime —
+    // the DB is already in sync and no directories can be stale.
+    let removed = if stats.dirs_scanned > 0 {
+        dao::remove_stale_directories(pool, scan_id, &seen_paths)
+            .await
+            .map_err(io::Error::other)?
+    } else {
+        0
+    };
+    stats.dirs_removed = removed;
+
+    dao::finish_scan(pool, scan_id)
+        .await
+        .map_err(io::Error::other)?;
+
+    stats.elapsed_ms = start.elapsed().as_millis();
+
+    Ok((scan_id, stats))
 }
 
-fn scan_directory(dir: &Path) -> io::Result<Vec<FileEntry>> {
+/// Flush a batch of pending directory updates in a single transaction.
+#[cfg_attr(feature = "profiling", tracing::instrument(name = "flush_pending", skip_all, fields(batch_size = pending.len())))]
+async fn flush_pending(
+    pool: &SqlitePool,
+    scan_id: i64,
+    pending: &mut Vec<DirUpdate>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    for update in pending.drain(..) {
+        let dir_id = {
+            let result = sqlx::query(
+                "INSERT INTO directories (scan_id, path, mtime, size)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(scan_id, path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size
+                 RETURNING id",
+            )
+            .bind(scan_id)
+            .bind(&update.relative)
+            .bind(update.mtime)
+            .bind(update.size as i64)
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::Row::get::<i64, _>(&result, 0)
+        };
+
+        sqlx::query("DELETE FROM files WHERE dir_id = ?")
+            .bind(dir_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for f in &update.files {
+            sqlx::query(
+                "INSERT INTO files (dir_id, filename, size, ctime, mtime) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(dir_id)
+            .bind(&f.filename)
+            .bind(f.size as i64)
+            .bind(f.ctime)
+            .bind(f.mtime)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Local struct for batching directory updates in scan_to_db.
+struct DirUpdate {
+    relative: String,
+    mtime: i64,
+    size: u64,
+    files: Vec<dao::FileInput>,
+}
+
+fn scan_directory(dir: &Path) -> io::Result<Vec<FileInput>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -98,7 +226,7 @@ fn scan_directory(dir: &Path) -> io::Result<Vec<FileEntry>> {
             continue;
         }
         let meta = entry.metadata()?;
-        files.push(FileEntry {
+        files.push(FileInput {
             filename: entry.file_name().to_string_lossy().into_owned(),
             size: meta.size(),
             ctime: meta.ctime(),
@@ -107,144 +235,4 @@ fn scan_directory(dir: &Path) -> io::Result<Vec<FileEntry>> {
     }
     files.sort_by(|a, b| a.filename.cmp(&b.filename));
     Ok(files)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_tree(dir: &std::path::Path) {
-        // dir/
-        //   a.txt
-        //   sub/
-        //     b.txt
-        //     deeper/
-        //       c.txt
-        fs::write(dir.join("a.txt"), "hello").unwrap();
-        fs::create_dir_all(dir.join("sub/deeper")).unwrap();
-        fs::write(dir.join("sub/b.txt"), "world").unwrap();
-        fs::write(dir.join("sub/deeper/c.txt"), "deep").unwrap();
-    }
-
-    /// Helper to build a state key from a path (matching what scan() does).
-    fn key(path: &Path) -> String {
-        path.to_string_lossy().into_owned()
-    }
-
-    #[test]
-    fn fresh_scan_all_dirs_scanned() {
-        let tmp = tempfile::tempdir().unwrap();
-        make_tree(tmp.path());
-
-        let mut state = ScanState::default();
-        let stats = scan(tmp.path(), &mut state, &[], false).unwrap();
-
-        // root, sub, sub/deeper = 3 dirs scanned
-        assert_eq!(stats.dirs_scanned, 3);
-        assert_eq!(stats.dirs_cached, 0);
-        assert_eq!(stats.dirs_removed, 0);
-        assert_eq!(state.dirs.len(), 3);
-    }
-
-    #[test]
-    fn second_scan_no_changes_all_cached() {
-        let tmp = tempfile::tempdir().unwrap();
-        make_tree(tmp.path());
-
-        let mut state = ScanState::default();
-        scan(tmp.path(), &mut state, &[], false).unwrap();
-
-        let stats = scan(tmp.path(), &mut state, &[], false).unwrap();
-        assert_eq!(stats.dirs_scanned, 0);
-        assert_eq!(stats.dirs_cached, 3);
-        assert_eq!(stats.dirs_removed, 0);
-    }
-
-    #[test]
-    fn modified_dir_is_rescanned() {
-        let tmp = tempfile::tempdir().unwrap();
-        make_tree(tmp.path());
-
-        let mut state = ScanState::default();
-        scan(tmp.path(), &mut state, &[], false).unwrap();
-
-        // Simulate sub/ having changed by setting its cached mtime to a stale value
-        let sub_key = key(&tmp.path().join("sub"));
-        state.dirs.get_mut(&sub_key).unwrap().dir_mtime -= 1;
-
-        let stats = scan(tmp.path(), &mut state, &[], false).unwrap();
-        // Only sub/ should be rescanned (its cached mtime doesn't match)
-        assert_eq!(stats.dirs_scanned, 1);
-        assert_eq!(stats.dirs_cached, 2);
-        assert_eq!(stats.dirs_removed, 0);
-    }
-
-    #[test]
-    fn remove_subdir_shows_removed() {
-        let tmp = tempfile::tempdir().unwrap();
-        make_tree(tmp.path());
-
-        let mut state = ScanState::default();
-        scan(tmp.path(), &mut state, &[], false).unwrap();
-        assert!(
-            state
-                .dirs
-                .contains_key(&key(&tmp.path().join("sub/deeper")))
-        );
-
-        // Remove sub/deeper/
-        fs::remove_dir_all(tmp.path().join("sub/deeper")).unwrap();
-
-        let stats = scan(tmp.path(), &mut state, &[], false).unwrap();
-        assert_eq!(stats.dirs_removed, 1);
-        assert!(
-            !state
-                .dirs
-                .contains_key(&key(&tmp.path().join("sub/deeper")))
-        );
-    }
-
-    #[test]
-    fn exclude_list_skips_directories() {
-        let tmp = tempfile::tempdir().unwrap();
-        make_tree(tmp.path());
-        // Add an excluded dir
-        fs::create_dir_all(tmp.path().join("@eaDir")).unwrap();
-        fs::write(tmp.path().join("@eaDir/junk.txt"), "junk").unwrap();
-
-        let mut state = ScanState::default();
-        let exclude = vec!["@eaDir".to_string()];
-        let stats = scan(tmp.path(), &mut state, &exclude, false).unwrap();
-
-        assert!(!state.dirs.contains_key(&key(&tmp.path().join("@eaDir"))));
-        // 3 dirs: root, sub, sub/deeper (not @eaDir)
-        assert_eq!(stats.dirs_scanned, 3);
-    }
-
-    #[test]
-    fn files_sorted_by_filename() {
-        let tmp = tempfile::tempdir().unwrap();
-        // Create files in reverse alphabetical order
-        fs::write(tmp.path().join("z.txt"), "z").unwrap();
-        fs::write(tmp.path().join("m.txt"), "m").unwrap();
-        fs::write(tmp.path().join("a.txt"), "a").unwrap();
-
-        let mut state = ScanState::default();
-        scan(tmp.path(), &mut state, &[], false).unwrap();
-
-        let entry = &state.dirs[&key(tmp.path())];
-        let names: Vec<&str> = entry.files.iter().map(|f| f.filename.as_str()).collect();
-        assert_eq!(names, vec!["a.txt", "m.txt", "z.txt"]);
-    }
-
-    #[test]
-    fn empty_directory_produces_empty_files() {
-        let tmp = tempfile::tempdir().unwrap();
-
-        let mut state = ScanState::default();
-        scan(tmp.path(), &mut state, &[], false).unwrap();
-
-        let entry = &state.dirs[&key(tmp.path())];
-        assert!(entry.files.is_empty());
-    }
 }
