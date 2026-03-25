@@ -15,6 +15,7 @@ from pathlib import Path
 VERSION = "0.1.0"
 
 BUILTIN_COMMANDS = {
+    "anime": "Interactive anime collection manager",
     "catalog": "Run catalog scans across configured directory trees",
     "csv": "Incremental filesystem scanner with CSV output",
     "find": "Search indexed files by regex pattern",

@@ -1,0 +1,1570 @@
+#!/usr/bin/env python3.14
+"""Interactive anime collection manager.
+
+Manages an anime collection on a Synology NAS: fetches metadata from AniDB
+or TheTVDB, analyzes source files with mediainfo, constructs properly named
+episode files, and copies them using Btrfs COW reflinks.
+
+Usage:
+    etp-anime --anidb ID [--file PATH] [--source DIR] [--dest DIR] [--dry-run] [-v]
+    etp-anime --tvdb ID  [--file PATH] [--source DIR] [--dest DIR] [--dry-run] [-v]
+    etp-anime --triage   [--source DIR] [--dest DIR] [--dry-run] [-v]
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+VERSION = "0.1.0"
+
+_IS_LINUX = platform.system() == "Linux"
+_CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
+_TVDB_MAX_PAGES = 100  # safety limit for paginated fetches
+
+# ---------------------------------------------------------------------------
+# Default paths (NAS layout)
+# ---------------------------------------------------------------------------
+
+DEFAULT_SOURCE_DIRS = [
+    Path("/volume1/docker/pvr/data/anime"),
+    Path("/volume1/docker/pvr/data/downloads"),
+]
+DEFAULT_DEST_DIR = Path("/volume1/video/anime")
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Episode:
+    number: int
+    ep_type: str  # "regular", "special", "credit", "trailer", "parody", "other"
+    title_en: str
+    title_ja: str
+    special_tag: str  # "S1", "CM01", "NCOP1", "NCED3", "T1", etc.
+
+
+@dataclass
+class AnimeInfo:
+    anidb_id: int | None
+    tvdb_id: int | None
+    title_ja: str
+    title_en: str
+    year: int
+    episodes: list[Episode] = field(default_factory=list)
+
+
+@dataclass
+class AudioTrack:
+    codec: str  # Normalized: "aac", "flac", "opus", "AC3", "DTS", etc.
+    language: str  # ISO 639: "ja", "en", etc.
+    title: str
+    is_commentary: bool
+
+
+@dataclass
+class MediaInfo:
+    video_codec: str  # "HEVC", "AVC", "AV1", "XviD"
+    resolution: str  # "1080p", "720p", "2160p", etc.
+    width: int
+    height: int
+    bit_depth: int
+    hdr_type: str  # "", "HDR", "UHD", "DoVi"
+    audio_tracks: list[AudioTrack] = field(default_factory=list)
+    encoding_lib: str = ""  # "x264", "x265", or ""
+
+
+@dataclass
+class SourceFile:
+    path: Path
+    release_group: str = ""
+    source_type: str = ""  # "BD", "Web"
+    is_remux: bool = False
+    hash_code: str = ""  # e.g. "ABCD1234"
+    parsed_episode: int | None = None
+    parsed_season: int | None = None
+    media: MediaInfo | None = None
+
+
+# ---------------------------------------------------------------------------
+# Mediainfo parsing
+# ---------------------------------------------------------------------------
+
+# Map mediainfo Format values to our normalized codec names
+_VIDEO_CODEC_MAP: dict[str, str] = {
+    "HEVC": "HEVC",
+    "AVC": "AVC",
+    "AV1": "AV1",
+    "MPEG-4 Visual": "XviD",  # Usually XviD for anime
+    "VP9": "VP9",
+    "MPEG Video": "MPEG2",
+}
+
+# Audio codec normalization: open-source lowercase, proprietary uppercase
+_AUDIO_CODEC_MAP: dict[str, str] = {
+    "AAC": "aac",
+    "FLAC": "flac",
+    "Opus": "opus",
+    "Vorbis": "vorbis",
+    "PCM": "pcm",
+    "AC-3": "AC3",
+    "E-AC-3": "AC3",
+    "DTS": "DTS",
+    "DTS-HD": "DTS",
+    "DTS-HD MA": "DTS",
+    "DTS-HD Master Audio": "DTS",
+    "MLP FBA": "DTS",  # TrueHD/Atmos shows as MLP FBA in some cases
+    "TrueHD": "AC3",  # Dolby TrueHD → treat as AC3 family
+    "MP3": "mp3",
+    "MPEG Audio": "mp3",
+    "mp2": "mp2",
+}
+
+
+def _resolution_shorthand(width: int, height: int) -> str:
+    """Convert width x height to shorthand like '1080p', '720p', '4K'."""
+    if height >= 2160 or width >= 3840:
+        return "4K"
+    if height >= 1080 or width >= 1920:
+        return "1080p"
+    if height >= 720 or width >= 1280:
+        return "720p"
+    if height >= 540 or width >= 960:
+        return "540p"
+    if height >= 480 or width >= 720:
+        return "480p"
+    return f"{height}p"
+
+
+def _detect_hdr(video_track: dict) -> str:
+    """Detect HDR type from mediainfo video track."""
+    hdr_format = video_track.get("HDR_Format", "")
+    hdr_compat = video_track.get("HDR_Format_Compatibility", "")
+    transfer = video_track.get("transfer_characteristics", "")
+
+    if "Dolby Vision" in hdr_format:
+        if "HDR10" in hdr_compat:
+            return "DoVi,HDR"
+        return "DoVi"
+
+    if "HDR10+" in hdr_format or "HDR10" in hdr_format:
+        return "HDR"
+
+    if "SMPTE ST 2084" in transfer or "PQ" in transfer:
+        return "HDR"
+
+    if "HLG" in hdr_format or "HLG" in transfer:
+        return "HDR"
+
+    # For 4K content without explicit HDR metadata
+    return ""
+
+
+def _normalize_audio_codec(format_str: str) -> str:
+    """Normalize mediainfo audio Format to our naming convention."""
+    # Try exact match first
+    if format_str in _AUDIO_CODEC_MAP:
+        return _AUDIO_CODEC_MAP[format_str]
+
+    # Try prefix matching for variants like "DTS XLL" etc.
+    for prefix in ("DTS", "AC-3", "E-AC-3", "AAC", "MLP"):
+        if format_str.startswith(prefix):
+            return _AUDIO_CODEC_MAP.get(prefix, format_str)
+
+    return format_str.lower()
+
+
+def _detect_encoding_lib(video_track: dict) -> str:
+    """Detect x264/x265 from encoding library metadata."""
+    lib_name = video_track.get("Encoded_Library_Name", "")
+    lib_full = video_track.get("Encoded_Library", "")
+    writing_lib = video_track.get("Writing_library", "")
+
+    for field_val in (lib_name, lib_full, writing_lib):
+        val = field_val.lower()
+        if "x264" in val or "libx264" in val:
+            return "x264"
+        if "x265" in val or "libx265" in val:
+            return "x265"
+
+    return ""
+
+
+def parse_mediainfo_json(data: dict) -> MediaInfo:
+    """Parse mediainfo JSON output into a MediaInfo dataclass."""
+    tracks = data.get("media", {}).get("track", [])
+
+    video_codec = ""
+    resolution = ""
+    width = 0
+    height = 0
+    bit_depth = 8
+    hdr_type = ""
+    encoding_lib = ""
+    audio_tracks: list[AudioTrack] = []
+
+    for track in tracks:
+        track_type = track.get("@type", "")
+
+        if track_type == "Video":
+            raw_format: str = track.get("Format", "")
+            video_codec = _VIDEO_CODEC_MAP.get(raw_format, raw_format)
+            width = int(track.get("Width", 0))
+            height = int(track.get("Height", 0))
+            bit_depth = int(track.get("BitDepth", 8))
+            resolution = _resolution_shorthand(width, height)
+            hdr_type = _detect_hdr(track)
+            encoding_lib = _detect_encoding_lib(track)
+
+        elif track_type == "Audio":
+            raw_format = track.get("Format", "")
+            codec = _normalize_audio_codec(raw_format)
+            language = track.get("Language", "")
+            title = track.get("Title", "")
+            is_commentary = bool(re.search(r"\bcommentary\b", title, re.IGNORECASE))
+            audio_tracks.append(
+                AudioTrack(
+                    codec=codec,
+                    language=language,
+                    title=title,
+                    is_commentary=is_commentary,
+                )
+            )
+
+    return MediaInfo(
+        video_codec=video_codec,
+        resolution=resolution,
+        width=width,
+        height=height,
+        bit_depth=bit_depth,
+        hdr_type=hdr_type,
+        audio_tracks=audio_tracks,
+        encoding_lib=encoding_lib,
+    )
+
+
+def analyze_file(path: Path) -> MediaInfo:
+    """Run mediainfo on a file and return parsed MediaInfo."""
+    result = subprocess.run(
+        ["mediainfo", "--Output=JSON", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+    return parse_mediainfo_json(data)
+
+
+# ---------------------------------------------------------------------------
+# Source filename parsing
+# ---------------------------------------------------------------------------
+
+# Release group in brackets at start: [SubGroup]
+_RE_RELEASE_GROUP = re.compile(r"^\[([^\]]+)\]")
+
+# Episode number patterns (ordered by specificity)
+_RE_EPISODE_S_E = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,4})", re.IGNORECASE)
+_RE_EPISODE_DASH = re.compile(r" - (\d{1,4})(?:\s|$|\[|\(|\.)")
+_RE_EPISODE_EP = re.compile(r"(?:EP?|ep?)(\d{1,4})(?:\s|$|\[|\.])", re.IGNORECASE)
+_RE_EPISODE_DOT = re.compile(r"\.S(\d{1,2})E(\d{1,4})\.", re.IGNORECASE)
+
+# CRC32 hash in brackets: [ABCD1234]
+_RE_HASH = re.compile(r"\[([0-9A-Fa-f]{8})\]")
+
+# Source type detection
+_RE_BD = re.compile(r"\b(?:BD|Blu-?Ray|BDRip|BDREMUX|Bluray)\b", re.IGNORECASE)
+_RE_WEB = re.compile(r"\b(?:WEB|WEBRip|WEB-DL|CR|AMZN|DSNP|HULU|NF)\b", re.IGNORECASE)
+
+# REMUX detection
+_RE_REMUX = re.compile(r"REMUX", re.IGNORECASE)
+
+# Media file extensions
+_MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi"}
+
+# Series name extraction patterns
+_RE_LEADING_GROUP = re.compile(r"^\[([^\]]+)\]\s*")
+_RE_TRAILING_HASH = re.compile(r"\s*\[[0-9A-Fa-f]{8}\]")
+_RE_EPISODE_SUFFIX = re.compile(r"\s*-\s*\d+\s*[\[\(].*")
+_RE_S_E_SUFFIX = re.compile(r"\s*-\s*[Ss]\d+[Ee]\d+.*")
+_RE_DOT_S_E = re.compile(r"\.[Ss]\d+[Ee]\d+.*")
+_RE_DASH_EP_END = re.compile(r"\s*-\s*\d+\s*$")
+
+
+def parse_source_filename(filename: str) -> SourceFile:
+    """Parse an anime release filename into a SourceFile."""
+    sf = SourceFile(path=Path(filename))
+
+    # Release group
+    m = _RE_RELEASE_GROUP.match(filename)
+    if m:
+        sf.release_group = m.group(1)
+
+    # Episode number — try patterns in order of specificity
+    m = _RE_EPISODE_DOT.search(filename)
+    if m:
+        sf.parsed_season = int(m.group(1))
+        sf.parsed_episode = int(m.group(2))
+    else:
+        m = _RE_EPISODE_S_E.search(filename)
+        if m:
+            sf.parsed_season = int(m.group(1))
+            sf.parsed_episode = int(m.group(2))
+        else:
+            m = _RE_EPISODE_DASH.search(filename)
+            if m:
+                sf.parsed_episode = int(m.group(1))
+            else:
+                m = _RE_EPISODE_EP.search(filename)
+                if m:
+                    sf.parsed_episode = int(m.group(1))
+
+    # Hash code
+    m = _RE_HASH.search(filename)
+    if m:
+        sf.hash_code = m.group(1)
+
+    # Source type
+    if _RE_BD.search(filename):
+        sf.source_type = "BD"
+    elif _RE_WEB.search(filename):
+        sf.source_type = "Web"
+
+    # REMUX
+    sf.is_remux = bool(_RE_REMUX.search(filename))
+
+    return sf
+
+
+# ---------------------------------------------------------------------------
+# Metadata block and episode filename formatting
+# ---------------------------------------------------------------------------
+
+
+def build_metadata_block(source: SourceFile) -> str:
+    """Build the [...] metadata block for an episode filename.
+
+    Format: ``release-group source,(REMUX,)res,codec,...``
+    The release group and source type are space-separated; all subsequent
+    fields are comma-separated.
+    """
+    if source.media is None:
+        return ""
+
+    media = source.media
+
+    # Prefix part: "group source" (space-separated)
+    prefix_parts: list[str] = []
+    if source.release_group:
+        prefix_parts.append(source.release_group)
+    if source.source_type:
+        prefix_parts.append(source.source_type)
+    prefix = " ".join(prefix_parts)
+
+    # Comma-separated technical metadata
+    tech: list[str] = []
+
+    # REMUX
+    if source.is_remux:
+        tech.append("REMUX")
+
+    # Resolution
+    if media.resolution:
+        tech.append(media.resolution)
+
+    # Video codec
+    if media.video_codec:
+        tech.append(media.video_codec)
+
+    # HDR/UHD/DoVi
+    if media.hdr_type:
+        tech.append(media.hdr_type)
+
+    # 10bit (always for HEVC, also for other codecs with 10-bit)
+    if media.bit_depth >= 10:
+        tech.append("10bit")
+
+    # Encoding library (x264/x265) — only when detected
+    if media.encoding_lib:
+        tech.append(media.encoding_lib)
+
+    # Audio codecs and language detection in a single pass
+    non_commentary = [t for t in media.audio_tracks if not t.is_commentary]
+    if non_commentary:
+        seen: set[str] = set()
+        codecs: list[str] = []
+        languages: set[str] = set()
+        for t in non_commentary:
+            if t.codec not in seen:
+                seen.add(t.codec)
+                codecs.append(t.codec)
+            if t.language:
+                languages.add(t.language)
+        tech.append("+".join(codecs))
+
+        has_ja = "ja" in languages or "jpn" in languages
+        has_en = "en" in languages or "eng" in languages
+        other_langs = languages - {"ja", "jpn", "en", "eng"}
+
+        if has_ja and has_en and other_langs:
+            tech.append("multi-audio")
+        elif has_ja and has_en:
+            tech.append("dual-audio")
+
+    tech_str = ",".join(tech)
+
+    if prefix and tech_str:
+        return f"{prefix},{tech_str}"
+    return prefix or tech_str
+
+
+def format_episode_filename(
+    concise_name: str,
+    season: int,
+    episode: int,
+    episode_name: str,
+    source: SourceFile,
+    is_movie: bool = False,
+    movie_dir_name: str = "",
+    is_special: bool = False,
+    special_tag: str = "",
+) -> str:
+    """Build the full episode filename."""
+    ext = source.path.suffix or ".mkv"
+    metadata = build_metadata_block(source)
+    meta_str = f" [{metadata}]" if metadata else ""
+    hash_str = f" [{source.hash_code}]" if source.hash_code else ""
+
+    if is_movie and not is_special:
+        # Single-file movie: `DirName - complete movie [metadata] [hash].ext`
+        return f"{movie_dir_name} - complete movie{meta_str}{hash_str}{ext}"
+
+    if is_special:
+        # Special: `Name - TAG - Episode Name [metadata] [hash].ext`
+        if episode_name:
+            return (
+                f"{concise_name} - {special_tag} - "
+                f"{episode_name}{meta_str}{hash_str}{ext}"
+            )
+        return f"{concise_name} - {special_tag}{meta_str}{hash_str}{ext}"
+
+    # Regular episode: `Name - sXeYY - Episode Name [metadata] [hash].ext`
+    ep_tag = f"s{season}e{episode:02d}"
+    if episode_name:
+        return f"{concise_name} - {ep_tag} - {episode_name}{meta_str}{hash_str}{ext}"
+    return f"{concise_name} - {ep_tag}{meta_str}{hash_str}{ext}"
+
+
+# ---------------------------------------------------------------------------
+# Directory naming
+# ---------------------------------------------------------------------------
+
+
+def format_series_dirname(title_ja: str, title_en: str, year: int) -> str:
+    """Build the series directory name."""
+    return f"{title_ja} [{title_en}] ({year})"
+
+
+def scan_dest_ids(dest: Path) -> dict[tuple[str, int], Path]:
+    """Scan destination directory for existing series with ID files.
+
+    Returns a map of ``("anidb", id)`` or ``("tvdb", id)`` to the series
+    directory path.
+    """
+    result: dict[tuple[str, int], Path] = {}
+    if not dest.is_dir():
+        return result
+
+    for entry in dest.iterdir():
+        if not entry.is_dir():
+            continue
+        for id_filename, provider in (("anidb.id", "anidb"), ("tvdb.id", "tvdb")):
+            id_file = entry / id_filename
+            if id_file.is_file():
+                try:
+                    raw = id_file.read_text(encoding="utf-8").strip()
+                    if raw:
+                        result[(provider, int(raw))] = entry
+                except (ValueError, OSError):
+                    pass
+    return result
+
+
+def _ensure_subdirs(
+    series_dir: Path,
+    seasons: list[int] | None = None,
+    has_specials: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """Create season/specials subdirectories if they don't already exist."""
+    if seasons is None:
+        seasons = [1]
+    for s in seasons:
+        season_dir = series_dir / f"Season {s:02d}"
+        if dry_run:
+            print(f"  [dry-run] mkdir -p {season_dir}")
+        else:
+            season_dir.mkdir(exist_ok=True)
+
+    if has_specials:
+        specials_dir = series_dir / "Specials"
+        if dry_run:
+            print(f"  [dry-run] mkdir -p {specials_dir}")
+        else:
+            specials_dir.mkdir(exist_ok=True)
+
+
+def _write_id_file(series_dir: Path, info: AnimeInfo, dry_run: bool = False) -> None:
+    """Write anidb.id / tvdb.id into the series directory."""
+    if info.anidb_id is not None:
+        id_file = series_dir / "anidb.id"
+        if dry_run:
+            print(f"  [dry-run] write {id_file} <- {info.anidb_id}")
+        else:
+            try:
+                id_file.open("x").write(str(info.anidb_id) + "\n")
+            except FileExistsError:
+                pass
+
+    if info.tvdb_id is not None:
+        id_file = series_dir / "tvdb.id"
+        if dry_run:
+            print(f"  [dry-run] write {id_file} <- {info.tvdb_id}")
+        else:
+            try:
+                id_file.open("x").write(str(info.tvdb_id) + "\n")
+            except FileExistsError:
+                pass
+
+
+def create_series_directory(
+    base: Path,
+    info: AnimeInfo,
+    seasons: list[int] | None = None,
+    has_specials: bool = False,
+    dry_run: bool = False,
+) -> Path:
+    """Create the series directory structure and ID file."""
+    dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
+    series_dir = base / dirname
+
+    if dry_run:
+        print(f"  [dry-run] mkdir -p {series_dir}")
+    else:
+        series_dir.mkdir(parents=True, exist_ok=True)
+
+    _ensure_subdirs(series_dir, seasons, has_specials, dry_run)
+    _write_id_file(series_dir, info, dry_run)
+    return series_dir
+
+
+def resolve_series_directory(
+    dest: Path,
+    info: AnimeInfo,
+    id_map: dict[tuple[str, int], Path] | None = None,
+    seasons: list[int] | None = None,
+    has_specials: bool = False,
+    dry_run: bool = False,
+) -> Path:
+    """Find or create the series directory using a 3-step lookup.
+
+    1. Check *id_map* for a matching AniDB/TheTVDB ID → use that directory
+    2. Check if the conventionally-named directory already exists
+    3. Prompt the user to pick an existing directory or create a new one
+    """
+    # Step 1: ID match
+    if id_map:
+        if info.anidb_id is not None:
+            match = id_map.get(("anidb", info.anidb_id))
+            if match is not None:
+                print(f"  Found existing directory by AniDB ID: {match.name}")
+                _ensure_subdirs(match, seasons, has_specials, dry_run)
+                return match
+        if info.tvdb_id is not None:
+            match = id_map.get(("tvdb", info.tvdb_id))
+            if match is not None:
+                print(f"  Found existing directory by TheTVDB ID: {match.name}")
+                _ensure_subdirs(match, seasons, has_specials, dry_run)
+                return match
+
+    # Step 2: conventional name match
+    dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
+    conventional = dest / dirname
+    if conventional.is_dir():
+        print(f"  Found existing directory: {conventional.name}")
+        _ensure_subdirs(conventional, seasons, has_specials, dry_run)
+        _write_id_file(conventional, info, dry_run)
+        return conventional
+
+    # Step 3: prompt user
+    print(f"\n  No existing directory found for: {dirname}")
+    raw = prompt_value(
+        "  Enter path to existing directory, or press Enter to create new", ""
+    )
+    if raw:
+        manual_dir = Path(raw)
+        if not manual_dir.is_absolute():
+            manual_dir = dest / manual_dir
+        if manual_dir.is_dir():
+            print(f"  Using: {manual_dir.name}")
+            _ensure_subdirs(manual_dir, seasons, has_specials, dry_run)
+            _write_id_file(manual_dir, info, dry_run)
+            return manual_dir
+        else:
+            print(f"  Directory not found: {manual_dir}")
+            print("  Creating conventional directory instead.")
+
+    return create_series_directory(dest, info, seasons, has_specials, dry_run)
+
+
+# ---------------------------------------------------------------------------
+# AniDB HTTP API client
+# ---------------------------------------------------------------------------
+
+_ANIDB_API_URL = "http://api.anidb.net:9001/httpapi"
+_anidb_last_request: float = 0.0
+
+# AniDB episode type constants
+_ANIDB_EP_REGULAR = "1"
+_ANIDB_EP_SPECIAL = "2"
+_ANIDB_EP_CREDIT = "3"
+_ANIDB_EP_TRAILER = "4"
+_ANIDB_EP_PARODY = "5"
+_ANIDB_EP_OTHER = "6"
+
+_ANIDB_EP_TYPE_MAP = {
+    _ANIDB_EP_REGULAR: "regular",
+    _ANIDB_EP_SPECIAL: "special",
+    _ANIDB_EP_CREDIT: "credit",
+    _ANIDB_EP_TRAILER: "trailer",
+    _ANIDB_EP_PARODY: "parody",
+    _ANIDB_EP_OTHER: "other",
+}
+
+# AniDB special tag prefixes by episode type
+_ANIDB_TAG_PREFIX = {
+    _ANIDB_EP_SPECIAL: "S",
+    _ANIDB_EP_CREDIT: "C",
+    _ANIDB_EP_TRAILER: "T",
+    _ANIDB_EP_PARODY: "P",
+    _ANIDB_EP_OTHER: "O",
+}
+
+
+def _cache_dir(provider: str) -> Path:
+    """Return a cache directory under $XDG_CACHE_HOME/etp/<provider>."""
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    cache = base / "etp" / provider
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
+def _anidb_rate_limit() -> None:
+    """Enforce minimum 2-second gap between AniDB requests."""
+    global _anidb_last_request
+    now = time.monotonic()
+    elapsed = now - _anidb_last_request
+    if _anidb_last_request > 0 and elapsed < 2.0:
+        time.sleep(2.0 - elapsed)
+    _anidb_last_request = time.monotonic()
+
+
+def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
+    """Parse AniDB anime XML into an AnimeInfo."""
+    root = ET.fromstring(xml_text)
+
+    # Check for error
+    if root.tag == "error":
+        raise ValueError(f"AniDB API error: {root.text}")
+
+    # Titles — find Japanese and English in a single pass
+    title_ja = ""
+    title_en = ""
+    main_title_fallback = ""
+    for title_elem in root.findall("titles/title"):
+        lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
+        ttype = title_elem.get("type", "")
+        text = (title_elem.text or "").strip()
+
+        if ttype == "main" and not main_title_fallback:
+            main_title_fallback = text
+
+        if lang == "ja" and ttype == "official" and not title_ja:
+            title_ja = text
+        elif lang == "ja" and ttype == "main" and not title_ja:
+            title_ja = text
+        elif lang == "x-jat" and ttype == "main" and not title_ja:
+            title_ja = text
+
+        if lang == "en" and ttype == "official" and not title_en:
+            title_en = text
+        elif lang == "en" and ttype == "main" and not title_en:
+            title_en = text
+
+    if not title_ja:
+        title_ja = main_title_fallback
+
+    # Year from startdate
+    year = 0
+    startdate = root.findtext("startdate", "")
+    if startdate and len(startdate) >= 4:
+        try:
+            year = int(startdate[:4])
+        except ValueError:
+            pass
+
+    # Episodes
+    episodes: list[Episode] = []
+    for ep_elem in root.findall("episodes/episode"):
+        epno_elem = ep_elem.find("epno")
+        if epno_elem is None:
+            continue
+
+        ep_type_str = epno_elem.get("type", _ANIDB_EP_REGULAR)
+        ep_type = _ANIDB_EP_TYPE_MAP.get(ep_type_str, "other")
+        epno_text = (epno_elem.text or "").strip()
+
+        # Parse episode number
+        ep_number = 0
+        # Regular episodes are just numbers; specials have letter prefixes
+        num_match = re.search(r"(\d+)", epno_text)
+        if num_match:
+            ep_number = int(num_match.group(1))
+
+        # Build special tag
+        special_tag = ""
+        if ep_type_str != _ANIDB_EP_REGULAR:
+            # Use the raw epno text as the tag (e.g., "S1", "C1", "T1")
+            special_tag = epno_text
+
+        # Episode titles
+        title_en_ep = ""
+        title_ja_ep = ""
+        for title_elem in ep_elem.findall("title"):
+            lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
+            text = (title_elem.text or "").strip()
+            if lang == "en" and not title_en_ep:
+                title_en_ep = text
+            elif lang == "ja" and not title_ja_ep:
+                title_ja_ep = text
+
+        episodes.append(
+            Episode(
+                number=ep_number,
+                ep_type=ep_type,
+                title_en=title_en_ep,
+                title_ja=title_ja_ep,
+                special_tag=special_tag,
+            )
+        )
+
+    # Sort episodes: regulars by number, then specials by tag
+    episodes.sort(key=lambda e: (e.ep_type != "regular", e.number))
+
+    return AnimeInfo(
+        anidb_id=aid,
+        tvdb_id=None,
+        title_ja=title_ja,
+        title_en=title_en,
+        year=year,
+        episodes=episodes,
+    )
+
+
+def fetch_anidb_anime(
+    aid: int,
+    client: str,
+    clientver: int,
+    no_cache: bool = False,
+) -> AnimeInfo:
+    """Fetch anime info from AniDB HTTP API with caching."""
+    cache_file = _cache_dir("anidb") / f"{aid}.xml"
+
+    # Check cache (24h validity)
+    if not no_cache and cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < _CACHE_MAX_AGE_SECONDS:
+            xml_text = cache_file.read_text(encoding="utf-8")
+            return _parse_anidb_xml(xml_text, aid)
+
+    # Fetch from API
+    _anidb_rate_limit()
+
+    params = f"request=anime&client={client}&clientver={clientver}&protover=1&aid={aid}"
+    url = f"{_ANIDB_API_URL}?{params}"
+
+    req = urllib.request.Request(url)
+    req.add_header("Accept-Encoding", "gzip")
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+        # Decompress if gzip
+        if resp.headers.get("Content-Encoding") == "gzip":
+            raw = gzip.decompress(raw)
+        xml_text = raw.decode("utf-8")
+
+    # Cache the response
+    cache_file.write_text(xml_text, encoding="utf-8")
+
+    return _parse_anidb_xml(xml_text, aid)
+
+
+# ---------------------------------------------------------------------------
+# TheTVDB v4 API client
+# ---------------------------------------------------------------------------
+
+_TVDB_API_BASE = "https://api4.thetvdb.com/v4"
+
+
+def _tvdb_request(endpoint: str, token: str) -> dict:
+    """Make an authenticated GET request to TheTVDB v4 API."""
+    url = f"{_TVDB_API_BASE}{endpoint}"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/json")
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def tvdb_login(api_key: str) -> str:
+    """Authenticate with TheTVDB and return a bearer token."""
+    url = f"{_TVDB_API_BASE}/login"
+    payload = json.dumps({"apikey": api_key}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data["data"]["token"]
+
+
+def _parse_tvdb_json(
+    series_data: dict, episodes_data: list[dict], series_id: int
+) -> AnimeInfo:
+    """Parse TheTVDB series + episodes JSON into AnimeInfo."""
+    name = series_data.get("name", "")
+    year_str = series_data.get("year", "")
+    year = int(year_str) if year_str else 0
+
+    # First aired date as fallback for year
+    if not year:
+        first_aired = series_data.get("firstAired", "")
+        if first_aired and len(first_aired) >= 4:
+            try:
+                year = int(first_aired[:4])
+            except ValueError:
+                pass
+
+    episodes: list[Episode] = []
+    for ep in episodes_data:
+        season_num = ep.get("seasonNumber", 1)
+        ep_num = ep.get("number", 0)
+        ep_name = ep.get("name", "")
+
+        is_special = season_num == 0
+        ep_type = "special" if is_special else "regular"
+        special_tag = f"S{ep_num}" if is_special else ""
+
+        episodes.append(
+            Episode(
+                number=ep_num,
+                ep_type=ep_type,
+                title_en=ep_name,
+                title_ja="",
+                special_tag=special_tag,
+            )
+        )
+
+    episodes.sort(key=lambda e: (e.ep_type != "regular", e.number))
+
+    return AnimeInfo(
+        anidb_id=None,
+        tvdb_id=series_id,
+        title_ja="",  # TheTVDB doesn't reliably have Japanese titles
+        title_en=name,
+        year=year,
+        episodes=episodes,
+    )
+
+
+def fetch_tvdb_series(
+    series_id: int,
+    api_key: str,
+    no_cache: bool = False,
+) -> AnimeInfo:
+    """Fetch series info from TheTVDB with caching."""
+    cache_file = _cache_dir("tvdb") / f"{series_id}.json"
+
+    # Check cache (24h validity)
+    if not no_cache and cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < _CACHE_MAX_AGE_SECONDS:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            return _parse_tvdb_json(cached["series"], cached["episodes"], series_id)
+
+    # Login and fetch
+    token = tvdb_login(api_key)
+
+    series_resp = _tvdb_request(f"/series/{series_id}", token)
+    series_data = series_resp.get("data", {})
+
+    all_episodes: list[dict] = []
+    page = 0
+    while page < _TVDB_MAX_PAGES:
+        ep_resp = _tvdb_request(
+            f"/series/{series_id}/episodes/default?page={page}", token
+        )
+        ep_data = ep_resp.get("data", {})
+        ep_list = ep_data.get("episodes", [])
+        if not ep_list:
+            break
+        all_episodes.extend(ep_list)
+        page += 1
+
+    # Cache the response
+    cache_data = {"series": series_data, "episodes": all_episodes}
+    cache_file.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+
+    return _parse_tvdb_json(series_data, all_episodes, series_id)
+
+
+# ---------------------------------------------------------------------------
+# File operations
+# ---------------------------------------------------------------------------
+
+
+def copy_reflink(src: Path, dst: Path, dry_run: bool = False) -> bool:
+    """Copy a file using Btrfs COW reflink."""
+    if dry_run:
+        print(f"  [dry-run] cp --reflink=always {src} -> {dst}")
+        return True
+
+    # Ensure destination directory exists
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    if _IS_LINUX:
+        cmd = ["cp", "--reflink=always", str(src), str(dst)]
+    else:
+        print(
+            f"  warning: reflinks not supported on {platform.system()}, "
+            f"using regular copy"
+        )
+        cmd = ["cp", str(src), str(dst)]
+
+    try:
+        subprocess.run(cmd, check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  error: copy failed: {e}", file=sys.stderr)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Interactive prompts
+# ---------------------------------------------------------------------------
+
+
+def prompt_value(label: str, default: str = "") -> str:
+    """Prompt for a value with an optional default."""
+    if default:
+        raw = input(f"{label} [{default}]: ").strip()
+        return raw if raw else default
+    return input(f"{label}: ").strip()
+
+
+def prompt_confirm(message: str, default: bool = True) -> bool:
+    """Prompt for yes/no confirmation."""
+    suffix = "[Y/n]" if default else "[y/N]"
+    raw = input(f"{message} {suffix}: ").strip().lower()
+    if not raw:
+        return default
+    return raw in ("y", "yes")
+
+
+def prompt_choice(label: str, options: list[str]) -> tuple[int, str]:
+    """Display numbered options and return (index, value)."""
+    print(f"\n{label}:")
+    for i, opt in enumerate(options, 1):
+        print(f"  {i}) {opt}")
+    while True:
+        raw = input(f"Choice [1-{len(options)}]: ").strip()
+        try:
+            idx = int(raw)
+            if 1 <= idx <= len(options):
+                return idx - 1, options[idx - 1]
+        except ValueError:
+            pass
+        print(f"  Please enter a number between 1 and {len(options)}")
+
+
+# ---------------------------------------------------------------------------
+# Source file discovery
+# ---------------------------------------------------------------------------
+
+
+def _iter_media_files(source_dirs: list[Path]) -> list[Path]:
+    """Walk source directories (one level deep) for media files."""
+    results: list[Path] = []
+    for source_dir in source_dirs:
+        if not source_dir.is_dir():
+            continue
+        for entry in source_dir.iterdir():
+            if entry.is_file() and entry.suffix.lower() in _MEDIA_EXTENSIONS:
+                results.append(entry)
+            elif entry.is_dir():
+                for f in entry.iterdir():
+                    if f.is_file() and f.suffix.lower() in _MEDIA_EXTENSIONS:
+                        results.append(f)
+    return results
+
+
+def find_source_files(
+    source_dirs: list[Path],
+    search_term: str,
+) -> list[Path]:
+    """Find media files in source directories matching a search term."""
+    term_lower = search_term.lower()
+    results: list[Path] = []
+
+    for f in _iter_media_files(source_dirs):
+        if term_lower in f.name.lower():
+            results.append(f)
+        elif term_lower in f.parent.name.lower():
+            results.append(f)
+
+    results.sort()
+    return results
+
+
+def _scan_and_group(source_dirs: list[Path]) -> dict[str, list[Path]]:
+    """Scan source dirs for media files and group by detected series name.
+
+    Returns ``{display_name: [file_paths]}`` ordered by count descending.
+    """
+    key_to_paths: dict[str, list[Path]] = {}
+    key_to_names: dict[str, list[str]] = {}
+
+    for f in _iter_media_files(source_dirs):
+        raw_name = _extract_series_name(f.name)
+        key = _normalize_for_grouping(raw_name)
+        key_to_paths.setdefault(key, []).append(f)
+        key_to_names.setdefault(key, []).append(raw_name)
+
+    # Pick the most common display name per group
+    result: dict[str, list[Path]] = {}
+    for key, paths in sorted(key_to_paths.items()):
+        names = key_to_names[key]
+        display_name = Counter(names).most_common(1)[0][0] if names else key
+        if not display_name:
+            display_name = "[ungrouped]"
+        result[display_name] = sorted(paths)
+
+    # Sort by count descending
+    return dict(sorted(result.items(), key=lambda kv: -len(kv[1])))
+
+
+# ---------------------------------------------------------------------------
+# CLI and main workflow
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser."""
+    p = argparse.ArgumentParser(
+        prog="etp-anime",
+        description="Interactive anime collection manager",
+    )
+    p.add_argument("--version", "-V", action="version", version=VERSION)
+
+    source_group = p.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--anidb", type=int, metavar="ID", help="AniDB anime ID")
+    source_group.add_argument(
+        "--tvdb", type=int, metavar="ID", help="TheTVDB series ID"
+    )
+    source_group.add_argument(
+        "--triage",
+        action="store_true",
+        default=False,
+        help="Triage mode: scan source dirs, group by series, process interactively",
+    )
+
+    p.add_argument("--file", type=Path, metavar="PATH", help="Single file mode")
+    p.add_argument(
+        "--source",
+        type=Path,
+        action="append",
+        metavar="DIR",
+        help="Source directory (repeatable; default: NAS download dirs)",
+    )
+    p.add_argument(
+        "--dest",
+        type=Path,
+        metavar="DIR",
+        default=DEFAULT_DEST_DIR,
+        help=f"Destination base directory (default: {DEFAULT_DEST_DIR})",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without copying",
+    )
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass API response cache",
+    )
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    return p
+
+
+def fetch_anime_info(
+    anidb_id: int | None = None,
+    tvdb_id: int | None = None,
+    no_cache: bool = False,
+) -> AnimeInfo:
+    """Fetch anime info by AniDB or TheTVDB ID.
+
+    Exactly one of *anidb_id* or *tvdb_id* must be provided.
+    """
+    if anidb_id is not None:
+        client = os.environ.get("ANIDB_CLIENT", "")
+        clientver_str = os.environ.get("ANIDB_CLIENTVER", "")
+        if not client or not clientver_str:
+            print(
+                "error: ANIDB_CLIENT and ANIDB_CLIENTVER environment "
+                "variables are required for AniDB lookup",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        clientver = int(clientver_str)
+        print(f"Fetching AniDB anime {anidb_id}...")
+        return fetch_anidb_anime(anidb_id, client, clientver, no_cache=no_cache)
+    elif tvdb_id is not None:
+        api_key = os.environ.get("TVDB_API_KEY", "")
+        if not api_key:
+            print(
+                "error: TVDB_API_KEY environment variable is required for TheTVDB lookup",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Fetching TheTVDB series {tvdb_id}...")
+        return fetch_tvdb_series(tvdb_id, api_key, no_cache=no_cache)
+    else:
+        raise ValueError("Either anidb_id or tvdb_id must be provided")
+
+
+def _fetch_anime_info(args: argparse.Namespace) -> AnimeInfo:
+    """Fetch anime info based on CLI args."""
+    return fetch_anime_info(
+        anidb_id=args.anidb, tvdb_id=args.tvdb, no_cache=args.no_cache
+    )
+
+
+def _confirm_anime_info(info: AnimeInfo) -> AnimeInfo:
+    """Interactively confirm and edit anime metadata."""
+    print("\nAnime metadata:")
+    print(f"  Japanese title: {info.title_ja}")
+    print(f"  English title:  {info.title_en}")
+    print(f"  Year:           {info.year}")
+
+    regular_eps = [e for e in info.episodes if e.ep_type == "regular"]
+    special_eps = [e for e in info.episodes if e.ep_type != "regular"]
+    print(f"  Episodes:       {len(regular_eps)} regular, {len(special_eps)} special")
+
+    if not prompt_confirm("\nUse these values?"):
+        info.title_ja = prompt_value("Japanese title", info.title_ja)
+        info.title_en = prompt_value("English title", info.title_en)
+        year_str = prompt_value("Year", str(info.year))
+        info.year = int(year_str) if year_str.isdigit() else info.year
+
+    return info
+
+
+_RE_NON_ALNUM = re.compile(r"[^a-z0-9]")
+
+
+def _strip_series_name(stem: str) -> str:
+    """Strip release metadata from a filename stem to get a series name."""
+    name = _RE_LEADING_GROUP.sub("", stem)
+    name = _RE_TRAILING_HASH.sub("", name)
+    name = _RE_EPISODE_SUFFIX.sub("", name)
+    name = _RE_S_E_SUFFIX.sub("", name)
+    name = _RE_DOT_S_E.sub("", name)
+    name = _RE_DASH_EP_END.sub("", name)
+    return name.strip(" -")
+
+
+def _extract_series_name(filename: str) -> str:
+    """Extract a candidate series name from a single filename for grouping."""
+    return _strip_series_name(Path(filename).stem)
+
+
+def _normalize_for_grouping(name: str) -> str:
+    """Normalize a series name for grouping: lowercase, strip non-alnum."""
+    return _RE_NON_ALNUM.sub("", name.lower())
+
+
+def _extract_concise_name(source_files: list[SourceFile]) -> str:
+    """Try to extract a concise series name from source filenames."""
+    if not source_files:
+        return ""
+    return _strip_series_name(source_files[0].path.stem)
+
+
+def _process_file(
+    source: SourceFile,
+    info: AnimeInfo,
+    concise_name: str,
+    series_dir: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> bool:
+    """Process a single source file: analyze, name, copy."""
+    print(f"\n--- {source.path.name} ---")
+
+    # Analyze with mediainfo
+    try:
+        source.media = analyze_file(source.path)
+        if verbose:
+            m = source.media
+            print(
+                f"  Video: {m.video_codec} {m.resolution} "
+                f"{m.bit_depth}bit {m.hdr_type or 'SDR'}"
+            )
+            print(f"  Encoding lib: {m.encoding_lib or '(none)'}")
+            for t in m.audio_tracks:
+                commentary = " (commentary)" if t.is_commentary else ""
+                print(f"  Audio: {t.codec} [{t.language}] {t.title}{commentary}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"  warning: mediainfo failed: {e}")
+        print("  Skipping this file.")
+        return False
+
+    # Determine episode type and number
+    ep_number = source.parsed_episode
+    season = source.parsed_season or 1
+    is_special = False
+    special_tag = ""
+    episode_name = ""
+
+    if ep_number is not None:
+        # Try to match to an episode in the anime info
+        for ep in info.episodes:
+            if ep.ep_type == "regular" and ep.number == ep_number:
+                episode_name = ep.title_en
+                break
+    else:
+        # Ask for episode number
+        ep_str = prompt_value("Episode number (or special tag like S1, NCOP1)")
+        # Check if it's a special tag
+        if re.match(r"^[A-Z]", ep_str):
+            is_special = True
+            special_tag = ep_str
+            # Try to find matching episode
+            for ep in info.episodes:
+                if ep.special_tag == ep_str:
+                    episode_name = ep.title_en
+                    break
+        else:
+            try:
+                ep_number = int(ep_str)
+            except ValueError:
+                print("  Invalid episode number, skipping.")
+                return False
+
+    # Confirm episode assignment
+    if ep_number is not None and not is_special:
+        ep_display = f"s{season}e{ep_number:02d}"
+        if episode_name:
+            ep_display += f" - {episode_name}"
+        confirmed = prompt_value("Episode", ep_display)
+        if confirmed != ep_display:
+            # Re-parse if edited
+            m = re.match(r"s(\d+)e(\d+)(?:\s*-\s*(.*))?", confirmed, re.IGNORECASE)
+            if m:
+                season = int(m.group(1))
+                ep_number = int(m.group(2))
+                episode_name = (m.group(3) or "").strip()
+
+    # Build filename
+    filename = format_episode_filename(
+        concise_name=concise_name,
+        season=season,
+        episode=ep_number or 0,
+        episode_name=episode_name,
+        source=source,
+        is_special=is_special,
+        special_tag=special_tag,
+    )
+
+    # Determine destination
+    if is_special:
+        dest_dir = series_dir / "Specials"
+    else:
+        dest_dir = series_dir / f"Season {season:02d}"
+
+    dest_path = dest_dir / filename
+    print(f"\n  -> {dest_path}")
+
+    if not prompt_confirm("  Copy this file?"):
+        return False
+
+    return copy_reflink(source.path, dest_path, dry_run=dry_run)
+
+
+def _process_group(
+    files: list[Path],
+    info: AnimeInfo,
+    id_map: dict[tuple[str, int], Path],
+    dest: Path,
+    dry_run: bool,
+    verbose: bool,
+    default_concise_name: str = "",
+) -> tuple[int, int]:
+    """Parse, resolve directory, and process a group of files.
+
+    Returns ``(success_count, failed_count)``.
+    """
+    parsed: list[SourceFile] = []
+    for f in files:
+        sf = parse_source_filename(f.name)
+        sf.path = f
+        parsed.append(sf)
+
+    if not default_concise_name:
+        default_concise_name = _extract_concise_name(parsed)
+    concise_name = prompt_value("Concise series name for filenames", default_concise_name)
+
+    has_specials = any(e.ep_type != "regular" for e in info.episodes)
+    seasons_needed = {sf.parsed_season or 1 for sf in parsed}
+    seasons_list = sorted(seasons_needed)
+
+    series_dir = resolve_series_directory(
+        dest, info, id_map=id_map,
+        seasons=seasons_list, has_specials=has_specials, dry_run=dry_run,
+    )
+    print(f"\nSeries directory: {series_dir}")
+
+    # Update id_map so callers see this directory
+    if info.anidb_id is not None:
+        id_map[("anidb", info.anidb_id)] = series_dir
+    if info.tvdb_id is not None:
+        id_map[("tvdb", info.tvdb_id)] = series_dir
+
+    success = 0
+    failed = 0
+    for sf in parsed:
+        if _process_file(sf, info, concise_name, series_dir, dry_run, verbose):
+            success += 1
+        else:
+            failed += 1
+    return success, failed
+
+
+def run_per_series(args: argparse.Namespace) -> int:
+    """Run the per-series interactive workflow."""
+    info = _fetch_anime_info(args)
+    info = _confirm_anime_info(info)
+
+    # Scan destination for existing series
+    id_map = scan_dest_ids(args.dest)
+
+    # Determine source directories
+    source_dirs = args.source or DEFAULT_SOURCE_DIRS
+
+    # Search for source files
+    search = prompt_value(
+        "Search term for source files", info.title_en or info.title_ja
+    )
+    source_files = find_source_files(source_dirs, search)
+
+    if not source_files:
+        print("\nNo matching files found in source directories.")
+        manual = prompt_value("Enter a path to search (or 'q' to quit)", "")
+        if not manual or manual == "q":
+            return 0
+        source_files = find_source_files([Path(manual)], search)
+
+    if not source_files:
+        print("No files found. Exiting.")
+        return 0
+
+    # Display found files
+    print(f"\nFound {len(source_files)} file(s):")
+    for i, f in enumerate(source_files, 1):
+        print(f"  {i}) {f.name}")
+        if args.verbose:
+            print(f"     {f}")
+
+    # Select files to process
+    if not prompt_confirm(f"\nProcess all {len(source_files)} files?"):
+        selection = prompt_value(
+            "Enter file numbers to process (comma-separated, e.g. 1,3,5)"
+        )
+        try:
+            indices = [int(x.strip()) - 1 for x in selection.split(",")]
+            source_files = [source_files[i] for i in indices]
+        except (ValueError, IndexError):
+            print("Invalid selection. Exiting.")
+            return 1
+
+    success, failed = _process_group(
+        source_files, info, id_map, args.dest, args.dry_run, args.verbose
+    )
+    print(f"\nDone: {success} copied, {failed} skipped/failed")
+    return 0 if failed == 0 else 1
+
+
+def run_single_file(args: argparse.Namespace) -> int:
+    """Run the single-file workflow."""
+    if not args.file.is_file():
+        print(f"error: {args.file} is not a file", file=sys.stderr)
+        return 1
+
+    info = _fetch_anime_info(args)
+    info = _confirm_anime_info(info)
+
+    # Scan destination for existing series
+    id_map = scan_dest_ids(args.dest)
+
+    # Parse the source file
+    sf = parse_source_filename(args.file.name)
+    sf.path = args.file
+
+    # Get concise name
+    default_name = _extract_concise_name([sf])
+    concise_name = prompt_value("Concise series name for filename", default_name)
+
+    # Resolve or create series directory
+    has_specials = any(e.ep_type != "regular" for e in info.episodes)
+    series_dir = resolve_series_directory(
+        args.dest,
+        info,
+        id_map=id_map,
+        has_specials=has_specials,
+        dry_run=args.dry_run,
+    )
+    print(f"\nSeries directory: {series_dir}")
+
+    if _process_file(sf, info, concise_name, series_dir, args.dry_run, args.verbose):
+        print("\nDone: 1 file copied")
+        return 0
+    else:
+        print("\nDone: file skipped/failed")
+        return 1
+
+
+def run_triage(args: argparse.Namespace) -> int:
+    """Run the triage workflow: scan, group, prompt per group."""
+    source_dirs = args.source or DEFAULT_SOURCE_DIRS
+    groups = _scan_and_group(source_dirs)
+
+    if not groups:
+        print("No media files found in source directories.")
+        return 0
+
+    # Scan destination for existing series (once, reused across groups)
+    id_map = scan_dest_ids(args.dest)
+
+    print(f"\nFound {len(groups)} group(s):")
+    group_list = list(groups.items())
+    for i, (name, files) in enumerate(group_list, 1):
+        count = len(files)
+        print(f"  {i}) {name}  ({count} file{'s' if count != 1 else ''})")
+
+    # Process each group
+    total_success = 0
+    total_failed = 0
+    groups_processed = 0
+
+    for name, files in group_list:
+        print(f"\n{'='*60}")
+        print(f"Group: {name}  ({len(files)} files)")
+        print(f"{'='*60}")
+        for f in files:
+            print(f"  {f.name}")
+
+        raw = input("\nAniDB ID, TheTVDB ID (prefix with 't'), or 's' to skip: ").strip()
+        if not raw or raw.lower() == "s":
+            print("  Skipping group.")
+            continue
+
+        # Parse the ID
+        anidb_id: int | None = None
+        tvdb_id: int | None = None
+        try:
+            if raw.lower().startswith("t"):
+                tvdb_id = int(raw[1:])
+            else:
+                anidb_id = int(raw)
+        except ValueError:
+            print(f"  Invalid ID '{raw}', skipping group.")
+            continue
+
+        # Fetch metadata
+        try:
+            info = fetch_anime_info(
+                anidb_id=anidb_id, tvdb_id=tvdb_id, no_cache=args.no_cache
+            )
+        except Exception as e:
+            print(f"  Error fetching metadata: {e}")
+            continue
+
+        info = _confirm_anime_info(info)
+
+        success, failed = _process_group(
+            files, info, id_map, args.dest, args.dry_run, args.verbose,
+            default_concise_name=name,
+        )
+        print(f"\n  Group done: {success} copied, {failed} skipped/failed")
+        total_success += success
+        total_failed += failed
+        groups_processed += 1
+
+    print(f"\n{'='*60}")
+    print(
+        f"Triage complete: {groups_processed} groups processed, "
+        f"{total_success} files copied, {total_failed} skipped/failed"
+    )
+    return 0 if total_failed == 0 else 1
+
+
+def main() -> int:
+    """Entry point."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if not shutil.which("mediainfo"):
+        print(
+            "error: mediainfo not found on $PATH. Install it to analyze media files.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.triage:
+        return run_triage(args)
+    elif args.file:
+        return run_single_file(args)
+    else:
+        return run_per_series(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

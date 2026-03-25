@@ -66,7 +66,7 @@ check:
 test:
     cargo nextest run --workspace
     cd scripts && uv run pytest test_catalog.py -q
-    cd etp && uv run pytest test_catalog.py -q
+    cd etp && uv run pytest test_catalog.py test_anime.py -q
 
 nas_home := "/Volumes/home"
 
@@ -99,7 +99,8 @@ deploy: check test build-nas mount-home
     mkdir -p "{{ nas_home }}/bin"
     cp etp/etp "{{ nas_home }}/bin"
     cp etp/etp-catalog "{{ nas_home }}/bin"
-    chmod +x "{{ nas_home }}/bin/etp" "{{ nas_home }}/bin/etp-catalog"
+    cp etp/etp-anime "{{ nas_home }}/bin"
+    chmod +x "{{ nas_home }}/bin/etp" "{{ nas_home }}/bin/etp-catalog" "{{ nas_home }}/bin/etp-anime"
     # shared Python libraries ($HOME/.local/lib/etp/)
     mkdir -p "{{ nas_home }}/.local/lib/etp"
     cp etp/paths.py "{{ nas_home }}/.local/lib/etp"
