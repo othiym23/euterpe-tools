@@ -8,7 +8,7 @@ episode files, and copies them using Btrfs COW reflinks.
 Usage:
     etp-anime --anidb ID [--file PATH] [--source DIR] [--dest DIR] [--dry-run] [-v]
     etp-anime --tvdb ID  [--file PATH] [--source DIR] [--dest DIR] [--dry-run] [-v]
-    etp-anime --triage   [--source DIR] [--dest DIR] [--dry-run] [-v]
+    etp-anime --triage   [--source DIR] [--dest DIR] [--dry-run] [--force] [-v]
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ import os
 import platform
 import re
 import shutil
+import tempfile
+import zlib
 import subprocess
 import sys
 import time
@@ -29,6 +31,16 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Ensure vendored/shared packages (kdl/, paths.py) are importable.
+# Deployed: $HOME/.local/lib/etp/. Development: same directory as script.
+_lib_dir = Path.home() / ".local" / "lib" / "etp"
+if _lib_dir.is_dir():
+    sys.path.insert(0, str(_lib_dir))
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import kdl  # noqa: E402 — must come after sys.path setup
 
 VERSION = "0.1.0"
 
@@ -99,7 +111,30 @@ class SourceFile:
     hash_code: str = ""  # e.g. "ABCD1234"
     parsed_episode: int | None = None
     parsed_season: int | None = None
+    version: int | None = None  # e.g. 2 for "v2" releases
     media: MediaInfo | None = None
+
+
+@dataclass
+class GroupDefaults:
+    """Sticky defaults that carry across files within a group.
+
+    When processing multiple files together (e.g. triage mode), values
+    confirmed for one file become the defaults offered for the next.
+    """
+
+    release_group: str = ""
+    source_type: str = ""
+
+
+@dataclass
+class ManifestEntry:
+    """One line in the triage manifest: source file to destination path."""
+
+    source: SourceFile
+    dest_path: Path
+    is_todo: bool = False
+    hash_failed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +272,7 @@ def parse_mediainfo_json(data: dict) -> MediaInfo:
             codec = _normalize_audio_codec(raw_format)
             language = track.get("Language", "")
             title = track.get("Title", "")
-            is_commentary = bool(re.search(r"\bcommentary\b", title, re.IGNORECASE))
+            is_commentary = bool(_RE_COMMENTARY.search(title))
             audio_tracks.append(
                 AudioTrack(
                     codec=codec,
@@ -275,77 +310,134 @@ def analyze_file(path: Path) -> MediaInfo:
 # Source filename parsing
 # ---------------------------------------------------------------------------
 
-# Release group in brackets at start: [SubGroup]
+# Match: "[GroupName]" at start of string → group(1) = group name
 _RE_RELEASE_GROUP = re.compile(r"^\[([^\]]+)\]")
 
-# Episode number patterns (ordered by specificity)
-_RE_EPISODE_S_E = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,4})", re.IGNORECASE)
-_RE_EPISODE_DASH = re.compile(r" - (\d{1,4})(?:\s|$|\[|\(|\.)")
-_RE_EPISODE_EP = re.compile(r"(?:EP?|ep?)(\d{1,4})(?:\s|$|\[|\.])", re.IGNORECASE)
-_RE_EPISODE_DOT = re.compile(r"\.S(\d{1,2})E(\d{1,4})\.", re.IGNORECASE)
+# Match: scene-style trailing release group after a dash, before file extension
+# e.g., "Show.S01E05.1080p.WEB-DL.DUAL-VARYG.mkv" → group(1) = "VARYG"
+_RE_SCENE_GROUP = re.compile(r"-([A-Za-z][A-Za-z0-9]{1,})(?:\.\w+)?$")
 
-# CRC32 hash in brackets: [ABCD1234]
+# Match: "[PMR]" — short bracketed release group tag (2-6 alpha chars) anywhere
+# in the filename. All-alpha constraint excludes CRC32 hashes (8 hex chars),
+# numbered tags like [1080p], and tags with spaces like [Dual Audio].
+# Used as a last-resort fallback after _RE_RELEASE_GROUP and _RE_SCENE_GROUP.
+_RE_BRACKET_GROUP = re.compile(r"\[([A-Za-z]{2,6})\]")
+
+# Episode number patterns (ordered by specificity in parse_source_filename).
+# All allow an optional "v2"/"v3" version suffix.
+
+# Match: "S01E05" or "s1e5" (case-insensitive)
+#   → group(1) = season, group(2) = episode, group(3) = version or None
+_RE_EPISODE_S_E = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,4})(?:v(\d+))?", re.IGNORECASE)
+
+# Match: " - 05" or " - 05v2" followed by whitespace/bracket/dot/end
+#   → group(1) = episode, group(2) = version or None
+_RE_EPISODE_DASH = re.compile(r" - (\d{1,4})(?:v(\d+))?(?:\s|$|\[|\(|\.)")
+
+# Match: "EP05" or "E5" (case-insensitive) followed by whitespace/bracket/dot/end
+#   → group(1) = episode, group(2) = version or None
+_RE_EPISODE_EP = re.compile(
+    r"(?:EP?|ep?)(\d{1,4})(?:v(\d+))?(?:\s|$|\[|\.])", re.IGNORECASE
+)
+
+# Match: ".S01E05." with dots on both sides (scene naming)
+#   → group(1) = season, group(2) = episode, group(3) = version or None
+_RE_EPISODE_DOT = re.compile(r"\.S(\d{1,2})E(\d{1,4})(?:v(\d+))?\.", re.IGNORECASE)
+
+# Match: "[ABCD1234]" — 8-char hex CRC32 hash in brackets → group(1) = hash
 _RE_HASH = re.compile(r"\[([0-9A-Fa-f]{8})\]")
 
-# Source type detection
+# Match: BD/Blu-ray source keywords (word boundary, case-insensitive) → no groups
 _RE_BD = re.compile(r"\b(?:BD|Blu-?Ray|BDRip|BDREMUX|Bluray)\b", re.IGNORECASE)
+
+# Match: web source keywords (word boundary, case-insensitive) → no groups
 _RE_WEB = re.compile(r"\b(?:WEB|WEBRip|WEB-DL|CR|AMZN|DSNP|HULU|NF)\b", re.IGNORECASE)
 
-# REMUX detection
+# Match: "REMUX" (case-insensitive) → no groups
 _RE_REMUX = re.compile(r"REMUX", re.IGNORECASE)
+
+# Match: "commentary" as a whole word in audio track titles → no groups
+_RE_COMMENTARY = re.compile(r"\bcommentary\b", re.IGNORECASE)
 
 # Media file extensions
 _MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi"}
 
-# Series name extraction patterns
+# Series name extraction patterns (used by _strip_series_name)
+
+# Match: "[GroupName] " at start → strips release group prefix
 _RE_LEADING_GROUP = re.compile(r"^\[([^\]]+)\]\s*")
+
+# Match: " [ABCD1234]" — trailing CRC32 hash with optional leading whitespace
 _RE_TRAILING_HASH = re.compile(r"\s*\[[0-9A-Fa-f]{8}\]")
+
+# Match: " - 05 [..." or " - 05 (..." — dash-episode followed by metadata brackets
 _RE_EPISODE_SUFFIX = re.compile(r"\s*-\s*\d+\s*[\[\(].*")
+
+# Match: " - S01E05..." — dash then SxEy and everything after
 _RE_S_E_SUFFIX = re.compile(r"\s*-\s*[Ss]\d+[Ee]\d+.*")
+
+# Match: ".S01E05..." — dot then SxEy and everything after (scene naming)
 _RE_DOT_S_E = re.compile(r"\.[Ss]\d+[Ee]\d+.*")
+
+# Match: " - 05" at end of string — trailing dash-episode with no metadata after
 _RE_DASH_EP_END = re.compile(r"\s*-\s*\d+\s*$")
+
+
+def _apply_episode_match(sf: SourceFile, m: re.Match[str], *, has_season: bool) -> None:
+    """Extract episode number, optional season, and version from a regex match."""
+    if has_season:
+        sf.parsed_season = int(m.group(1))
+        sf.parsed_episode = int(m.group(2))
+        version_group = 3
+    else:
+        sf.parsed_episode = int(m.group(1))
+        version_group = 2
+    if m.group(version_group):
+        sf.version = int(m.group(version_group))
+
+
+# Episode patterns tried in order: dot-S/E, S/E, dash, EP prefix
+_EPISODE_PATTERNS: list[tuple[re.Pattern[str], bool]] = [
+    (_RE_EPISODE_DOT, True),   # .S01E05. — has season
+    (_RE_EPISODE_S_E, True),   # S01E05 — has season
+    (_RE_EPISODE_DASH, False), # - 05 — episode only
+    (_RE_EPISODE_EP, False),   # EP05 — episode only
+]
 
 
 def parse_source_filename(filename: str) -> SourceFile:
     """Parse an anime release filename into a SourceFile."""
     sf = SourceFile(path=Path(filename))
 
-    # Release group
     m = _RE_RELEASE_GROUP.match(filename)
     if m:
         sf.release_group = m.group(1)
-
-    # Episode number — try patterns in order of specificity
-    m = _RE_EPISODE_DOT.search(filename)
-    if m:
-        sf.parsed_season = int(m.group(1))
-        sf.parsed_episode = int(m.group(2))
     else:
-        m = _RE_EPISODE_S_E.search(filename)
+        # Fallback: scene-style trailing group after dash (e.g., "...-VARYG.mkv")
+        m = _RE_SCENE_GROUP.search(filename)
         if m:
-            sf.parsed_season = int(m.group(1))
-            sf.parsed_episode = int(m.group(2))
+            sf.release_group = m.group(1)
         else:
-            m = _RE_EPISODE_DASH.search(filename)
+            # Last resort: short bracketed tag anywhere (e.g., "...[PMR].mkv")
+            m = _RE_BRACKET_GROUP.search(filename)
             if m:
-                sf.parsed_episode = int(m.group(1))
-            else:
-                m = _RE_EPISODE_EP.search(filename)
-                if m:
-                    sf.parsed_episode = int(m.group(1))
+                sf.release_group = m.group(1)
 
-    # Hash code
+    for pattern, has_season in _EPISODE_PATTERNS:
+        m = pattern.search(filename)
+        if m:
+            _apply_episode_match(sf, m, has_season=has_season)
+            break
+
     m = _RE_HASH.search(filename)
     if m:
         sf.hash_code = m.group(1)
 
-    # Source type
     if _RE_BD.search(filename):
         sf.source_type = "BD"
     elif _RE_WEB.search(filename):
         sf.source_type = "Web"
 
-    # REMUX
     sf.is_remux = bool(_RE_REMUX.search(filename))
 
     return sf
@@ -369,9 +461,13 @@ def build_metadata_block(source: SourceFile) -> str:
     media = source.media
 
     # Prefix part: "group source" (space-separated)
+    # Append version to release group: "MTBB" + v2 → "MTBB(v2)"
     prefix_parts: list[str] = []
     if source.release_group:
-        prefix_parts.append(source.release_group)
+        group = source.release_group
+        if source.version is not None:
+            group = f"{group}(v{source.version})"
+        prefix_parts.append(group)
     if source.source_type:
         prefix_parts.append(source.source_type)
     prefix = " ".join(prefix_parts)
@@ -433,6 +529,14 @@ def build_metadata_block(source: SourceFile) -> str:
     return prefix or tech_str
 
 
+def _sanitize_path(name: str) -> str:
+    """Sanitize a string for use in file/directory names.
+
+    Replaces ``/`` with `` - `` and ``:`` with ``-``.
+    """
+    return name.replace("/", " - ").replace(":", "-")
+
+
 def format_episode_filename(
     concise_name: str,
     season: int,
@@ -449,6 +553,10 @@ def format_episode_filename(
     metadata = build_metadata_block(source)
     meta_str = f" [{metadata}]" if metadata else ""
     hash_str = f" [{source.hash_code}]" if source.hash_code else ""
+
+    concise_name = _sanitize_path(concise_name)
+    episode_name = _sanitize_path(episode_name)
+    movie_dir_name = _sanitize_path(movie_dir_name)
 
     if is_movie and not is_special:
         # Single-file movie: `DirName - complete movie [metadata] [hash].ext`
@@ -475,9 +583,43 @@ def format_episode_filename(
 # ---------------------------------------------------------------------------
 
 
+def _strip_redundant_year(title: str, year: int) -> str:
+    """Strip a trailing `` (YYYY)`` suffix if it matches the series year."""
+    suffix = f" ({year})"
+    if title.endswith(suffix):
+        return title[: -len(suffix)]
+    return title
+
+
+# Hiragana, Katakana, CJK Unified Ideographs, CJK Extension A
+_RE_JAPANESE = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF]")
+
+
+def _has_japanese(text: str) -> bool:
+    """Return True if *text* contains any CJK, hiragana, or katakana characters."""
+    return bool(_RE_JAPANESE.search(text))
+
+
 def format_series_dirname(title_ja: str, title_en: str, year: int) -> str:
-    """Build the series directory name."""
-    return f"{title_ja} [{title_en}] ({year})"
+    """Build the series directory name.
+
+    Format is ``JA [EN] (YYYY)`` when both a native Japanese title and a
+    distinct English title exist.  Falls back to ``TITLE (YYYY)`` when:
+    - The Japanese title is empty or romaji (no kanji/kana)
+    - The English title is empty
+    - Both titles are identical
+    """
+    ja = _sanitize_path(_strip_redundant_year(title_ja, year))
+    en = _sanitize_path(_strip_redundant_year(title_en, year))
+
+    ja_is_native = bool(ja) and _has_japanese(ja)
+
+    if ja_is_native and en and ja != en:
+        return f"{ja} [{en}] ({year})"
+
+    # Use whichever title is available; prefer English for readability
+    title = en or ja
+    return f"{title} ({year})"
 
 
 def scan_dest_ids(dest: Path) -> dict[tuple[str, int], Path]:
@@ -531,23 +673,15 @@ def _ensure_subdirs(
 
 def _write_id_file(series_dir: Path, info: AnimeInfo, dry_run: bool = False) -> None:
     """Write anidb.id / tvdb.id into the series directory."""
-    if info.anidb_id is not None:
-        id_file = series_dir / "anidb.id"
+    for filename, id_value in [("anidb.id", info.anidb_id), ("tvdb.id", info.tvdb_id)]:
+        if id_value is None:
+            continue
+        id_file = series_dir / filename
         if dry_run:
-            print(f"  [dry-run] write {id_file} <- {info.anidb_id}")
+            print(f"  [dry-run] write {id_file} <- {id_value}")
         else:
             try:
-                id_file.open("x").write(str(info.anidb_id) + "\n")
-            except FileExistsError:
-                pass
-
-    if info.tvdb_id is not None:
-        id_file = series_dir / "tvdb.id"
-        if dry_run:
-            print(f"  [dry-run] write {id_file} <- {info.tvdb_id}")
-        else:
-            try:
-                id_file.open("x").write(str(info.tvdb_id) + "\n")
+                id_file.open("x").write(str(id_value) + "\n")
             except FileExistsError:
                 pass
 
@@ -656,15 +790,6 @@ _ANIDB_EP_TYPE_MAP = {
     _ANIDB_EP_OTHER: "other",
 }
 
-# AniDB special tag prefixes by episode type
-_ANIDB_TAG_PREFIX = {
-    _ANIDB_EP_SPECIAL: "S",
-    _ANIDB_EP_CREDIT: "C",
-    _ANIDB_EP_TRAILER: "T",
-    _ANIDB_EP_PARODY: "P",
-    _ANIDB_EP_OTHER: "O",
-}
-
 
 def _cache_dir(provider: str) -> Path:
     """Return a cache directory under $XDG_CACHE_HOME/etp/<provider>."""
@@ -672,6 +797,28 @@ def _cache_dir(provider: str) -> Path:
     cache = base / "etp" / provider
     cache.mkdir(parents=True, exist_ok=True)
     return cache
+
+
+def _triage_manifest_path() -> Path:
+    """Path to the triage manifest tracking copied files."""
+    return _cache_dir("triage") / "copied.json"
+
+
+def _load_triage_manifest() -> set[str]:
+    """Load the set of previously copied file paths."""
+    path = _triage_manifest_path()
+    if path.exists():
+        try:
+            return set(json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, TypeError):
+            return set()
+    return set()
+
+
+def _save_triage_manifest(copied: set[str]) -> None:
+    """Persist the set of copied file paths."""
+    path = _triage_manifest_path()
+    path.write_text(json.dumps(sorted(copied), ensure_ascii=False), encoding="utf-8")
 
 
 def _anidb_rate_limit() -> None:
@@ -692,9 +839,14 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
     if root.tag == "error":
         raise ValueError(f"AniDB API error: {root.text}")
 
-    # Titles — find Japanese and English in a single pass
-    title_ja = ""
-    title_en = ""
+    # Titles — collect candidates in a single pass, then pick by priority.
+    # Japanese: ja official > ja main > x-jat main > main fallback
+    # English:  en official > en main
+    ja_official = ""
+    ja_main = ""
+    jat_main = ""
+    en_official = ""
+    en_main = ""
     main_title_fallback = ""
     for title_elem in root.findall("titles/title"):
         lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
@@ -704,20 +856,20 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         if ttype == "main" and not main_title_fallback:
             main_title_fallback = text
 
-        if lang == "ja" and ttype == "official" and not title_ja:
-            title_ja = text
-        elif lang == "ja" and ttype == "main" and not title_ja:
-            title_ja = text
-        elif lang == "x-jat" and ttype == "main" and not title_ja:
-            title_ja = text
+        if lang == "ja" and ttype == "official" and not ja_official:
+            ja_official = text
+        elif lang == "ja" and ttype == "main" and not ja_main:
+            ja_main = text
+        elif lang == "x-jat" and ttype == "main" and not jat_main:
+            jat_main = text
 
-        if lang == "en" and ttype == "official" and not title_en:
-            title_en = text
-        elif lang == "en" and ttype == "main" and not title_en:
-            title_en = text
+        if lang == "en" and ttype == "official" and not en_official:
+            en_official = text
+        elif lang == "en" and ttype == "main" and not en_main:
+            en_main = text
 
-    if not title_ja:
-        title_ja = main_title_fallback
+    title_ja = ja_official or ja_main or jat_main or main_title_fallback
+    title_en = en_official or en_main
 
     # Year from startdate
     year = 0
@@ -759,7 +911,7 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
             lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
             text = (title_elem.text or "").strip()
             if lang == "en" and not title_en_ep:
-                title_en_ep = text
+                title_en_ep = text.replace("`", "'")
             elif lang == "ja" and not title_ja_ep:
                 title_ja_ep = text
 
@@ -856,10 +1008,30 @@ def tvdb_login(api_key: str) -> str:
 
 
 def _parse_tvdb_json(
-    series_data: dict, episodes_data: list[dict], series_id: int
+    series_data: dict,
+    episodes_data: list[dict],
+    series_id: int,
+    translations: dict[str, str] | None = None,
 ) -> AnimeInfo:
-    """Parse TheTVDB series + episodes JSON into AnimeInfo."""
+    """Parse TheTVDB series + episodes JSON into AnimeInfo.
+
+    *translations* is an optional ``{lang: name}`` dict from the
+    ``/series/{id}/translations/{lang}`` endpoint.  When present these
+    canonical names take priority over the primary name and alias list.
+    """
     name = series_data.get("name", "")
+    aliases = series_data.get("aliases", [])
+    translations = translations or {}
+
+    # Canonical translations are preferred; fall back to primary name / aliases.
+    title_ja = translations.get("jpn") or name
+    title_en = translations.get("eng", "")
+    if not title_en:
+        for alias in aliases:
+            if alias.get("language") == "eng":
+                title_en = alias.get("name", "")
+                break
+
     year_str = series_data.get("year", "")
     year = int(year_str) if year_str else 0
 
@@ -897,11 +1069,31 @@ def _parse_tvdb_json(
     return AnimeInfo(
         anidb_id=None,
         tvdb_id=series_id,
-        title_ja="",  # TheTVDB doesn't reliably have Japanese titles
-        title_en=name,
+        title_ja=title_ja,
+        title_en=title_en,
         year=year,
         episodes=episodes,
     )
+
+
+def _fetch_tvdb_translations(
+    series_id: int, token: str, languages: list[str]
+) -> dict[str, str]:
+    """Fetch canonical translated names for a series.
+
+    Returns ``{lang: name}`` for each language that has a translation.
+    Silently skips languages that 404 or have no name.
+    """
+    result: dict[str, str] = {}
+    for lang in languages:
+        try:
+            resp = _tvdb_request(f"/series/{series_id}/translations/{lang}", token)
+            name = resp.get("data", {}).get("name", "")
+            if name:
+                result[lang] = name
+        except urllib.error.HTTPError:
+            pass
+    return result
 
 
 def fetch_tvdb_series(
@@ -917,7 +1109,12 @@ def fetch_tvdb_series(
         age = time.time() - cache_file.stat().st_mtime
         if age < _CACHE_MAX_AGE_SECONDS:
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            return _parse_tvdb_json(cached["series"], cached["episodes"], series_id)
+            return _parse_tvdb_json(
+                cached["series"],
+                cached["episodes"],
+                series_id,
+                translations=cached.get("translations"),
+            )
 
     # Login and fetch
     token = tvdb_login(api_key)
@@ -925,11 +1122,17 @@ def fetch_tvdb_series(
     series_resp = _tvdb_request(f"/series/{series_id}", token)
     series_data = series_resp.get("data", {})
 
+    # Fetch canonical translations for English and Japanese titles
+    available = series_data.get("nameTranslations", [])
+    want = [lang for lang in ("eng", "jpn") if lang in available]
+    translations = _fetch_tvdb_translations(series_id, token, want)
+
+    # Fetch episodes with English translations when available
     all_episodes: list[dict] = []
     page = 0
     while page < _TVDB_MAX_PAGES:
         ep_resp = _tvdb_request(
-            f"/series/{series_id}/episodes/default?page={page}", token
+            f"/series/{series_id}/episodes/default/eng?page={page}", token
         )
         ep_data = ep_resp.get("data", {})
         ep_list = ep_data.get("episodes", [])
@@ -938,16 +1141,42 @@ def fetch_tvdb_series(
         all_episodes.extend(ep_list)
         page += 1
 
-    # Cache the response
-    cache_data = {"series": series_data, "episodes": all_episodes}
+    # Cache the response (including translations)
+    cache_data = {
+        "series": series_data,
+        "episodes": all_episodes,
+        "translations": translations,
+    }
     cache_file.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
 
-    return _parse_tvdb_json(series_data, all_episodes, series_id)
+    return _parse_tvdb_json(series_data, all_episodes, series_id, translations)
 
 
 # ---------------------------------------------------------------------------
 # File operations
 # ---------------------------------------------------------------------------
+
+
+def compute_crc32(path: Path) -> str:
+    """Compute the CRC32 hash of a file, returned as uppercase hex."""
+    crc = 0
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):  # 1 MiB chunks
+            crc = zlib.crc32(chunk, crc)
+    return f"{crc & 0xFFFFFFFF:08X}"
+
+
+def verify_hash(source: SourceFile) -> tuple[bool, str] | None:
+    """Verify the CRC32 hash embedded in the filename against the file.
+
+    Returns ``(True, actual_hash)`` if the hash matches,
+    ``(False, actual_hash)`` if it mismatches, or ``None`` if no hash is
+    present in the filename.
+    """
+    if not source.hash_code:
+        return None
+    actual = compute_crc32(source.path)
+    return (actual.upper() == source.hash_code.upper(), actual)
 
 
 def copy_reflink(src: Path, dst: Path, dry_run: bool = False) -> bool:
@@ -1131,6 +1360,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bypass API response cache",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-process files already copied in a previous triage run",
+    )
     return p
 
 
@@ -1197,6 +1431,7 @@ def _confirm_anime_info(info: AnimeInfo) -> AnimeInfo:
     return info
 
 
+# Match: any character that is not a lowercase letter or digit → used for grouping normalization
 _RE_NON_ALNUM = re.compile(r"[^a-z0-9]")
 
 
@@ -1235,9 +1470,19 @@ def _process_file(
     series_dir: Path,
     dry_run: bool,
     verbose: bool,
+    defaults: GroupDefaults | None = None,
 ) -> bool:
     """Process a single source file: analyze, name, copy."""
     print(f"\n--- {source.path.name} ---")
+
+    # Prompt for release group if not parsed from filename
+    if not source.release_group:
+        default_group = defaults.release_group if defaults else ""
+        source.release_group = prompt_value("Release group", default_group)
+
+    # Update sticky defaults
+    if defaults is not None and source.release_group:
+        defaults.release_group = source.release_group
 
     # Analyze with mediainfo
     try:
@@ -1265,11 +1510,7 @@ def _process_file(
     episode_name = ""
 
     if ep_number is not None:
-        # Try to match to an episode in the anime info
-        for ep in info.episodes:
-            if ep.ep_type == "regular" and ep.number == ep_number:
-                episode_name = ep.title_en
-                break
+        episode_name = _find_episode_title(info, ep_number)
     else:
         # Ask for episode number
         ep_str = prompt_value("Episode number (or special tag like S1, NCOP1)")
@@ -1303,6 +1544,19 @@ def _process_file(
                 ep_number = int(m.group(2))
                 episode_name = (m.group(3) or "").strip()
 
+    # Verify CRC32 hash before building filename — on mismatch the hash
+    # is stripped from the destination filename
+    hash_result = verify_hash(source)
+    if hash_result is not None:
+        ok, actual = hash_result
+        if ok:
+            print(f"  CRC32 verified: {source.hash_code}")
+        else:
+            print(f"  WARNING: CRC32 mismatch! expected {source.hash_code}, got {actual}")
+            if not prompt_confirm("  Hash mismatch — copy anyway?", default=False):
+                return False
+            source.hash_code = ""
+
     # Build filename
     filename = format_episode_filename(
         concise_name=concise_name,
@@ -1329,6 +1583,24 @@ def _process_file(
     return copy_reflink(source.path, dest_path, dry_run=dry_run)
 
 
+def _parse_files(files: list[Path]) -> list[SourceFile]:
+    """Parse a list of file paths into SourceFile objects."""
+    parsed: list[SourceFile] = []
+    for f in files:
+        sf = parse_source_filename(f.name)
+        sf.path = f
+        parsed.append(sf)
+    return parsed
+
+
+def _find_episode_title(info: AnimeInfo, ep_number: int) -> str:
+    """Find the English title for a regular episode by number."""
+    for ep in info.episodes:
+        if ep.ep_type == "regular" and ep.number == ep_number:
+            return ep.title_en
+    return ""
+
+
 def _process_group(
     files: list[Path],
     info: AnimeInfo,
@@ -1337,16 +1609,12 @@ def _process_group(
     dry_run: bool,
     verbose: bool,
     default_concise_name: str = "",
-) -> tuple[int, int]:
+) -> tuple[int, int, list[Path]]:
     """Parse, resolve directory, and process a group of files.
 
-    Returns ``(success_count, failed_count)``.
+    Returns ``(success_count, failed_count, copied_paths)``.
     """
-    parsed: list[SourceFile] = []
-    for f in files:
-        sf = parse_source_filename(f.name)
-        sf.path = f
-        parsed.append(sf)
+    parsed = _parse_files(files)
 
     if not default_concise_name:
         default_concise_name = _extract_concise_name(parsed)
@@ -1368,14 +1636,378 @@ def _process_group(
     if info.tvdb_id is not None:
         id_map[("tvdb", info.tvdb_id)] = series_dir
 
+    # Seed sticky defaults from the first file that has a release group
+    defaults = GroupDefaults()
+    for sf in parsed:
+        if sf.release_group:
+            defaults.release_group = sf.release_group
+            break
+
     success = 0
     failed = 0
+    copied_paths: list[Path] = []
     for sf in parsed:
-        if _process_file(sf, info, concise_name, series_dir, dry_run, verbose):
+        if _process_file(
+            sf, info, concise_name, series_dir, dry_run, verbose, defaults=defaults
+        ):
             success += 1
+            copied_paths.append(sf.path)
         else:
             failed += 1
-    return success, failed
+    return success, failed, copied_paths
+
+
+# ---------------------------------------------------------------------------
+# Batch triage (vidir-style manifest editing)
+# ---------------------------------------------------------------------------
+
+
+def _build_manifest_entries(
+    parsed: list[SourceFile],
+    info: AnimeInfo,
+    concise_name: str,
+    series_dir: Path,
+    verbose: bool,
+) -> list[ManifestEntry]:
+    """Build manifest entries for all files without per-file prompts.
+
+    Runs mediainfo, verifies CRC32 hashes, matches episodes, and constructs
+    destination paths using defaults.
+    """
+    entries: list[ManifestEntry] = []
+    total = len(parsed)
+    for i, sf in enumerate(parsed, 1):
+        print(f"  Analyzing {i}/{total}: {sf.path.name}")
+
+        # Analyze with mediainfo
+        try:
+            sf.media = analyze_file(sf.path)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            if verbose:
+                print(f"    warning: mediainfo failed: {e}")
+
+        # Verify CRC32 hash — on mismatch, clear hash so it's stripped from dest
+        hash_failed = False
+        hash_result = verify_hash(sf)
+        if hash_result is not None:
+            ok, actual = hash_result
+            if not ok:
+                print(f"    CRC32 MISMATCH: expected {sf.hash_code}, got {actual}")
+                sf.hash_code = ""
+                hash_failed = True
+            elif verbose:
+                print(f"    CRC32 verified: {sf.hash_code}")
+
+        # Match episode
+        ep_number = sf.parsed_episode
+        season = sf.parsed_season or 1
+        is_special = False
+        special_tag = ""
+        episode_name = ""
+
+        if ep_number is not None:
+            episode_name = _find_episode_title(info, ep_number)
+
+        # Build destination path
+        if ep_number is None:
+            # Can't auto-match — mark as TODO
+            placeholder = format_episode_filename(
+                concise_name=concise_name,
+                season=season,
+                episode=0,
+                episode_name="EPISODE_NAME",
+                source=sf,
+                is_special=is_special,
+                special_tag=special_tag,
+            )
+            placeholder = placeholder.replace("s1e00", "s1eXX")
+            dest_dir = series_dir / f"Season {season:02d}"
+            entries.append(ManifestEntry(
+                source=sf,
+                dest_path=dest_dir / placeholder,
+                is_todo=True,
+                hash_failed=hash_failed,
+            ))
+        else:
+            filename = format_episode_filename(
+                concise_name=concise_name,
+                season=season,
+                episode=ep_number,
+                episode_name=episode_name,
+                source=sf,
+                is_special=is_special,
+                special_tag=special_tag,
+            )
+            if is_special:
+                dest_dir = series_dir / "Specials"
+            else:
+                dest_dir = series_dir / f"Season {season:02d}"
+            entries.append(ManifestEntry(
+                source=sf,
+                dest_path=dest_dir / filename,
+                hash_failed=hash_failed,
+            ))
+
+    return entries
+
+
+def _write_manifest(
+    entries: list[ManifestEntry],
+    info: AnimeInfo,
+    concise_name: str,
+    series_dir: Path,
+) -> Path:
+    """Write manifest entries to a KDL file for editing."""
+    provider = ""
+    if info.anidb_id is not None:
+        provider = f"AniDB: {info.anidb_id}"
+    elif info.tvdb_id is not None:
+        provider = f"TheTVDB: {info.tvdb_id}"
+
+    dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
+
+    # Group entries by season/specials
+    groups: dict[str, list[ManifestEntry]] = {}
+    for entry in entries:
+        # Determine group key from the destination path
+        dest_parent = entry.dest_path.parent.name
+        if dest_parent == "Specials":
+            key = "specials"
+        else:
+            # "Season 01" → season number
+            key = dest_parent
+        groups.setdefault(key, []).append(entry)
+
+    # Build KDL document as text (easier than constructing Node objects
+    # for the header comments)
+    lines: list[str] = []
+    lines.append(f"// etp-anime triage manifest")
+    lines.append(f"// Series: {dirname}")
+    if provider:
+        lines.append(f"// {provider}")
+    lines.append(f"// Series dir: {series_dir}")
+    lines.append("//")
+    lines.append("// Edit destination filenames. Delete or /- comment out entries to skip.")
+    lines.append("// Source filenames are for reference only — only dest is used.")
+    lines.append("")
+
+    for group_key in sorted(groups.keys()):
+        group_entries = sorted(
+            groups[group_key], key=lambda e: e.source.parsed_episode or 0
+        )
+        if group_key == "specials":
+            lines.append("specials {")
+        else:
+            # "Season 01" → season 1
+            season_num = group_key.replace("Season ", "").lstrip("0") or "0"
+            lines.append(f"season {season_num} {{")
+
+        for entry in group_entries:
+            ep_num = entry.source.parsed_episode or 0
+            tag = "(todo)" if entry.is_todo else ""
+            if entry.hash_failed:
+                lines.append(f"  // CRC32 MISMATCH — hash stripped from destination")
+            lines.append(f"  {tag}episode {ep_num} {{")
+            lines.append(f'    source "{entry.source.path.name}"')
+            lines.append(f'    dest "{entry.dest_path.name}"')
+            lines.append("  }")
+
+        lines.append("}")
+        lines.append("")
+
+    fd, path = tempfile.mkstemp(suffix=".kdl", prefix="etp-triage-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        f.write("\n")
+
+    return Path(path)
+
+
+def _open_editor(manifest_path: Path) -> bool:
+    """Open the manifest in the user's editor. Returns True on success."""
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    try:
+        result = subprocess.run([editor, str(manifest_path)])
+        return result.returncode == 0
+    except FileNotFoundError:
+        print(f"  error: editor '{editor}' not found")
+        return False
+
+
+def _parse_manifest(
+    manifest_path: Path,
+    known_sources: dict[str, SourceFile],
+    series_dir: Path,
+) -> tuple[list[tuple[SourceFile, Path]], list[str]]:
+    """Parse an edited KDL manifest file.
+
+    Returns ``(entries, errors)``. If errors is non-empty, the manifest has
+    problems the user should fix.
+    """
+    text = manifest_path.read_text(encoding="utf-8")
+    try:
+        doc = kdl.parse(text)
+    except kdl.ParseError as e:
+        return [], [f"  KDL parse error: {e}"]
+
+    entries: list[tuple[SourceFile, Path]] = []
+    errors: list[str] = []
+
+    for group_node in doc.nodes:
+        # Determine destination subdirectory
+        if group_node.name == "specials":
+            dest_subdir = series_dir / "Specials"
+        elif group_node.name == "season" and group_node.args:
+            season_num = int(group_node.args[0])
+            dest_subdir = series_dir / f"Season {season_num:02d}"
+        else:
+            continue
+
+        for ep_node in group_node.nodes:
+            if ep_node.name != "episode":
+                continue
+
+            # Check for (todo) tag
+            if ep_node.tag == "todo":
+                errors.append(
+                    f"  episode {ep_node.args[0] if ep_node.args else '?'}"
+                    f" in {group_node.name}: unresolved (todo) entry"
+                )
+                continue
+
+            # Extract source and dest from children
+            source_name = ""
+            dest_name = ""
+            for child in ep_node.nodes:
+                if child.name == "source" and child.args:
+                    source_name = str(child.args[0])
+                elif child.name == "dest" and child.args:
+                    dest_name = str(child.args[0])
+
+            if not dest_name:
+                errors.append(
+                    f"  episode {ep_node.args[0] if ep_node.args else '?'}"
+                    f" in {group_node.name}: missing dest"
+                )
+                continue
+
+            sf = known_sources.get(source_name)
+            if sf is None:
+                errors.append(
+                    f"  episode in {group_node.name}: unknown source '{source_name}'"
+                )
+                continue
+
+            entries.append((sf, dest_subdir / dest_name))
+
+    return entries, errors
+
+
+def _execute_manifest(
+    entries: list[tuple[SourceFile, Path]],
+    dry_run: bool,
+    verbose: bool,
+) -> tuple[int, int, list[Path]]:
+    """Execute the parsed manifest: copy each file to its destination."""
+    success = 0
+    failed = 0
+    copied_paths: list[Path] = []
+
+    for sf, dest_path in entries:
+        if verbose:
+            print(f"  {sf.path.name} -> {dest_path}")
+        if copy_reflink(sf.path, dest_path, dry_run=dry_run):
+            success += 1
+            copied_paths.append(sf.path)
+        else:
+            failed += 1
+
+    return success, failed, copied_paths
+
+
+def _process_group_batch(
+    files: list[Path],
+    info: AnimeInfo,
+    id_map: dict[tuple[str, int], Path],
+    dest: Path,
+    dry_run: bool,
+    verbose: bool,
+    default_concise_name: str = "",
+) -> tuple[int, int, list[Path]]:
+    """Batch-process a group of files via an editable manifest.
+
+    Same interface as ``_process_group`` but uses a vidir-style workflow:
+    build all source→destination mappings, open in $EDITOR, then execute.
+    """
+    parsed = _parse_files(files)
+
+    if not default_concise_name:
+        default_concise_name = _extract_concise_name(parsed)
+    concise_name = prompt_value("Concise series name for filenames", default_concise_name)
+
+    has_specials = any(e.ep_type != "regular" for e in info.episodes)
+    seasons_needed = {sf.parsed_season or 1 for sf in parsed}
+    seasons_list = sorted(seasons_needed)
+
+    series_dir = resolve_series_directory(
+        dest, info, id_map=id_map,
+        seasons=seasons_list, has_specials=has_specials, dry_run=dry_run,
+    )
+    print(f"\nSeries directory: {series_dir}")
+
+    if info.anidb_id is not None:
+        id_map[("anidb", info.anidb_id)] = series_dir
+    if info.tvdb_id is not None:
+        id_map[("tvdb", info.tvdb_id)] = series_dir
+
+    # Build manifest entries (mediainfo + CRC32 verification)
+    print()
+    entries = _build_manifest_entries(parsed, info, concise_name, series_dir, verbose)
+
+    # Write manifest to temp file
+    manifest_path = _write_manifest(entries, info, concise_name, series_dir)
+
+    # Build source lookup by filename for parsing back
+    known_sources: dict[str, SourceFile] = {
+        e.source.path.name: e.source for e in entries
+    }
+
+    # Edit → parse → re-edit loop
+    try:
+        while True:
+            if not _open_editor(manifest_path):
+                print("  Editor failed. Skipping group.")
+                return 0, len(files), []
+
+            parsed_entries, errors = _parse_manifest(
+                manifest_path, known_sources, series_dir
+            )
+
+            if errors:
+                print(f"\n  Manifest has {len(errors)} error(s):")
+                for err in errors:
+                    print(err)
+                if prompt_confirm("\n  Re-open editor to fix?"):
+                    continue
+                else:
+                    print("  Skipping group.")
+                    return 0, len(files), []
+
+            if not parsed_entries:
+                print("  Manifest is empty (all lines deleted or commented). Skipping group.")
+                return 0, len(files), []
+
+            break
+
+        # Execute the manifest
+        print(f"\n  Copying {len(parsed_entries)} file(s)...")
+        return _execute_manifest(parsed_entries, dry_run, verbose)
+
+    finally:
+        try:
+            manifest_path.unlink()
+        except OSError:
+            pass
 
 
 def run_per_series(args: argparse.Namespace) -> int:
@@ -1425,7 +2057,7 @@ def run_per_series(args: argparse.Namespace) -> int:
             print("Invalid selection. Exiting.")
             return 1
 
-    success, failed = _process_group(
+    success, failed, _copied = _process_group(
         source_files, info, id_map, args.dest, args.dry_run, args.verbose
     )
     print(f"\nDone: {success} copied, {failed} skipped/failed")
@@ -1480,6 +2112,34 @@ def run_triage(args: argparse.Namespace) -> int:
         print("No media files found in source directories.")
         return 0
 
+    # Load manifest of previously copied files
+    already_copied = _load_triage_manifest()
+    force = getattr(args, "force", False)
+
+    # Resolve all paths once upfront for manifest lookups
+    resolved_paths: dict[Path, str] = {}
+    for files in groups.values():
+        for f in files:
+            resolved_paths[f] = str(f.resolve())
+
+    # Filter out already-copied files unless --force
+    if not force and already_copied:
+        filtered_groups: dict[str, list[Path]] = {}
+        skipped_total = 0
+        for name, files in groups.items():
+            remaining = [f for f in files if resolved_paths[f] not in already_copied]
+            skipped = len(files) - len(remaining)
+            skipped_total += skipped
+            if remaining:
+                filtered_groups[name] = remaining
+        if skipped_total:
+            print(f"Skipping {skipped_total} previously copied file(s) (use --force to re-process).")
+        groups = filtered_groups
+
+    if not groups:
+        print("All files have been previously copied. Nothing to do.")
+        return 0
+
     # Scan destination for existing series (once, reused across groups)
     id_map = scan_dest_ids(args.dest)
 
@@ -1529,7 +2189,7 @@ def run_triage(args: argparse.Namespace) -> int:
 
         info = _confirm_anime_info(info)
 
-        success, failed = _process_group(
+        success, failed, copied_paths = _process_group_batch(
             files, info, id_map, args.dest, args.dry_run, args.verbose,
             default_concise_name=name,
         )
@@ -1537,6 +2197,15 @@ def run_triage(args: argparse.Namespace) -> int:
         total_success += success
         total_failed += failed
         groups_processed += 1
+
+        # Record successfully copied files
+        if copied_paths and not args.dry_run:
+            for p in copied_paths:
+                already_copied.add(resolved_paths.get(p, str(p.resolve())))
+
+    # Write manifest once at end (skip for dry-run)
+    if total_success and not args.dry_run:
+        _save_triage_manifest(already_copied)
 
     print(f"\n{'='*60}")
     print(

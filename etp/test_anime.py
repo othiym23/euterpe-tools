@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import subprocess
 import sys as _sys
 import types
 from pathlib import Path
@@ -22,6 +23,7 @@ anime = types.ModuleType(_spec.name)
 _spec.loader = _loader  # type: ignore[union-attr]
 # Register in sys.modules so dataclasses can resolve the module
 _sys.modules["etp_anime"] = anime
+anime.__file__ = str(_anime_path)
 _loader.exec_module(anime)
 
 
@@ -252,9 +254,13 @@ ANIDB_XML_ERROR = "<error>Anime not found</error>"
 # ---------------------------------------------------------------------------
 
 TVDB_SERIES_DATA = {
-    "name": "Test Anime",
+    "name": "テストアニメ",
     "year": "2020",
     "firstAired": "2020-01-01",
+    "aliases": [
+        {"language": "eng", "name": "Test Anime"},
+        {"language": "fra", "name": "Anime de Test"},
+    ],
 }
 
 TVDB_EPISODES_DATA = [
@@ -325,6 +331,86 @@ class TestParseSourceFilename:
     def test_no_episode_number(self):
         sf = anime.parse_source_filename("[Group] Movie Title [BD 1080p].mkv")
         assert sf.parsed_episode is None
+
+    def test_scene_trailing_group(self):
+        sf = anime.parse_source_filename(
+            "Re.ZERO.Starting.Life.in.Another.World.S03E09.1080p.CR.WEB-DL.AAC2.0.H.264.DUAL-VARYG.mkv"
+        )
+        assert sf.release_group == "VARYG"
+        assert sf.parsed_season == 3
+        assert sf.parsed_episode == 9
+
+    def test_scene_group_not_overridden_by_bracket(self):
+        """Bracket group takes priority over scene trailing group."""
+        sf = anime.parse_source_filename("[FLE] Show - 01 [1080p]-GROUP.mkv")
+        assert sf.release_group == "FLE"
+
+    def test_bracket_group_fallback(self):
+        """Short bracketed tag like [PMR] at end is picked up as release group."""
+        sf = anime.parse_source_filename(
+            "Re ZERO Starting Life in Another World - S03E01v2 "
+            "(BD Remux 1080p AVC FLAC E-AC-3) [Dual Audio] [PMR].mkv"
+        )
+        assert sf.release_group == "PMR"
+        assert sf.parsed_season == 3
+        assert sf.parsed_episode == 1
+        assert sf.version == 2
+
+    def test_bracket_group_not_crc32(self):
+        """8-char hex in brackets is a CRC32 hash, not a release group."""
+        sf = anime.parse_source_filename("[FLE] Show - 01 [4CC4766E].mkv")
+        assert sf.release_group == "FLE"
+        assert sf.hash_code == "4CC4766E"
+
+    def test_version_dash_format(self):
+        sf = anime.parse_source_filename("[MTBB] Title - 05v2 [hash1234].mkv")
+        assert sf.release_group == "MTBB"
+        assert sf.parsed_episode == 5
+        assert sf.version == 2
+
+    def test_version_s_e_format(self):
+        sf = anime.parse_source_filename("Show.S01E05v3.1080p.BluRay.mkv")
+        assert sf.parsed_season == 1
+        assert sf.parsed_episode == 5
+        assert sf.version == 3
+
+    def test_no_version(self):
+        sf = anime.parse_source_filename("[Group] Title - 05 [hash1234].mkv")
+        assert sf.parsed_episode == 5
+        assert sf.version is None
+
+    def test_version_in_metadata_block(self):
+        sf = anime.SourceFile(
+            path=Path("test.mkv"),
+            release_group="MTBB",
+            version=2,
+            media=anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+        block = anime.build_metadata_block(sf)
+        assert block.startswith("MTBB(v2)")
+
+    def test_no_version_in_metadata_block(self):
+        sf = anime.SourceFile(
+            path=Path("test.mkv"),
+            release_group="MTBB",
+            media=anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+        block = anime.build_metadata_block(sf)
+        assert block.startswith("MTBB,")
 
 
 class TestMediaInfoParsing:
@@ -637,6 +723,30 @@ class TestFormatEpisodeFilename:
         )
         assert result.endswith(".mp4")
 
+    def test_colon_sanitized_in_episode_name(self):
+        sf = self._make_source()
+        result = anime.format_episode_filename(
+            concise_name="FMA",
+            season=1,
+            episode=1,
+            episode_name="Those Who Challenge the Sun: Part 1",
+            source=sf,
+        )
+        assert "Those Who Challenge the Sun- Part 1" in result
+        assert ":" not in result
+
+    def test_slash_sanitized_in_concise_name(self):
+        sf = self._make_source()
+        result = anime.format_episode_filename(
+            concise_name="Fate/Zero",
+            season=1,
+            episode=1,
+            episode_name="",
+            source=sf,
+        )
+        assert "Fate - Zero" in result
+        assert "/" not in result
+
 
 class TestAnidbParsing:
     """Tests for AniDB XML parsing."""
@@ -675,6 +785,30 @@ class TestAnidbParsing:
         assert regular[0].title_en == "Akira"
         assert regular[0].title_ja == "アキラ"
 
+    def test_backtick_replaced_in_en_episode_title(self):
+        """Backticks in English episode titles are replaced with apostrophes."""
+        xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<anime id="99" restricted="false">
+  <type>TV Series</type>
+  <episodecount>1</episodecount>
+  <startdate>2020-01-01</startdate>
+  <titles>
+    <title xml:lang="ja" type="official">テスト</title>
+    <title xml:lang="en" type="official">Test</title>
+  </titles>
+  <episodes>
+    <episode id="1"><epno type="1">1</epno>
+      <title xml:lang="en">The King`s Gambit</title>
+      <title xml:lang="ja">王の`策略</title>
+    </episode>
+  </episodes>
+</anime>
+"""
+        info = anime._parse_anidb_xml(xml, 99)
+        assert info.episodes[0].title_en == "The King's Gambit"
+        assert info.episodes[0].title_ja == "王の`策略"
+
     def test_series_with_multiple_episodes(self):
         info = anime._parse_anidb_xml(ANIDB_XML_SERIES, 1234)
         regular = [e for e in info.episodes if e.ep_type == "regular"]
@@ -682,6 +816,45 @@ class TestAnidbParsing:
         assert regular[0].title_en == "The Beginning"
         assert regular[1].title_en == "The Journey"
         assert regular[2].title_en == "The End"
+
+    def test_ja_official_preferred_over_romaji_main(self):
+        """ja official title is preferred even when x-jat main appears first in XML."""
+        xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<anime id="6107" restricted="false">
+  <type>TV Series</type>
+  <episodecount>64</episodecount>
+  <startdate>2009-04-05</startdate>
+  <titles>
+    <title xml:lang="x-jat" type="main">Hagane no Renkinjutsushi (2009)</title>
+    <title xml:lang="en" type="official">Fullmetal Alchemist: Brotherhood</title>
+    <title xml:lang="ja" type="official">鋼の錬金術師 (2009)</title>
+  </titles>
+  <episodes/>
+</anime>
+"""
+        info = anime._parse_anidb_xml(xml, 6107)
+        assert info.title_ja == "鋼の錬金術師 (2009)"
+        assert info.title_en == "Fullmetal Alchemist: Brotherhood"
+
+    def test_romaji_fallback_when_no_ja(self):
+        """Falls back to x-jat main when no ja title exists."""
+        xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<anime id="99" restricted="false">
+  <type>TV Series</type>
+  <episodecount>12</episodecount>
+  <startdate>2020-01-01</startdate>
+  <titles>
+    <title xml:lang="x-jat" type="main">Romaji Title</title>
+    <title xml:lang="en" type="official">English Title</title>
+  </titles>
+  <episodes/>
+</anime>
+"""
+        info = anime._parse_anidb_xml(xml, 99)
+        assert info.title_ja == "Romaji Title"
+        assert info.title_en == "English Title"
 
     def test_error_response(self):
         with pytest.raises(ValueError, match="Anime not found"):
@@ -694,6 +867,7 @@ class TestTvdbParsing:
     def test_parse_series(self):
         info = anime._parse_tvdb_json(TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345)
         assert info.tvdb_id == 12345
+        assert info.title_ja == "テストアニメ"
         assert info.title_en == "Test Anime"
         assert info.year == 2020
 
@@ -712,10 +886,44 @@ class TestTvdbParsing:
         regular = [e for e in info.episodes if e.ep_type == "regular"]
         assert regular[0].title_en == "Pilot"
 
-    def test_no_japanese_title(self):
-        """TheTVDB doesn't reliably have Japanese titles."""
+    def test_japanese_title_from_primary_name(self):
+        """TheTVDB primary name is the original-language (Japanese) title."""
         info = anime._parse_tvdb_json(TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345)
-        assert info.title_ja == ""
+        assert info.title_ja == "テストアニメ"
+
+    def test_no_english_alias(self):
+        """When no English alias exists, title_en is empty."""
+        data = {"name": "テストアニメ", "year": "2020", "aliases": []}
+        info = anime._parse_tvdb_json(data, TVDB_EPISODES_DATA, 12345)
+        assert info.title_ja == "テストアニメ"
+        assert info.title_en == ""
+
+    def test_translations_override_aliases(self):
+        """Canonical translations take priority over primary name and aliases."""
+        translations = {"jpn": "公式日本語名", "eng": "Official English Name"}
+        info = anime._parse_tvdb_json(
+            TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345, translations=translations
+        )
+        assert info.title_ja == "公式日本語名"
+        assert info.title_en == "Official English Name"
+
+    def test_translations_partial_eng_only(self):
+        """When only eng translation exists, ja falls back to primary name."""
+        translations = {"eng": "Official English Name"}
+        info = anime._parse_tvdb_json(
+            TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345, translations=translations
+        )
+        assert info.title_ja == "テストアニメ"
+        assert info.title_en == "Official English Name"
+
+    def test_translations_partial_jpn_only(self):
+        """When only jpn translation exists, eng falls back to alias."""
+        translations = {"jpn": "公式日本語名"}
+        info = anime._parse_tvdb_json(
+            TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345, translations=translations
+        )
+        assert info.title_ja == "公式日本語名"
+        assert info.title_en == "Test Anime"  # from eng alias
 
 
 class TestDirectoryNaming:
@@ -728,6 +936,60 @@ class TestDirectoryNaming:
     def test_format_series_dirname_complex(self):
         result = anime.format_series_dirname("東のエデン", "Eden of the East", 2009)
         assert result == "東のエデン [Eden of the East] (2009)"
+
+    def test_colon_sanitized(self):
+        result = anime.format_series_dirname(
+            "鋼の錬金術師 (2009)", "Fullmetal Alchemist: Brotherhood", 2009
+        )
+        assert result == "鋼の錬金術師 [Fullmetal Alchemist- Brotherhood] (2009)"
+
+    def test_slash_sanitized(self):
+        # Fate/Zero has no Japanese chars, so it uses the single-title format
+        result = anime.format_series_dirname("Fate/Zero", "Fate/Zero", 2011)
+        assert result == "Fate - Zero (2011)"
+
+    def test_redundant_year_stripped(self):
+        result = anime.format_series_dirname(
+            "鋼の錬金術師 (2009)", "Fullmetal Alchemist (2009)", 2009
+        )
+        assert result == "鋼の錬金術師 [Fullmetal Alchemist] (2009)"
+
+    def test_non_matching_year_kept(self):
+        result = anime.format_series_dirname(
+            "鋼の錬金術師 (2003)", "Fullmetal Alchemist", 2009
+        )
+        assert result == "鋼の錬金術師 (2003) [Fullmetal Alchemist] (2009)"
+
+    def test_romaji_ja_uses_single_title(self):
+        """Romaji-only Japanese title falls back to single-title format."""
+        result = anime.format_series_dirname("BEASTARS", "BEASTARS", 2019)
+        assert result == "BEASTARS (2019)"
+
+    def test_romaji_ja_prefers_english(self):
+        """When ja is romaji and en differs, use en as the single title."""
+        result = anime.format_series_dirname(
+            "Hagane no Renkinjutsushi", "Fullmetal Alchemist", 2003
+        )
+        assert result == "Fullmetal Alchemist (2003)"
+
+    def test_empty_en_uses_ja(self):
+        result = anime.format_series_dirname("アキラ", "", 1988)
+        assert result == "アキラ (1988)"
+
+    def test_empty_ja_uses_en(self):
+        result = anime.format_series_dirname("", "Akira", 1988)
+        assert result == "Akira (1988)"
+
+    def test_identical_titles_single(self):
+        """Identical ja and en after sanitization → single title."""
+        result = anime.format_series_dirname("アキラ", "アキラ", 1988)
+        assert result == "アキラ (1988)"
+
+    def test_no_empty_brackets(self):
+        """Never produce 'TITLE [] (YYYY)'."""
+        result = anime.format_series_dirname("BEASTARS", "", 2019)
+        assert "[]" not in result
+        assert result == "BEASTARS (2019)"
 
     def test_create_series_directory(self, tmp_path):
         info = anime.AnimeInfo(
@@ -1144,3 +1406,677 @@ class TestExtractConciseName:
 
     def test_empty_list(self):
         assert anime._extract_concise_name([]) == ""
+
+
+class TestGroupDefaults:
+    """Tests for sticky group defaults across files."""
+
+    def test_defaults_initial_state(self):
+        defaults = anime.GroupDefaults()
+        assert defaults.release_group == ""
+        assert defaults.source_type == ""
+
+    def test_process_file_prompts_for_missing_group(self, monkeypatch):
+        """When release_group is empty, _process_file prompts for it."""
+        inputs = iter(["MTBB", "s1e01", "n"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        monkeypatch.setattr(
+            anime,
+            "analyze_file",
+            lambda _: anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+
+        sf = anime.SourceFile(path=Path("/tmp/test.mkv"))
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="Test",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        defaults = anime.GroupDefaults()
+        anime._process_file(
+            sf,
+            info,
+            "Test",
+            Path("/tmp/out"),
+            dry_run=True,
+            verbose=False,
+            defaults=defaults,
+        )
+        assert sf.release_group == "MTBB"
+        assert defaults.release_group == "MTBB"
+
+    def test_defaults_carry_to_next_file(self, monkeypatch):
+        """Defaults set for one file are offered for the next."""
+        # First file: user types "MTBB" at release group prompt
+        # Second file: user accepts default (empty input)
+        prompts_seen: list[str] = []
+        call_count = 0
+
+        def fake_input(prompt: str) -> str:
+            nonlocal call_count
+            prompts_seen.append(prompt)
+            call_count += 1
+            # File 1: release group prompt → "MTBB", episode confirm → accept,
+            #          copy confirm → no
+            # File 2: release group prompt → accept default, episode → accept,
+            #          copy confirm → no
+            if "Release group" in prompt:
+                return "MTBB" if call_count <= 3 else ""
+            if "Episode" in prompt:
+                return ""
+            if "Copy" in prompt:
+                return "n"
+            return ""
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        monkeypatch.setattr(
+            anime,
+            "analyze_file",
+            lambda _: anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="Test",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        defaults = anime.GroupDefaults()
+
+        sf1 = anime.SourceFile(path=Path("/tmp/ep01.mkv"), parsed_episode=1)
+        anime._process_file(
+            sf1,
+            info,
+            "Test",
+            Path("/tmp/out"),
+            dry_run=True,
+            verbose=False,
+            defaults=defaults,
+        )
+        assert defaults.release_group == "MTBB"
+
+        sf2 = anime.SourceFile(path=Path("/tmp/ep02.mkv"), parsed_episode=2)
+        anime._process_file(
+            sf2,
+            info,
+            "Test",
+            Path("/tmp/out"),
+            dry_run=True,
+            verbose=False,
+            defaults=defaults,
+        )
+        # Second file should have picked up the default
+        assert sf2.release_group == "MTBB"
+
+    def test_no_prompt_when_group_present(self, monkeypatch):
+        """No release group prompt when filename already has one."""
+        prompts_seen: list[str] = []
+
+        def fake_input(prompt: str) -> str:
+            prompts_seen.append(prompt)
+            if "Copy" in prompt:
+                return "n"
+            return ""
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        monkeypatch.setattr(
+            anime,
+            "analyze_file",
+            lambda _: anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="Test",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        sf = anime.SourceFile(
+            path=Path("/tmp/test.mkv"),
+            release_group="Cyan",
+            parsed_episode=1,
+        )
+        anime._process_file(
+            sf,
+            info,
+            "Test",
+            Path("/tmp/out"),
+            dry_run=True,
+            verbose=False,
+            defaults=anime.GroupDefaults(),
+        )
+        assert not any("Release group" in p for p in prompts_seen)
+
+
+class TestTriageManifest:
+    """Tests for triage copy-tracking manifest."""
+
+    def test_roundtrip(self, monkeypatch, tmp_path):
+        cache_dir = tmp_path / "triage"
+        cache_dir.mkdir()
+        monkeypatch.setattr(
+            anime, "_triage_manifest_path", lambda: cache_dir / "copied.json"
+        )
+
+        assert anime._load_triage_manifest() == set()
+
+        paths = {"/vol/a.mkv", "/vol/b.mkv"}
+        anime._save_triage_manifest(paths)
+        assert anime._load_triage_manifest() == paths
+
+    def test_corrupt_manifest(self, monkeypatch, tmp_path):
+        manifest = tmp_path / "copied.json"
+        manifest.write_text("not json!!!", encoding="utf-8")
+        monkeypatch.setattr(anime, "_triage_manifest_path", lambda: manifest)
+        assert anime._load_triage_manifest() == set()
+
+    def test_manifest_accumulates(self, monkeypatch, tmp_path):
+        cache_dir = tmp_path / "triage"
+        cache_dir.mkdir()
+        monkeypatch.setattr(
+            anime, "_triage_manifest_path", lambda: cache_dir / "copied.json"
+        )
+
+        anime._save_triage_manifest({"/vol/a.mkv"})
+        loaded = anime._load_triage_manifest()
+        loaded.add("/vol/b.mkv")
+        anime._save_triage_manifest(loaded)
+        assert anime._load_triage_manifest() == {"/vol/a.mkv", "/vol/b.mkv"}
+
+
+class TestCrc32Verification:
+    """Tests for CRC32 hash computation and verification."""
+
+    def test_compute_crc32(self, tmp_path):
+        f = tmp_path / "test.bin"
+        f.write_bytes(b"hello world")
+        # Known CRC32 of b"hello world"
+        import zlib
+
+        expected = f"{zlib.crc32(b'hello world') & 0xFFFFFFFF:08X}"
+        assert anime.compute_crc32(f) == expected
+
+    def test_verify_hash_match(self, tmp_path):
+        f = tmp_path / "test.mkv"
+        f.write_bytes(b"test data")
+        import zlib
+
+        crc = f"{zlib.crc32(b'test data') & 0xFFFFFFFF:08X}"
+        sf = anime.SourceFile(path=f, hash_code=crc)
+        result = anime.verify_hash(sf)
+        assert result is not None
+        ok, actual = result
+        assert ok is True
+        assert actual == crc
+
+    def test_verify_hash_mismatch(self, tmp_path):
+        f = tmp_path / "test.mkv"
+        f.write_bytes(b"test data")
+        sf = anime.SourceFile(path=f, hash_code="00000000")
+        result = anime.verify_hash(sf)
+        assert result is not None
+        ok, actual = result
+        assert ok is False
+        assert len(actual) == 8
+
+    def test_verify_hash_no_hash(self):
+        sf = anime.SourceFile(path=Path("/tmp/test.mkv"), hash_code="")
+        assert anime.verify_hash(sf) is None
+
+    def test_verify_hash_case_insensitive(self, tmp_path):
+        f = tmp_path / "test.mkv"
+        f.write_bytes(b"test data")
+        import zlib
+
+        crc = f"{zlib.crc32(b'test data') & 0xFFFFFFFF:08x}"  # lowercase
+        sf = anime.SourceFile(path=f, hash_code=crc)
+        result = anime.verify_hash(sf)
+        assert result is not None
+        assert result[0] is True
+
+
+# Helper to create a mock MediaInfo for batch tests
+def _mock_media():  # type: ignore[no-untyped-def]
+    return anime.MediaInfo(
+        video_codec="HEVC",
+        resolution="1080p",
+        width=1920,
+        height=1080,
+        bit_depth=8,
+        hdr_type="",
+    )
+
+
+class TestBuildManifestEntries:
+    """Tests for batch manifest entry building."""
+
+    def test_basic_entries(self, tmp_path, monkeypatch):
+        f1 = tmp_path / "[Cyan] Show - 01 [1080p][AAAA1111].mkv"
+        f1.write_bytes(b"file1")
+        f2 = tmp_path / "[Cyan] Show - 02 [1080p][BBBB2222].mkv"
+        f2.write_bytes(b"file2")
+
+        monkeypatch.setattr(anime, "analyze_file", lambda _: _mock_media())
+        monkeypatch.setattr(anime, "verify_hash", lambda _: None)
+
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[
+                anime.Episode(1, "regular", "Pilot", "", ""),
+                anime.Episode(2, "regular", "Second", "", ""),
+            ],
+        )
+        entries = anime._build_manifest_entries(
+            anime._parse_files([f1, f2]), info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 2
+        assert not entries[0].is_todo
+        assert not entries[1].is_todo
+        assert "s1e01" in str(entries[0].dest_path)
+        assert "s1e02" in str(entries[1].dest_path)
+
+    def test_unmatched_episode_todo(self, tmp_path, monkeypatch):
+        f = tmp_path / "[Group] Movie [1080p].mkv"
+        f.write_bytes(b"data")
+
+        monkeypatch.setattr(anime, "analyze_file", lambda _: _mock_media())
+        monkeypatch.setattr(anime, "verify_hash", lambda _: None)
+
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        entries = anime._build_manifest_entries(
+            anime._parse_files([f]), info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        assert entries[0].is_todo
+
+    def test_hash_mismatch_strips_hash(self, tmp_path, monkeypatch):
+        f = tmp_path / "[Group] Show - 01 [DEADBEEF].mkv"
+        f.write_bytes(b"data")
+
+        monkeypatch.setattr(anime, "analyze_file", lambda _: _mock_media())
+        monkeypatch.setattr(anime, "verify_hash", lambda _: (False, "00000000"))
+
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        entries = anime._build_manifest_entries(
+            anime._parse_files([f]), info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert entries[0].hash_failed
+        assert entries[0].source.hash_code == ""
+        assert "DEADBEEF" not in str(entries[0].dest_path)
+
+    def test_default_release_group_applied(self, tmp_path, monkeypatch):
+        f1 = tmp_path / "[MTBB] Show - 01.mkv"
+        f1.write_bytes(b"a")
+        f2 = tmp_path / "Show - 02.mkv"  # no group
+        f2.write_bytes(b"b")
+
+        monkeypatch.setattr(anime, "analyze_file", lambda _: _mock_media())
+        monkeypatch.setattr(anime, "verify_hash", lambda _: None)
+
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        entries = anime._build_manifest_entries(
+            anime._parse_files([f1, f2]), info, "Show", tmp_path / "dest", verbose=False
+        )
+        # No sticky defaults — f2 has no group, stays empty
+        assert entries[1].source.release_group == ""
+
+
+class TestWriteManifest:
+    """Tests for KDL manifest file writing."""
+
+    def test_basic_format(self, tmp_path):
+        sf = anime.SourceFile(
+            path=tmp_path / "src.mkv", parsed_episode=1, parsed_season=1
+        )
+        dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
+        entry = anime.ManifestEntry(source=sf, dest_path=dest_path)
+        info = anime.AnimeInfo(
+            anidb_id=42,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        path = anime._write_manifest([entry], info, "Test", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
+            assert "etp-anime triage manifest" in content
+            assert "AniDB: 42" in content
+            assert "season 1 {" in content
+            assert 'source "src.mkv"' in content
+            assert 'dest "dst.mkv"' in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_todo_tag(self, tmp_path):
+        sf = anime.SourceFile(
+            path=tmp_path / "src.mkv", parsed_episode=0, parsed_season=1
+        )
+        dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
+        entry = anime.ManifestEntry(source=sf, dest_path=dest_path, is_todo=True)
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        path = anime._write_manifest([entry], info, "Test", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
+            assert "(todo)episode" in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_hash_mismatch_comment(self, tmp_path):
+        sf = anime.SourceFile(
+            path=tmp_path / "src.mkv", parsed_episode=1, parsed_season=1
+        )
+        dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
+        entry = anime.ManifestEntry(source=sf, dest_path=dest_path, hash_failed=True)
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        path = anime._write_manifest([entry], info, "Test", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
+            assert "CRC32 MISMATCH" in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_grouped_by_season(self, tmp_path):
+        sf1 = anime.SourceFile(
+            path=tmp_path / "s1e01.mkv", parsed_episode=1, parsed_season=1
+        )
+        sf2 = anime.SourceFile(
+            path=tmp_path / "s2e01.mkv", parsed_episode=1, parsed_season=2
+        )
+        entries = [
+            anime.ManifestEntry(
+                source=sf1, dest_path=tmp_path / "series" / "Season 01" / "ep1.mkv"
+            ),
+            anime.ManifestEntry(
+                source=sf2, dest_path=tmp_path / "series" / "Season 02" / "ep1.mkv"
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        path = anime._write_manifest(entries, info, "Test", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
+            assert "season 1 {" in content
+            assert "season 2 {" in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_entries_sorted_by_episode(self, tmp_path):
+        """Episodes within a season are sorted by episode number."""
+        sf9 = anime.SourceFile(
+            path=tmp_path / "ep09.mkv", parsed_episode=9, parsed_season=1
+        )
+        sf2 = anime.SourceFile(
+            path=tmp_path / "ep02.mkv", parsed_episode=2, parsed_season=1
+        )
+        sf5 = anime.SourceFile(
+            path=tmp_path / "ep05.mkv", parsed_episode=5, parsed_season=1
+        )
+        # Deliberately out of order
+        entries = [
+            anime.ManifestEntry(
+                source=sf9, dest_path=tmp_path / "series" / "Season 01" / "e09.mkv"
+            ),
+            anime.ManifestEntry(
+                source=sf2, dest_path=tmp_path / "series" / "Season 01" / "e02.mkv"
+            ),
+            anime.ManifestEntry(
+                source=sf5, dest_path=tmp_path / "series" / "Season 01" / "e05.mkv"
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[],
+        )
+        path = anime._write_manifest(entries, info, "Test", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
+            # Find all episode lines and check order
+            import re
+
+            ep_nums = re.findall(r"episode (\d+) \{", content)
+            assert ep_nums == ["2", "5", "9"]
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class TestParseManifest:
+    """Tests for KDL manifest parsing."""
+
+    def _make_kdl(self, season: int, source: str, dest: str) -> str:
+        return (
+            f"season {season} {{\n"
+            f'  episode 1 {{\n    source "{source}"\n    dest "{dest}"\n  }}\n'
+            f"}}\n"
+        )
+
+    def test_valid_entry(self, tmp_path):
+        sf = anime.SourceFile(path=Path("/src/a.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(self._make_kdl(1, "a.mkv", "dst.mkv"), encoding="utf-8")
+        series_dir = tmp_path / "series"
+        entries, errors = anime._parse_manifest(manifest, {"a.mkv": sf}, series_dir)
+        assert len(entries) == 1
+        assert len(errors) == 0
+        assert entries[0][0] is sf
+        assert entries[0][1] == series_dir / "Season 01" / "dst.mkv"
+
+    def test_todo_rejected(self, tmp_path):
+        sf = anime.SourceFile(path=Path("/src/a.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'season 1 {\n  (todo)episode 0 {\n    source "a.mkv"\n'
+            '    dest "dst.mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        entries, errors = anime._parse_manifest(manifest, {"a.mkv": sf}, tmp_path)
+        assert len(entries) == 0
+        assert any("todo" in e for e in errors)
+
+    def test_unknown_source(self, tmp_path):
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            self._make_kdl(1, "unknown.mkv", "dst.mkv"), encoding="utf-8"
+        )
+        entries, errors = anime._parse_manifest(manifest, {}, tmp_path)
+        assert len(entries) == 0
+        assert any("unknown source" in e for e in errors)
+
+    def test_empty_manifest(self, tmp_path):
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text("// all entries deleted\n", encoding="utf-8")
+        entries, errors = anime._parse_manifest(manifest, {}, tmp_path)
+        assert len(entries) == 0
+        assert len(errors) == 0
+
+    def test_slashdash_skipped(self, tmp_path):
+        """KDL /- commented entries are excluded by the parser."""
+        sf = anime.SourceFile(path=Path("/src/a.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'season 1 {\n  /- episode 1 {\n    source "a.mkv"\n'
+            '    dest "dst.mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        entries, errors = anime._parse_manifest(manifest, {"a.mkv": sf}, tmp_path)
+        assert len(entries) == 0
+        assert len(errors) == 0
+
+    def test_specials_group(self, tmp_path):
+        sf = anime.SourceFile(path=Path("/src/s.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'specials {\n  episode 1 {\n    source "s.mkv"\n'
+            '    dest "special.mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        series_dir = tmp_path / "series"
+        entries, errors = anime._parse_manifest(manifest, {"s.mkv": sf}, series_dir)
+        assert len(entries) == 1
+        assert entries[0][1] == series_dir / "Specials" / "special.mkv"
+
+
+class TestOpenEditor:
+    """Tests for editor invocation."""
+
+    def test_visual_preferred(self, monkeypatch):
+        called_with: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            called_with.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setenv("VISUAL", "code")
+        monkeypatch.setenv("EDITOR", "nano")
+
+        anime._open_editor(Path("/tmp/test.tsv"))
+        assert called_with[0][0] == "code"
+
+    def test_editor_fallback(self, monkeypatch):
+        called_with: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            called_with.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setenv("EDITOR", "nano")
+
+        anime._open_editor(Path("/tmp/test.tsv"))
+        assert called_with[0][0] == "nano"
+
+    def test_vi_default(self, monkeypatch):
+        called_with: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            called_with.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+
+        anime._open_editor(Path("/tmp/test.tsv"))
+        assert called_with[0][0] == "vi"
+
+
+class TestExecuteManifest:
+    """Tests for manifest execution."""
+
+    def test_success_counting(self, monkeypatch):
+        monkeypatch.setattr(anime, "copy_reflink", lambda *a, **kw: True)
+
+        sf1 = anime.SourceFile(path=Path("/src/a.mkv"))
+        sf2 = anime.SourceFile(path=Path("/src/b.mkv"))
+        entries = [
+            (sf1, Path("/dst/a.mkv")),
+            (sf2, Path("/dst/b.mkv")),
+        ]
+
+        success, failed, copied = anime._execute_manifest(
+            entries, dry_run=True, verbose=False
+        )
+        assert success == 2
+        assert failed == 0
+        assert len(copied) == 2
+
+    def test_failure_counting(self, monkeypatch):
+        call_count = 0
+
+        def mock_copy(*_a: object, **_kw: object) -> bool:
+            nonlocal call_count
+            call_count += 1
+            return call_count != 2  # second call fails
+
+        monkeypatch.setattr(anime, "copy_reflink", mock_copy)
+
+        entries = [
+            (anime.SourceFile(path=Path("/src/a.mkv")), Path("/dst/a.mkv")),
+            (anime.SourceFile(path=Path("/src/b.mkv")), Path("/dst/b.mkv")),
+            (anime.SourceFile(path=Path("/src/c.mkv")), Path("/dst/c.mkv")),
+        ]
+        success, failed, copied = anime._execute_manifest(
+            entries, dry_run=False, verbose=False
+        )
+        assert success == 2
+        assert failed == 1
