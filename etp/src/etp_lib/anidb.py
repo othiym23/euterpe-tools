@@ -52,12 +52,13 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
 
     # Titles -- collect candidates in a single pass, then pick by priority.
     # Japanese: ja official > ja main > x-jat main > main fallback
-    # English:  en official > en main
+    # English:  en official > en main > en synonym (first)
     ja_official = ""
     ja_main = ""
     jat_main = ""
     en_official = ""
     en_main = ""
+    en_synonym = ""
     main_title_fallback = ""
     for title_elem in root.findall("titles/title"):
         lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
@@ -78,9 +79,11 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
             en_official = text
         elif lang == "en" and ttype == "main" and not en_main:
             en_main = text
+        elif lang == "en" and ttype == "synonym" and not en_synonym:
+            en_synonym = text
 
     title_ja = ja_official or ja_main or jat_main or main_title_fallback
-    title_en = en_official or en_main
+    title_en = en_official or en_main or en_synonym
 
     # Year from startdate
     year = 0

@@ -192,6 +192,26 @@ class TestAnidbParsing:
         assert info.title_ja == "Romaji Title"
         assert info.title_en == "English Title"
 
+    def test_en_synonym_fallback(self):
+        """Falls back to en synonym when no en official or main exists."""
+        xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<anime id="7627" restricted="false">
+  <type>TV Series</type>
+  <episodecount>12</episodecount>
+  <startdate>2010-10-07</startdate>
+  <titles>
+    <title xml:lang="x-jat" type="main">Tantei Opera Milky Holmes</title>
+    <title xml:lang="en" type="synonym">Detective Opera Milky Holmes</title>
+    <title xml:lang="ja" type="official">\u63a2\u5075\u30aa\u30da\u30e9 \u30df\u30eb\u30ad\u30a3\u30db\u30fc\u30e0\u30ba</title>
+  </titles>
+  <episodes/>
+</anime>
+"""
+        info = _parse_anidb_xml(xml, 7627)
+        assert info.title_en == "Detective Opera Milky Holmes"
+        assert info.title_ja == "探偵オペラ ミルキィホームズ"
+
     def test_error_response(self):
         with pytest.raises(ValueError, match="Anime not found"):
             _parse_anidb_xml(ANIDB_XML_ERROR, 99999)
