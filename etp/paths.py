@@ -59,6 +59,11 @@ def catalog_config() -> Path:
     return config_dir() / "catalog.kdl"
 
 
+def anime_config() -> Path:
+    """Default anime ingestion config: anime-ingestion.kdl in the config directory."""
+    return config_dir() / "anime-ingestion.kdl"
+
+
 def db_path() -> Path:
     """Default database: metadata.sqlite in the data directory."""
     return data_dir() / "metadata.sqlite"

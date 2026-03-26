@@ -52,10 +52,8 @@ _TVDB_MAX_PAGES = 100  # safety limit for paginated fetches
 # Default paths (NAS layout)
 # ---------------------------------------------------------------------------
 
-DEFAULT_SOURCE_DIRS = [
-    Path("/volume1/docker/pvr/data/anime"),
-    Path("/volume1/docker/pvr/data/downloads"),
-]
+DEFAULT_DOWNLOADS_DIR = Path("/volume1/docker/pvr/data/downloads")
+DEFAULT_ANIME_SOURCE_DIR = Path("/volume1/docker/pvr/data/anime")
 DEFAULT_DEST_DIR = Path("/volume1/video/anime")
 
 # ---------------------------------------------------------------------------
@@ -135,6 +133,93 @@ class ManifestEntry:
     dest_path: Path
     is_todo: bool = False
     hash_failed: bool = False
+
+
+@dataclass
+class AnimeConfig:
+    """Configuration loaded from anime-ingestion.kdl."""
+
+    downloads_dir: Path = field(default_factory=lambda: DEFAULT_DOWNLOADS_DIR)
+    anime_source_dir: Path = field(default_factory=lambda: DEFAULT_ANIME_SOURCE_DIR)
+    anime_dest_dir: Path = field(default_factory=lambda: DEFAULT_DEST_DIR)
+    series_mappings: dict[str, tuple[str, int]] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Configuration (anime-ingestion.kdl)
+# ---------------------------------------------------------------------------
+
+
+def load_anime_config(path: Path | None = None) -> AnimeConfig:
+    """Load anime ingestion config from a KDL file.
+
+    Falls back to defaults if the file doesn't exist.
+    """
+    if path is None:
+        import paths as etp_paths
+
+        path = etp_paths.anime_config()
+
+    config = AnimeConfig()
+    if not path.exists():
+        return config
+
+    doc = kdl.parse(path.read_text(encoding="utf-8"))
+
+    # Parse paths block
+    paths_node = doc.get("paths")
+    if paths_node is not None:
+        for child in paths_node.nodes:
+            key = child.name.replace("-", "_")
+            if child.args:
+                val = str(child.args[0])
+                if key == "downloads_dir":
+                    config.downloads_dir = Path(val)
+                elif key == "anime_source_dir":
+                    config.anime_source_dir = Path(val)
+                elif key == "anime_dest_dir":
+                    config.anime_dest_dir = Path(val)
+
+    # Parse series mappings
+    for node in doc.getAll("series"):
+        name = str(node.args[0]) if node.args else ""
+        if not name:
+            continue
+        for child in node.nodes:
+            if child.name == "anidb" and child.args:
+                config.series_mappings[name] = ("anidb", int(child.args[0]))
+            elif child.name == "tvdb" and child.args:
+                config.series_mappings[name] = ("tvdb", int(child.args[0]))
+
+    return config
+
+
+def save_series_mapping(
+    name: str, provider: str, provider_id: int, path: Path | None = None
+) -> None:
+    """Append a series→ID mapping to the config file."""
+    if path is None:
+        import paths as etp_paths
+
+        path = etp_paths.anime_config()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Append a new series node
+    line = f'\nseries "{name}" {{\n  {provider} {provider_id}\n}}\n'
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+
+def lookup_series_id(
+    name: str, config: AnimeConfig
+) -> tuple[str, int] | None:
+    """Look up a series ID from config mappings by name (case-insensitive)."""
+    name_lower = name.lower()
+    for series_name, mapping in config.series_mappings.items():
+        if series_name.lower() == name_lower:
+            return mapping
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1480,57 +1565,74 @@ def _scan_and_group(source_dirs: list[Path]) -> dict[str, list[Path]]:
 # ---------------------------------------------------------------------------
 
 
+def _add_common_flags(p: argparse.ArgumentParser) -> None:
+    """Add flags shared by all subcommands."""
+    p.add_argument("--dest", type=Path, metavar="DIR", help="Destination directory")
+    p.add_argument("--dry-run", action="store_true", help="Show what would be done without copying")
+    p.add_argument("--no-cache", action="store_true", help="Bypass API response cache")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    p.add_argument("--config", type=Path, metavar="FILE", help="Config file path")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser."""
+    """Build the argument parser with triage/series/episode subcommands."""
     p = argparse.ArgumentParser(
         prog="etp-anime",
         description="Interactive anime collection manager",
     )
     p.add_argument("--version", "-V", action="version", version=VERSION)
 
-    source_group = p.add_mutually_exclusive_group(required=True)
-    source_group.add_argument("--anidb", type=int, metavar="ID", help="AniDB anime ID")
-    source_group.add_argument(
-        "--tvdb", type=int, metavar="ID", help="TheTVDB series ID"
-    )
-    source_group.add_argument(
-        "--triage",
-        action="store_true",
-        default=False,
-        help="Triage mode: scan source dirs, group by series, process interactively",
-    )
+    sub = p.add_subparsers(dest="command")
 
-    p.add_argument("--file", type=Path, metavar="PATH", help="Single file mode")
-    p.add_argument(
-        "--source",
-        type=Path,
-        action="append",
-        metavar="DIR",
-        help="Source directory (repeatable; default: NAS download dirs)",
+    # triage: bulk import from downloads
+    t = sub.add_parser(
+        "triage",
+        help="Bulk import from downloads directory",
+        description="Scan downloads directory, group files by series, and "
+        "process groups via editable KDL manifests.",
     )
-    p.add_argument(
-        "--dest",
-        type=Path,
-        metavar="DIR",
-        default=DEFAULT_DEST_DIR,
-        help=f"Destination base directory (default: {DEFAULT_DEST_DIR})",
+    t.add_argument("pattern", nargs="?", help="Filter files by name pattern")
+    t.add_argument(
+        "--source", type=Path, action="append", metavar="DIR",
+        help="Source directory (repeatable; overrides config)",
     )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be done without copying",
+    t.add_argument(
+        "--force", action="store_true",
+        help="Re-process previously triaged files and auto-replace conflicts",
     )
-    p.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Bypass API response cache",
+    _add_common_flags(t)
+
+    # series: sync from Sonarr-managed directory
+    s = sub.add_parser(
+        "series",
+        help="Sync from Sonarr-managed anime directory",
+        description="Process series directories from a Sonarr-managed source, "
+        "keeping the curated collection in sync via editable KDL manifests.",
     )
-    p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    p.add_argument(
-        "--force",
-        action="store_true",
-        help="Re-process files already copied in a previous triage run",
+    s.add_argument("pattern", nargs="?", help="Filter series by name pattern")
+    s.add_argument(
+        "--source", type=Path, metavar="DIR",
+        help="Source directory (overrides config)",
     )
+    s.add_argument(
+        "--force", action="store_true",
+        help="Re-process previously synced files and auto-replace conflicts",
+    )
+    _add_common_flags(s)
+
+    # episode: single-file import
+    e = sub.add_parser(
+        "episode",
+        help="Import a single episode or movie",
+        description="Import a single file into the anime collection. "
+        "Requires an AniDB or TheTVDB ID.",
+    )
+    e.add_argument("file", type=Path, help="File to import")
+    id_group = e.add_mutually_exclusive_group(required=True)
+    id_group.add_argument("--anidb", type=int, metavar="ID", help="AniDB anime ID")
+    id_group.add_argument("--tvdb", type=int, metavar="ID", help="TheTVDB series ID")
+    _add_common_flags(e)
+
     return p
 
 
@@ -1568,13 +1670,6 @@ def fetch_anime_info(
         return fetch_tvdb_series(tvdb_id, api_key, no_cache=no_cache)
     else:
         raise ValueError("Either anidb_id or tvdb_id must be provided")
-
-
-def _fetch_anime_info(args: argparse.Namespace) -> AnimeInfo:
-    """Fetch anime info based on CLI args."""
-    return fetch_anime_info(
-        anidb_id=args.anidb, tvdb_id=args.tvdb, no_cache=args.no_cache
-    )
 
 
 def _confirm_anime_info(info: AnimeInfo) -> AnimeInfo:
@@ -2278,112 +2373,231 @@ def _process_group_batch(
 
 
 # ---------------------------------------------------------------------------
-# Mode entry points
+# Subcommand entry points
 #
-# Three modes of operation:
-#   run_per_series  — search source dirs for files matching a series, process
-#                     interactively one file at a time (--anidb/--tvdb)
-#   run_single_file — process a single file (--file with --anidb/--tvdb)
-#   run_triage      — scan source dirs, group by series name, process groups
-#                     via editable KDL manifests (--triage)
+# Three subcommands (see ADR 2026-03-26-01):
+#   run_triage  — bulk import from downloads directory via KDL manifests
+#   run_series  — sync from Sonarr-managed anime directory via KDL manifests
+#   run_episode — import a single file interactively
 #
-# All three modes share: filename construction (format_episode_filename),
+# All three share: filename construction (format_episode_filename),
 # directory resolution (resolve_series_directory), conflict handling
-# (handle_conflict), and file copying (copy_reflink).
+# (handle_conflict), file copying (copy_reflink), and the anime-ingestion.kdl
+# config for paths and per-series ID mappings.
 # ---------------------------------------------------------------------------
 
 
-def run_per_series(args: argparse.Namespace) -> int:
-    """Search source directories for files matching a series and process them.
+def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
+    """Sync series from a Sonarr-managed anime directory.
 
-    Workflow: fetch metadata → confirm → find source files → resolve series
-    directory → process each file interactively (mediainfo, episode matching,
-    CRC32 verification, conflict check, copy).
+    Iterates series directories in the source, looks up AniDB/TVDB IDs
+    from source directory ID files or config mappings, and processes files
+    via the batch KDL manifest flow. Uses the same triage manifest for
+    tracking processed files.
+
+    With --force: bypasses the triage manifest and auto-replaces conflicts.
     """
-    info = _fetch_anime_info(args)
-    info = _confirm_anime_info(info)
+    source_dir = args.source if isinstance(args.source, Path) else config.anime_source_dir
 
-    # Scan destination for existing series
-    id_map = scan_dest_ids(args.dest)
+    if not source_dir.is_dir():
+        print(f"error: source directory not found: {source_dir}", file=sys.stderr)
+        return 1
 
-    # Determine source directories
-    source_dirs = args.source or DEFAULT_SOURCE_DIRS
-
-    # Search for source files
-    search = prompt_value(
-        "Search term for source files", info.title_en or info.title_ja
+    # List series directories
+    series_dirs = sorted(
+        d for d in source_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
     )
-    source_files = find_source_files(source_dirs, search)
 
-    if not source_files:
-        print("\nNo matching files found in source directories.")
-        manual = prompt_value("Enter a path to search (or 'q' to quit)", "")
-        if not manual or manual == "q":
-            return 0
-        source_files = find_source_files([Path(manual)], search)
+    # Filter by pattern
+    pattern = getattr(args, "pattern", None)
+    if pattern:
+        pattern_lower = pattern.lower()
+        series_dirs = [d for d in series_dirs if pattern_lower in d.name.lower()]
 
-    if not source_files:
-        print("No files found. Exiting.")
+    if not series_dirs:
+        print("No series directories found.")
         return 0
 
-    # Display found files
-    print(f"\nFound {len(source_files)} file(s):")
-    for i, f in enumerate(source_files, 1):
-        print(f"  {i}) {f.name}")
-        if args.verbose:
-            print(f"     {f}")
+    # Load triage manifest for tracking
+    already_copied = _load_triage_manifest()
+    force = getattr(args, "force", False)
+    id_map = scan_dest_ids(args.dest)
 
-    # Select files to process
-    if not prompt_confirm(f"\nProcess all {len(source_files)} files?"):
-        selection = prompt_value(
-            "Enter file numbers to process (comma-separated, e.g. 1,3,5)"
-        )
+    total_success = 0
+    total_failed = 0
+
+    for series_path in series_dirs:
+        print(f"\n{'='*60}")
+        print(f"Series: {series_path.name}")
+        print(f"{'='*60}")
+
+        # Collect media files in this series directory
+        media_files = _iter_media_files([series_path])
+        if not media_files:
+            print("  No media files found, skipping.")
+            continue
+
+        # Filter already-processed files
+        if not force and already_copied:
+            media_files = [
+                f for f in media_files
+                if str(f.resolve()) not in already_copied
+            ]
+            if not media_files:
+                print("  All files previously processed, skipping.")
+                continue
+
+        print(f"  {len(media_files)} file(s) to process.")
+
+        # Look up ID: source dir files → config mappings → prompt
+        anidb_id: int | None = None
+        tvdb_id: int | None = None
+
+        # Check for ID files in the source series directory
+        anidb_file = series_path / "anidb.id"
+        tvdb_file = series_path / "tvdb.id"
+        if anidb_file.is_file():
+            try:
+                anidb_id = int(anidb_file.read_text().strip())
+                print(f"  Found anidb.id: {anidb_id}")
+            except ValueError:
+                pass
+        elif tvdb_file.is_file():
+            try:
+                tvdb_id = int(tvdb_file.read_text().strip())
+                print(f"  Found tvdb.id: {tvdb_id}")
+            except ValueError:
+                pass
+
+        # Fall back to config mappings
+        if anidb_id is None and tvdb_id is None:
+            saved = lookup_series_id(series_path.name, config)
+            if saved:
+                provider, sid = saved
+                if provider == "anidb":
+                    anidb_id = sid
+                else:
+                    tvdb_id = sid
+                print(f"  Config mapping: {provider} {sid}")
+
+        # Fall back to prompting
+        if anidb_id is None and tvdb_id is None:
+            raw = input(
+                f"\n  AniDB ID, TheTVDB ID (prefix with 't'), or 's' to skip: "
+            ).strip()
+            if not raw or raw.lower() == "s":
+                print("  Skipping.")
+                continue
+            try:
+                if raw.lower().startswith("t"):
+                    tvdb_id = int(raw[1:])
+                else:
+                    anidb_id = int(raw)
+            except ValueError:
+                print(f"  Invalid ID '{raw}', skipping.")
+                continue
+
+            # Save to config
+            if not args.dry_run:
+                provider = "anidb" if anidb_id is not None else "tvdb"
+                pid = anidb_id if anidb_id is not None else tvdb_id
+                if pid is not None:
+                    save_series_mapping(series_path.name, provider, pid)
+                    config.series_mappings[series_path.name] = (provider, pid)
+
+        # Fetch metadata
         try:
-            indices = [int(x.strip()) - 1 for x in selection.split(",")]
-            source_files = [source_files[i] for i in indices]
-        except (ValueError, IndexError):
-            print("Invalid selection. Exiting.")
-            return 1
+            info = fetch_anime_info(
+                anidb_id=anidb_id, tvdb_id=tvdb_id,
+                no_cache=getattr(args, "no_cache", False),
+            )
+        except Exception as e:
+            print(f"  Error fetching metadata: {e}")
+            continue
 
-    success, failed, _copied = _process_group(
-        source_files, info, id_map, args.dest, args.dry_run, args.verbose
-    )
-    print(f"\nDone: {success} copied, {failed} skipped/failed")
-    return 0 if failed == 0 else 1
+        info = _confirm_anime_info(info)
+
+        # Process via batch manifest (same flow as triage)
+        parsed = _parse_files(media_files)
+        success, failed, triaged = _process_group_batch(
+            [],
+            info,
+            id_map,
+            args.dest,
+            args.dry_run,
+            args.verbose,
+            default_concise_name=series_path.name,
+            pre_parsed=parsed,
+            season_override=1 if anidb_id is not None else None,
+        )
+
+        print(f"\n  Done: {success} copied, {failed} skipped/failed")
+        total_success += success
+        total_failed += failed
+
+        # Track processed files
+        if triaged and not args.dry_run:
+            for p in triaged:
+                already_copied.add(str(p.resolve()))
+
+    if total_success and not args.dry_run:
+        _save_triage_manifest(already_copied)
+
+    print(f"\nSeries sync complete: {total_success} copied, {total_failed} skipped/failed")
+    return 0 if total_failed == 0 else 1
 
 
-def run_single_file(args: argparse.Namespace) -> int:
-    """Process a single file specified by --file.
+def run_episode(args: argparse.Namespace, config: AnimeConfig) -> int:
+    """Import a single episode or movie file.
 
-    Workflow: fetch metadata → confirm → parse filename → resolve series
-    directory → process file interactively (same path as run_per_series
-    for the individual file).
+    Simplified interactive workflow for one-off imports. Reluctant to create
+    new series directories — requires explicit confirmation (default no).
     """
     if not args.file.is_file():
         print(f"error: {args.file} is not a file", file=sys.stderr)
         return 1
 
-    info = _fetch_anime_info(args)
+    info = fetch_anime_info(
+        anidb_id=getattr(args, "anidb", None),
+        tvdb_id=getattr(args, "tvdb", None),
+        no_cache=getattr(args, "no_cache", False),
+    )
     info = _confirm_anime_info(info)
 
-    # Scan destination for existing series
     id_map = scan_dest_ids(args.dest)
 
-    # Parse the source file
     sf = parse_source_filename(args.file.name)
     sf.path = args.file
 
-    # Get concise name
     default_name = _extract_concise_name([sf])
     concise_name = prompt_value("Concise series name for filename", default_name)
 
-    # Resolve or create series directory
-    series_dir = resolve_series_directory(
-        args.dest,
-        info,
-        id_map=id_map,
-        dry_run=args.dry_run,
-    )
+    # Reluctant directory creation: check if directory exists first
+    dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
+    conventional = args.dest / dirname
+
+    # Check ID map and conventional name
+    series_dir: Path | None = None
+    if id_map:
+        if info.anidb_id is not None:
+            series_dir = id_map.get(("anidb", info.anidb_id))
+        if series_dir is None and info.tvdb_id is not None:
+            series_dir = id_map.get(("tvdb", info.tvdb_id))
+    if series_dir is None and conventional.is_dir():
+        series_dir = conventional
+
+    if series_dir is None:
+        print(f"\n  No existing series directory found for: {dirname}")
+        if not prompt_confirm("  Create new series directory?", default=False):
+            print("  Aborted.")
+            return 1
+        series_dir = resolve_series_directory(
+            args.dest, info, id_map=id_map, dry_run=args.dry_run
+        )
+    else:
+        print(f"  Using: {series_dir.name}")
+
     print(f"\nSeries directory: {series_dir}")
 
     if _process_file(sf, info, concise_name, series_dir, args.dry_run, args.verbose):
@@ -2394,7 +2608,7 @@ def run_single_file(args: argparse.Namespace) -> int:
         return 1
 
 
-def run_triage(args: argparse.Namespace) -> int:
+def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     """Scan source directories, group files by series, and process in batch.
 
     For each group, the user provides AniDB/TVDB IDs one at a time. Files
@@ -2409,8 +2623,18 @@ def run_triage(args: argparse.Namespace) -> int:
     Previously copied files are tracked in a JSON manifest and filtered
     out on subsequent runs (use --force to re-process).
     """
-    source_dirs = args.source or DEFAULT_SOURCE_DIRS
+    source_dirs = args.source or [config.downloads_dir]
     groups = _scan_and_group(source_dirs)
+
+    # Filter by pattern if provided
+    pattern = getattr(args, "pattern", None)
+    if pattern:
+        pattern_lower = pattern.lower()
+        groups = {
+            name: files
+            for name, files in groups.items()
+            if pattern_lower in name.lower()
+        }
 
     if not groups:
         print("No media files found in source directories.")
@@ -2473,9 +2697,17 @@ def run_triage(args: argparse.Namespace) -> int:
             remaining_count = len(pool)
             print(f"\n  {remaining_count} file(s) remaining in pool.")
 
+            # Check config for a saved series mapping
+            saved = lookup_series_id(name, config)
+            if saved:
+                provider, sid = saved
+                hint = f" [config: {provider} {sid}]"
+            else:
+                hint = ""
+
             raw = input(
-                "\nAniDB ID, TheTVDB ID (prefix with 't'),"
-                " 's' to skip, 'd' to mark done: "
+                f"\nAniDB ID, TheTVDB ID (prefix with 't'),"
+                f" 's' to skip, 'd' to mark done{hint}: "
             ).strip()
             if not raw or raw.lower() == "s":
                 print("  Skipping remaining files.")
@@ -2511,6 +2743,14 @@ def run_triage(args: argparse.Namespace) -> int:
                 continue
 
             info = _confirm_anime_info(info)
+
+            # Save series mapping to config for future runs
+            if not lookup_series_id(name, config) and not args.dry_run:
+                provider = "anidb" if anidb_id is not None else "tvdb"
+                pid = anidb_id if anidb_id is not None else tvdb_id
+                if pid is not None:
+                    save_series_mapping(name, provider, pid)
+                    config.series_mappings[name] = (provider, pid)
 
             if anidb_id is not None:
                 # AniDB per-season: match files to this season, force s1eYY
@@ -2566,9 +2806,13 @@ def run_triage(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    """Entry point."""
+    """Entry point: parse args, load config, dispatch to subcommand."""
     parser = build_parser()
     args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 0
 
     if not shutil.which("mediainfo"):
         print(
@@ -2577,12 +2821,28 @@ def main() -> int:
         )
         return 1
 
-    if args.triage:
-        return run_triage(args)
-    elif args.file:
-        return run_single_file(args)
+    config = load_anime_config(getattr(args, "config", None))
+
+    # Apply config defaults to args
+    if not getattr(args, "dest", None):
+        args.dest = config.anime_dest_dir
+
+    if args.command == "triage":
+        if not getattr(args, "source", None):
+            args.source = [config.downloads_dir]
+        args.no_cache = getattr(args, "no_cache", False)
+        return run_triage(args, config)
+    elif args.command == "series":
+        if not getattr(args, "source", None):
+            args.source = config.anime_source_dir
+        args.no_cache = getattr(args, "no_cache", False)
+        return run_series(args, config)
+    elif args.command == "episode":
+        args.no_cache = getattr(args, "no_cache", False)
+        return run_episode(args, config)
     else:
-        return run_per_series(args)
+        parser.print_help()
+        return 1
 
 
 if __name__ == "__main__":

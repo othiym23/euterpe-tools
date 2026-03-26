@@ -1195,69 +1195,117 @@ class TestResolveSeriesDirectory:
 
 
 class TestCLI:
-    """Tests for CLI argument parsing."""
+    """Tests for subcommand-based CLI argument parsing."""
 
-    def test_anidb_and_tvdb_mutually_exclusive(self):
+    def test_triage_subcommand(self):
         parser = anime.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--anidb", "28", "--tvdb", "12345"])
+        args = parser.parse_args(["triage"])
+        assert args.command == "triage"
 
-    def test_requires_anidb_or_tvdb_or_triage(self):
+    def test_triage_with_pattern(self):
         parser = anime.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args([])
-
-    def test_anidb_mode(self):
-        parser = anime.build_parser()
-        args = parser.parse_args(["--anidb", "28"])
-        assert args.anidb == 28
-        assert args.tvdb is None
-        assert args.triage is False
-
-    def test_tvdb_mode(self):
-        parser = anime.build_parser()
-        args = parser.parse_args(["--tvdb", "12345"])
-        assert args.tvdb == 12345
-        assert args.anidb is None
-        assert args.triage is False
-
-    def test_triage_mode(self):
-        parser = anime.build_parser()
-        args = parser.parse_args(["--triage"])
-        assert args.triage is True
-        assert args.anidb is None
-        assert args.tvdb is None
-
-    def test_triage_and_anidb_mutually_exclusive(self):
-        parser = anime.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--triage", "--anidb", "28"])
-
-    def test_triage_and_tvdb_mutually_exclusive(self):
-        parser = anime.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--triage", "--tvdb", "12345"])
+        args = parser.parse_args(["triage", "beastars"])
+        assert args.command == "triage"
+        assert args.pattern == "beastars"
 
     def test_triage_with_dry_run(self):
         parser = anime.build_parser()
-        args = parser.parse_args(["--triage", "--dry-run"])
-        assert args.triage is True
+        args = parser.parse_args(["triage", "--dry-run"])
         assert args.dry_run is True
 
-    def test_single_file_mode(self):
+    def test_triage_with_force(self):
         parser = anime.build_parser()
-        args = parser.parse_args(["--anidb", "28", "--file", "/tmp/test.mkv"])
+        args = parser.parse_args(["triage", "--force"])
+        assert args.force is True
+
+    def test_series_subcommand(self):
+        parser = anime.build_parser()
+        args = parser.parse_args(["series"])
+        assert args.command == "series"
+
+    def test_series_with_pattern(self):
+        parser = anime.build_parser()
+        args = parser.parse_args(["series", "beastars"])
+        assert args.command == "series"
+        assert args.pattern == "beastars"
+
+    def test_episode_requires_file_and_id(self):
+        parser = anime.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["episode"])  # no file
+
+    def test_episode_with_anidb(self):
+        parser = anime.build_parser()
+        args = parser.parse_args(["episode", "/tmp/test.mkv", "--anidb", "28"])
+        assert args.command == "episode"
         assert args.file == Path("/tmp/test.mkv")
+        assert args.anidb == 28
+        assert args.tvdb is None
 
-    def test_dry_run(self):
+    def test_episode_with_tvdb(self):
         parser = anime.build_parser()
-        args = parser.parse_args(["--anidb", "28", "--dry-run"])
-        assert args.dry_run is True
+        args = parser.parse_args(["episode", "/tmp/test.mkv", "--tvdb", "12345"])
+        assert args.command == "episode"
+        assert args.tvdb == 12345
+        assert args.anidb is None
 
-    def test_default_dest(self):
+    def test_episode_anidb_and_tvdb_mutually_exclusive(self):
         parser = anime.build_parser()
-        args = parser.parse_args(["--anidb", "28"])
-        assert args.dest == anime.DEFAULT_DEST_DIR
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["episode", "/tmp/test.mkv", "--anidb", "28", "--tvdb", "12345"]
+            )
+
+
+class TestAnimeConfig:
+    """Tests for KDL config loading and series mapping."""
+
+    def test_defaults_when_no_file(self, tmp_path):
+        config = anime.load_anime_config(tmp_path / "nonexistent.kdl")
+        assert config.downloads_dir == anime.DEFAULT_DOWNLOADS_DIR
+        assert config.anime_source_dir == anime.DEFAULT_ANIME_SOURCE_DIR
+        assert config.anime_dest_dir == anime.DEFAULT_DEST_DIR
+        assert config.series_mappings == {}
+
+    def test_load_paths(self, tmp_path):
+        cfg = tmp_path / "config.kdl"
+        cfg.write_text(
+            'paths {\n  downloads-dir "/tmp/dl"\n  anime-dest-dir "/tmp/dest"\n}\n',
+            encoding="utf-8",
+        )
+        config = anime.load_anime_config(cfg)
+        assert config.downloads_dir == Path("/tmp/dl")
+        assert config.anime_dest_dir == Path("/tmp/dest")
+        # Unset field keeps default
+        assert config.anime_source_dir == anime.DEFAULT_ANIME_SOURCE_DIR
+
+    def test_load_series_mappings(self, tmp_path):
+        cfg = tmp_path / "config.kdl"
+        cfg.write_text(
+            'series "BEASTARS" {\n  anidb 14659\n}\n'
+            'series "Re ZERO" {\n  tvdb 305089\n}\n',
+            encoding="utf-8",
+        )
+        config = anime.load_anime_config(cfg)
+        assert config.series_mappings["BEASTARS"] == ("anidb", 14659)
+        assert config.series_mappings["Re ZERO"] == ("tvdb", 305089)
+
+    def test_save_series_mapping(self, tmp_path):
+        cfg = tmp_path / "config.kdl"
+        cfg.write_text("// empty config\n", encoding="utf-8")
+        anime.save_series_mapping("Test Show", "anidb", 12345, path=cfg)
+        content = cfg.read_text(encoding="utf-8")
+        assert 'series "Test Show"' in content
+        assert "anidb 12345" in content
+        # Verify it's loadable
+        config = anime.load_anime_config(cfg)
+        assert config.series_mappings["Test Show"] == ("anidb", 12345)
+
+    def test_lookup_case_insensitive(self):
+        config = anime.AnimeConfig(series_mappings={"BEASTARS": ("anidb", 14659)})
+        assert anime.lookup_series_id("beastars", config) == ("anidb", 14659)
+        assert anime.lookup_series_id("BEASTARS", config) == ("anidb", 14659)
+        assert anime.lookup_series_id("unknown", config) is None
 
 
 class TestExtractSeriesName:
