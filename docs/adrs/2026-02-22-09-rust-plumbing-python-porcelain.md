@@ -16,22 +16,28 @@ Rust binary for heavy lifting and handles workflow logic in Python.
 
 ## Decision
 
-Follow the Git model: Rust binaries are "plumbing" commands (`etp-csv`,
-`etp-tree`, `etp-meta`, `etp-query`, `etp-cas`) that do one thing each. A Python
-"porcelain" layer provides user-facing commands (`etp`, `etp-catalog`) that
-compose plumbing commands and handle workflow orchestration.
+Follow the Git model: all `etp-*` commands are plumbing — single-purpose tools
+whether implemented in Rust (`etp-csv`, `etp-tree`, `etp-find`) or Python
+(`etp-anime`, `etp-catalog`). The sole porcelain is `etp`, a Git-style
+dispatcher that finds and exec's `etp-<subcommand>`.
 
-The `etp` entry point uses Git-style subcommand dispatch — `etp csv ...` finds
-and runs `etp-csv ...` from `$PATH`.
+Rust plumbing handles performance-critical work (scanning, database, I/O).
+Python plumbing handles domain-specific workflows (anime collection management,
+catalog orchestration) where flexibility and iteration speed matter more than
+raw performance.
+
+The Python plumbing is an installable package (`uv tool install .`) with entry
+points in `pyproject.toml`. Rust binaries are deployed to
+`~/.local/libexec/etp/` (FHS convention for plumbing not intended for direct
+user invocation). The dispatcher searches libexec then `$PATH`.
 
 ## Consequences
 
 - Rust handles all performance-critical and correctness-critical work (disk I/O,
   database operations, metadata parsing).
-- Python handles orchestration, where startup time and runtime speed don't
-  matter but flexibility and iteration speed do.
-- New porcelain commands can be added without recompiling Rust.
-- Users can call plumbing commands directly for scripting and automation.
-- The `etp` dispatcher is simple — just `execvp("etp-" + subcommand, args)`.
-- Python porcelain must be deployed alongside the Rust binaries. On the NAS,
-  this means Python 3 must be available (it is, via DSM's package manager).
+- Python handles domain workflows where flexibility and iteration speed matter.
+- New plumbing commands can be added in either language without affecting the
+  dispatcher.
+- The `etp` dispatcher searches `~/.local/libexec/etp/` then `$PATH`.
+- Python plumbing is deployed via `uv tool install` on the NAS (requires Python
+  3.14 and uv).

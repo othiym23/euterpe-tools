@@ -23,10 +23,13 @@ child nodes, and slashdash comments.
 
 ## Decision
 
-Use `kdl-py` 1.2.0 (KDL 1.0.0) for the Python porcelain, vendored into
-`etp/kdl/` so deployment requires no pip install step. Both `knuffel` (Rust) and
-`kdl-py` (Python) implement KDL 1, so configuration files are interchangeable
-between the two parsers.
+Use `kdl-py` 1.2.0 (KDL 1.0.0) for the Python porcelain. Both `knuffel` (Rust)
+and `kdl-py` (Python) implement KDL 1, so configuration files are
+interchangeable between the two parsers.
+
+Originally vendored into `etp/kdl/` to avoid pip dependencies. Now declared as a
+proper PyPI dependency (`kdl-py>=1.2.0` in `pyproject.toml`) since the Python
+porcelain became an installable package.
 
 Revisit when either `kdl-py` publishes a KDL 2 release to PyPI, or `knuffel` is
 replaced with a KDL 2 parser on the Rust side.

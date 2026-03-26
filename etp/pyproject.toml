@@ -1,8 +1,8 @@
 [project]
 name = "etp"
 version = "0.1.0"
-description = "Python porcelain for euterpe-tools"
-requires-python = ">=3.12"
+description = "Python plumbing for euterpe-tools"
+requires-python = ">=3.14"
 dependencies = ["kdl-py>=1.2.0"]
 
 [project.scripts]
