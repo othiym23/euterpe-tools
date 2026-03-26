@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import media_parser as mp
+from etp_lib import media_parser as mp
 
 
 # ===================================================================

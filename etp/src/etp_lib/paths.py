@@ -8,6 +8,7 @@ No external dependencies — uses only stdlib.
 """
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -72,3 +73,31 @@ def anime_env() -> Path:
 def db_path() -> Path:
     """Default database: metadata.sqlite in the data directory."""
     return data_dir() / "metadata.sqlite"
+
+
+def libexec_dir() -> Path:
+    """Directory for Rust plumbing binaries (etp-csv, etp-tree, etp-find).
+
+    Search order:
+    1. $ETP_LIBEXEC_DIR (explicit override)
+    2. ~/.local/libexec/etp/ (FHS standard)
+    """
+    env = os.environ.get("ETP_LIBEXEC_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".local" / "libexec" / "etp"
+
+
+def find_binary(name: str) -> str | None:
+    """Find an etp-* binary in libexec or on $PATH.
+
+    Returns the absolute path to the binary, or None if not found.
+    """
+    # Check libexec directory
+    lexec = libexec_dir()
+    candidate = lexec / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+
+    # Fall back to $PATH
+    return shutil.which(name)

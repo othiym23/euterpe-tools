@@ -1,4 +1,3 @@
-#!/usr/bin/env python3.14
 """Interactive anime collection manager.
 
 Manages an anime collection on a Synology NAS: fetches metadata from AniDB
@@ -36,16 +35,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Ensure vendored/shared packages (kdl/, paths.py) are importable.
-# Deployed: $HOME/.local/lib/etp/. Development: same directory as script.
-_lib_dir = Path.home() / ".local" / "lib" / "etp"
-if _lib_dir.is_dir():
-    sys.path.insert(0, str(_lib_dir))
-else:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import kdl
 
-import kdl  # noqa: E402 — must come after sys.path setup
-import media_parser  # noqa: E402 — must come after sys.path setup
+from etp_lib import media_parser
 
 VERSION = "0.1.0"
 
@@ -59,7 +51,7 @@ def _load_env_file() -> None:
     Supports simple KEY=VALUE lines (no quoting, no interpolation).
     Lines starting with # are ignored. Existing env vars are not overwritten.
     """
-    import paths as etp_paths
+    from etp_lib import paths as etp_paths
 
     env_path = etp_paths.anime_env()
     if not env_path.is_file():
@@ -192,7 +184,7 @@ def load_anime_config(path: Path | None = None) -> AnimeConfig:
     Falls back to defaults if the file doesn't exist.
     """
     if path is None:
-        import paths as etp_paths
+        from etp_lib import paths as etp_paths
 
         path = etp_paths.anime_config()
 
@@ -240,7 +232,7 @@ def save_series_mapping(
 ) -> None:
     """Append a series→ID mapping to the config file."""
     if path is None:
-        import paths as etp_paths
+        from etp_lib import paths as etp_paths
 
         path = etp_paths.anime_config()
 
@@ -251,9 +243,7 @@ def save_series_mapping(
         f.write(line)
 
 
-def lookup_series_ids(
-    name: str, config: AnimeConfig
-) -> list[tuple[str, int]]:
+def lookup_series_ids(name: str, config: AnimeConfig) -> list[tuple[str, int]]:
     """Look up series IDs from config mappings by name (case-insensitive).
 
     Returns a list of ``(provider, id)`` tuples — multiple entries for
@@ -1380,9 +1370,7 @@ def resolve_conflict(conflict: ConflictInfo) -> str:
         existing_size = _format_size(conflict.existing_size)
         incoming_size = _format_size(conflict.incoming_source.path.stat().st_size)
         existing_summary = _format_media_summary(conflict.existing_media)
-        incoming_summary = _format_media_summary(
-            conflict.incoming_source.media
-        )
+        incoming_summary = _format_media_summary(conflict.incoming_source.media)
         print(f"    Existing: {existing_summary}, {existing_size}")
         print(f"         New: {incoming_summary}, {incoming_size}")
 
@@ -1424,7 +1412,11 @@ def _find_existing_episode(dest_path: Path) -> Path | None:
         if existing == dest_path or not existing.is_file():
             continue
         em = _RE_EP_TAG.search(existing.name)
-        if em and int(em.group(1)) == target_season and int(em.group(2)) == target_episode:
+        if (
+            em
+            and int(em.group(1)) == target_season
+            and int(em.group(2)) == target_episode
+        ):
             return existing
 
     return None
@@ -1506,7 +1498,6 @@ def _iter_media_files(source_dirs: list[Path]) -> list[Path]:
     return results
 
 
-
 def _extract_series_name(text: str) -> str:
     """Extract a series name from a filename or directory name.
 
@@ -1540,9 +1531,7 @@ class DownloadIndex:
     """
 
     # series_key → [(season, episode, path, size)]
-    by_series: dict[str, list[tuple[int, int, Path, int]]] = field(
-        default_factory=dict
-    )
+    by_series: dict[str, list[tuple[int, int, Path, int]]] = field(default_factory=dict)
     file_count: int = 0
 
 
@@ -1573,9 +1562,7 @@ def _build_download_index(downloads_dir: Path) -> DownloadIndex:
         raw_name = pm.path_series_name or pm.series_name
         series_key = _normalize_for_grouping(raw_name)
         if series_key:
-            index.by_series.setdefault(series_key, []).append(
-                (season, ep, f, size)
-            )
+            index.by_series.setdefault(series_key, []).append((season, ep, f, size))
 
         index.file_count += 1
 
@@ -1634,6 +1621,9 @@ def _match_to_downloads(
 
     enriched: list[SourceFile] = []
     for sf in source_files:
+        if sf.matched_download is not None:
+            enriched.append(sf)
+            continue
         if sf.parsed_season is None or sf.parsed_episode is None:
             enriched.append(sf)
             continue
@@ -1733,7 +1723,9 @@ def _scan_and_group(source_dirs: list[Path]) -> dict[str, list[Path]]:
 def _add_common_flags(p: argparse.ArgumentParser) -> None:
     """Add flags shared by all subcommands."""
     p.add_argument("--dest", type=Path, metavar="DIR", help="Destination directory")
-    p.add_argument("--dry-run", action="store_true", help="Show what would be done without copying")
+    p.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done without copying"
+    )
     p.add_argument("--no-cache", action="store_true", help="Bypass API response cache")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     p.add_argument("--config", type=Path, metavar="FILE", help="Config file path")
@@ -1758,11 +1750,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     t.add_argument("pattern", nargs="?", help="Filter files by name pattern")
     t.add_argument(
-        "--source", type=Path, action="append", metavar="DIR",
+        "--source",
+        type=Path,
+        action="append",
+        metavar="DIR",
         help="Source directory (repeatable; overrides config)",
     )
     t.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Re-process previously triaged files and auto-replace conflicts",
     )
     _add_common_flags(t)
@@ -1776,11 +1772,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("pattern", nargs="?", help="Filter series by name pattern")
     s.add_argument(
-        "--source", type=Path, metavar="DIR",
+        "--source",
+        type=Path,
+        metavar="DIR",
         help="Source directory (overrides config)",
     )
     s.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Re-process previously synced files and auto-replace conflicts",
     )
     _add_common_flags(s)
@@ -1857,7 +1856,6 @@ def _confirm_anime_info(info: AnimeInfo) -> AnimeInfo:
     return info
 
 
-
 def _parse_files(files: list[Path]) -> list[SourceFile]:
     """Parse a list of file paths into SourceFile objects."""
     parsed: list[SourceFile] = []
@@ -1868,9 +1866,7 @@ def _parse_files(files: list[Path]) -> list[SourceFile]:
     return parsed
 
 
-def _find_episode_title(
-    info: AnimeInfo, ep_number: int, season: int = 1
-) -> str:
+def _find_episode_title(info: AnimeInfo, ep_number: int, season: int = 1) -> str:
     """Find the English title for a regular episode by number and season."""
     for ep in info.episodes:
         if ep.ep_type == "regular" and ep.number == ep_number and ep.season == season:
@@ -1967,7 +1963,9 @@ def _process_file(
         if ok:
             print(f"  CRC32 verified: {source.hash_code}")
         else:
-            print(f"  WARNING: CRC32 mismatch! expected {source.hash_code}, got {actual}")
+            print(
+                f"  WARNING: CRC32 mismatch! expected {source.hash_code}, got {actual}"
+            )
             if not prompt_confirm("  Hash mismatch — copy anyway?", default=False):
                 return False
             source.hash_code = ""
@@ -2004,7 +2002,6 @@ def _process_file(
         return False
 
     return copy_reflink(source.path, dest_path, dry_run=dry_run)
-
 
 
 # ---------------------------------------------------------------------------
@@ -2072,12 +2069,14 @@ def _build_manifest_entries(
             )
             placeholder = placeholder.replace("s1e00", "s1eXX")
             dest_dir = series_dir / f"Season {season:02d}"
-            entries.append(ManifestEntry(
-                source=sf,
-                dest_path=dest_dir / placeholder,
-                is_todo=True,
-                hash_failed=hash_failed,
-            ))
+            entries.append(
+                ManifestEntry(
+                    source=sf,
+                    dest_path=dest_dir / placeholder,
+                    is_todo=True,
+                    hash_failed=hash_failed,
+                )
+            )
         else:
             filename = format_episode_filename(
                 concise_name=concise_name,
@@ -2092,11 +2091,13 @@ def _build_manifest_entries(
                 dest_dir = series_dir / "Specials"
             else:
                 dest_dir = series_dir / f"Season {season:02d}"
-            entries.append(ManifestEntry(
-                source=sf,
-                dest_path=dest_dir / filename,
-                hash_failed=hash_failed,
-            ))
+            entries.append(
+                ManifestEntry(
+                    source=sf,
+                    dest_path=dest_dir / filename,
+                    hash_failed=hash_failed,
+                )
+            )
 
     return entries
 
@@ -2131,13 +2132,15 @@ def _write_manifest(
     # Build KDL document as text (easier than constructing Node objects
     # for the header comments)
     lines: list[str] = []
-    lines.append(f"// etp-anime triage manifest")
+    lines.append("// etp-anime triage manifest")
     lines.append(f"// Series: {dirname}")
     if provider:
         lines.append(f"// {provider}")
     lines.append(f"// Series dir: {series_dir}")
     lines.append("//")
-    lines.append("// Edit destination filenames. Delete or /- comment out entries to skip.")
+    lines.append(
+        "// Edit destination filenames. Delete or /- comment out entries to skip."
+    )
     lines.append("// Source filenames are for reference only — only dest is used.")
     lines.append("")
 
@@ -2156,7 +2159,7 @@ def _write_manifest(
             ep_num = entry.source.parsed_episode or 0
             tag = "(todo)" if entry.is_todo else ""
             if entry.hash_failed:
-                lines.append(f"  // CRC32 MISMATCH — hash stripped from destination")
+                lines.append("  // CRC32 MISMATCH — hash stripped from destination")
             lines.append(f"  {tag}episode {ep_num} {{")
             lines.append(f'    source "{_escape_kdl(str(entry.source.path))}"')
             if entry.source.matched_download is not None:
@@ -2275,10 +2278,7 @@ def _check_filename_length(dest_path: Path) -> Path:
     """
     while len(dest_path.name.encode("utf-8")) > _MAX_FILENAME_BYTES:
         name_len = len(dest_path.name.encode("utf-8"))
-        print(
-            f"\n  ERROR: filename is {name_len} bytes"
-            f" (max {_MAX_FILENAME_BYTES}):"
-        )
+        print(f"\n  ERROR: filename is {name_len} bytes (max {_MAX_FILENAME_BYTES}):")
         print(f"    {dest_path.name}")
         new_name = prompt_value("  Enter shorter filename", dest_path.name)
         dest_path = dest_path.parent / new_name
@@ -2394,9 +2394,7 @@ def _match_files_to_season(
         print(f"  No files found for season {chosen}.")
         return [], pool
 
-    season_files = sorted(
-        by_season[chosen], key=lambda sf: sf.parsed_episode or 0
-    )
+    season_files = sorted(by_season[chosen], key=lambda sf: sf.parsed_episode or 0)
 
     # If there are more files than the AniDB entry has episodes, take
     # only the first N and leave the rest for the next AniDB ID
@@ -2461,14 +2459,19 @@ def _process_group_batch(
 
     if not default_concise_name:
         default_concise_name = _extract_concise_name(parsed)
-    concise_name = prompt_value("Concise series name for filenames", default_concise_name)
+    concise_name = prompt_value(
+        "Concise series name for filenames", default_concise_name
+    )
 
     seasons_needed = {sf.parsed_season or 1 for sf in parsed}
     seasons_list = sorted(seasons_needed)
 
     series_dir = resolve_series_directory(
-        dest, info, id_map=id_map,
-        seasons=seasons_list, dry_run=dry_run,
+        dest,
+        info,
+        id_map=id_map,
+        seasons=seasons_list,
+        dry_run=dry_run,
     )
     print(f"\nSeries directory: {series_dir}")
 
@@ -2513,7 +2516,9 @@ def _process_group_batch(
                     return 0, file_count, []
 
             if not parsed_entries:
-                print("  Manifest is empty (all lines deleted or commented). Skipping group.")
+                print(
+                    "  Manifest is empty (all lines deleted or commented). Skipping group."
+                )
                 return 0, file_count, []
 
             break
@@ -2562,8 +2567,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
 
     # List series directories
     series_dirs = sorted(
-        d for d in source_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
+        d for d in source_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
     )
 
     # Filter by pattern
@@ -2603,9 +2607,9 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
     total_failed = 0
 
     for series_path in series_dirs:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Series: {series_path.name}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Collect media files in this series directory
         media_files = _iter_media_files([series_path])
@@ -2616,8 +2620,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
         # Filter already-processed files
         if not force and already_copied:
             media_files = [
-                f for f in media_files
-                if str(f.resolve()) not in already_copied
+                f for f in media_files if str(f.resolve()) not in already_copied
             ]
             if not media_files:
                 print("  All files previously processed, skipping.")
@@ -2669,10 +2672,14 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
             if id_queue:
                 provider, sid = id_queue[0]
                 print(f"\n  {len(pool)} file(s) remaining in pool.")
-                raw = input(
-                    f"\n  Use {provider} {sid} from config?"
-                    f" [Y]es / [n]o / [s]kip series / [d]one / [q]uit: "
-                ).strip().lower()
+                raw = (
+                    input(
+                        f"\n  Use {provider} {sid} from config?"
+                        f" [Y]es / [n]o / [s]kip series / [d]one / [q]uit: "
+                    )
+                    .strip()
+                    .lower()
+                )
                 if raw in ("", "y", "yes"):
                     id_queue.pop(0)
                     if provider == "anidb":
@@ -2718,20 +2725,34 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
                     continue
                 provider = "anidb" if anidb_id is not None else "tvdb"
                 pid = anidb_id if anidb_id is not None else tvdb_id
-                if pid is not None:
-                    _maybe_save_mapping(
-                        series_path.name, provider, pid, config, args.dry_run
-                    )
+                assert pid is not None  # guaranteed by the continue above
+                _maybe_save_mapping(
+                    series_path.name, provider, pid, config, args.dry_run
+                )
 
-            # Fetch metadata
             try:
                 info = fetch_anime_info(
-                    anidb_id=anidb_id, tvdb_id=tvdb_id,
+                    anidb_id=anidb_id,
+                    tvdb_id=tvdb_id,
                     no_cache=args.no_cache,
                 )
             except Exception as e:
                 print(f"  Error fetching metadata: {e}")
                 continue
+
+            # Update title alias index with newly fetched titles and
+            # re-match any pool files that weren't matched to downloads
+            new_titles = [t for t in (info.title_ja, info.title_en) if t]
+            if new_titles:
+                title_index.add_series(new_titles)
+            unmatched = [sf for sf in pool if sf.matched_download is None]
+            if unmatched and download_index.by_series:
+                pool = _match_to_downloads(
+                    pool,
+                    download_index,
+                    series_name=series_path.name,
+                    title_index=title_index,
+                )
 
             info = _confirm_anime_info(info)
 
@@ -2779,7 +2800,9 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
     if not args.dry_run and len(already_copied) > manifest_size_at_start:
         _save_triage_manifest(already_copied)
 
-    print(f"\nSeries sync complete: {total_success} copied, {total_failed} skipped/failed")
+    print(
+        f"\nSeries sync complete: {total_success} copied, {total_failed} skipped/failed"
+    )
     return 0 if total_failed == 0 else 1
 
 
@@ -2897,7 +2920,9 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
             if remaining:
                 filtered_groups[name] = remaining
         if skipped_total:
-            print(f"Skipping {skipped_total} previously copied file(s) (use --force to re-process).")
+            print(
+                f"Skipping {skipped_total} previously copied file(s) (use --force to re-process)."
+            )
         groups = filtered_groups
 
     if not groups:
@@ -2919,9 +2944,9 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     groups_processed = 0
 
     for name, files in group_list:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Group: {name}  ({len(files)} files)")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         for f in files:
             print(f"  {f.name}")
 
@@ -3029,7 +3054,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     if not args.dry_run and len(already_copied) > manifest_size_at_start:
         _save_triage_manifest(already_copied)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(
         f"Triage complete: {groups_processed} groups processed, "
         f"{total_success} files copied, {total_failed} skipped/failed"

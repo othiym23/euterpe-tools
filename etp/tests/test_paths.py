@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-import paths
+from etp_lib import paths
 
 
 class TestConfigDir:

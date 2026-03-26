@@ -1,20 +1,9 @@
 """Tests for etp-catalog config loading, resolution, and CLI."""
 
-import importlib.machinery
-import importlib.util
 import textwrap
-import types
-from pathlib import Path
 from unittest.mock import patch
 
-# Import etp-catalog as a module (it has no .py extension)
-_catalog_path = Path(__file__).parent / "etp-catalog"
-_loader = importlib.machinery.SourceFileLoader("etp_catalog", str(_catalog_path))
-_spec = importlib.util.spec_from_loader("etp_catalog", _loader)
-assert _spec is not None
-catalog = types.ModuleType(_spec.name)
-catalog.__file__ = str(_catalog_path)
-_loader.exec_module(catalog)
+from etp_commands import catalog
 
 
 class TestResolveGlobal:
@@ -293,7 +282,7 @@ class TestGenerateTree:
 
         with (
             patch.object(catalog, "run_cmd", mock),
-            patch.object(catalog, "find_binary", return_value="/usr/bin/etp-tree"),
+            patch.object(catalog, "require_binary", return_value="/usr/bin/etp-tree"),
         ):
             catalog.generate_tree("mytest", scan_cfg, global_cfg)
 
@@ -316,7 +305,7 @@ class TestGenerateTree:
 
         with (
             patch.object(catalog, "run_cmd", mock),
-            patch.object(catalog, "find_binary", return_value="/usr/bin/etp-tree"),
+            patch.object(catalog, "require_binary", return_value="/usr/bin/etp-tree"),
         ):
             catalog.generate_tree("mytest", scan_cfg, global_cfg)
 
@@ -343,7 +332,7 @@ class TestGenerateTree:
 
         with (
             patch.object(catalog, "run_cmd", mock),
-            patch.object(catalog, "find_binary", return_value="/usr/bin/etp-tree"),
+            patch.object(catalog, "require_binary", return_value="/usr/bin/etp-tree"),
         ):
             catalog.generate_tree("mytest", scan_cfg, global_cfg)
 

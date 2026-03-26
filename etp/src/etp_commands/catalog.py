@@ -1,4 +1,3 @@
-#!/usr/bin/env python3.14
 """Incremental filesystem catalog builder driven by KDL config.
 
 Orchestrates etp-tree and etp-csv across multiple directory trees,
@@ -10,21 +9,12 @@ binary invocation.
 import argparse
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Self
-
-# Ensure vendored/shared packages (kdl/, paths.py) are importable.
-# Deployed: $HOME/.local/lib/etp/. Development: same directory as script.
-_lib_dir = Path.home() / ".local" / "lib" / "etp"
-if _lib_dir.is_dir():
-    sys.path.insert(0, str(_lib_dir))
-else:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 # ---------------------------------------------------------------------------
@@ -152,18 +142,15 @@ def run_cmd(
 # ---------------------------------------------------------------------------
 
 
-def find_binary(name: str) -> str:
-    """Find an etp-* binary on $PATH or in the script's directory."""
-    script_dir = Path(__file__).resolve().parent
-    local = script_dir / name
-    if local.is_file() and os.access(local, os.X_OK):
-        return str(local)
+def require_binary(name: str) -> str:
+    """Find an etp-* binary in libexec or on $PATH, or exit."""
+    from etp_lib.paths import find_binary
 
-    found = shutil.which(name)
+    found = find_binary(name)
     if found:
         return found
 
-    print(f"error: '{name}' not found on $PATH", file=sys.stderr)
+    print(f"error: '{name}' not found", file=sys.stderr)
     sys.exit(1)
 
 
@@ -208,7 +195,7 @@ def generate_tree(
     mode = scan_cfg["mode"]
     desc = scan_cfg["desc"]
 
-    etp_tree = find_binary("etp-tree")
+    etp_tree = require_binary("etp-tree")
     tree_file = Path(global_cfg["trees_path"]) / f"{desc}.tree"
     db_file = Path(global_cfg["db_path"]) / f"{desc}.db"
 
@@ -265,7 +252,7 @@ def run_scan(
         print(f"error: unknown mode '{mode}' for scan '{name}'", file=sys.stderr)
         return False
 
-    etp_csv = find_binary("etp-csv")
+    etp_csv = require_binary("etp-csv")
     csv_file = Path(global_cfg["csvs_path"]) / f"{desc}.csv"
     db_file = Path(global_cfg["db_path"]) / f"{desc}.db"
 
@@ -275,7 +262,9 @@ def run_scan(
     with Timer() as total:
         with Timer() as tree_t:
             try:
-                generate_tree(name, scan_cfg, global_cfg, verbose=verbose, profile=profile)
+                generate_tree(
+                    name, scan_cfg, global_cfg, verbose=verbose, profile=profile
+                )
             except subprocess.CalledProcessError as exc:
                 print(
                     f"warning: {exc.cmd} failed (code {exc.returncode}): {exc.stderr or ''}",
@@ -363,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.config is not None:
         config_path = Path(args.config)
     else:
-        import paths
+        from etp_lib import paths
 
         config_path = paths.catalog_config()
 
@@ -424,7 +413,13 @@ def main(argv: list[str] | None = None) -> int:
         failed: list[str] = []
         for name, scan_cfg in scans.items():
             try:
-                ok = run_scan(name, scan_cfg, global_cfg, verbose=args.verbose, profile=args.profile)
+                ok = run_scan(
+                    name,
+                    scan_cfg,
+                    global_cfg,
+                    verbose=args.verbose,
+                    profile=args.profile,
+                )
                 if not ok:
                     failed.append(name)
             except subprocess.CalledProcessError as exc:

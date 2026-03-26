@@ -2,29 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import subprocess
-import sys as _sys
-import types
 from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Load etp-anime as a module (no .py extension)
-# ---------------------------------------------------------------------------
-
-_anime_path = Path(__file__).resolve().parent / "etp-anime"
-_loader = importlib.machinery.SourceFileLoader("etp_anime", str(_anime_path))
-_spec = importlib.util.spec_from_loader("etp_anime", _loader)
-assert _spec is not None
-anime = types.ModuleType(_spec.name)
-_spec.loader = _loader  # type: ignore[union-attr]
-# Register in sys.modules so dataclasses can resolve the module
-_sys.modules["etp_anime"] = anime
-anime.__file__ = str(_anime_path)
-_loader.exec_module(anime)
+from etp_commands import anime
 
 
 # ---------------------------------------------------------------------------
@@ -509,15 +492,15 @@ class TestMediaInfoParsing:
 class TestMetadataBlock:
     """Tests for metadata block construction."""
 
-    def _make_source(self, **overrides):  # type: ignore[no-untyped-def]
-        defaults = {
-            "path": Path("test.mkv"),
-            "release_group": "SubGroup",
-            "source_type": "BD",
-            "is_remux": False,
-            "hash_code": "",
-            "parsed_episode": 1,
-            "media": anime.MediaInfo(
+    def _make_source(self, **overrides: object) -> anime.SourceFile:
+        sf = anime.SourceFile(
+            path=Path("test.mkv"),
+            release_group="SubGroup",
+            source_type="BD",
+            is_remux=False,
+            hash_code="",
+            parsed_episode=1,
+            media=anime.MediaInfo(
                 video_codec="HEVC",
                 resolution="1080p",
                 width=1920,
@@ -530,9 +513,10 @@ class TestMetadataBlock:
                 ],
                 encoding_lib="x265",
             ),
-        }
-        defaults.update(overrides)
-        return anime.SourceFile(**defaults)
+        )
+        for key, value in overrides.items():
+            setattr(sf, key, value)
+        return sf
 
     def test_full_metadata_block(self):
         sf = self._make_source()
@@ -548,12 +532,14 @@ class TestMetadataBlock:
 
     def test_hdr_included(self):
         sf = self._make_source()
+        assert sf.media is not None
         sf.media.hdr_type = "HDR"
         block = anime.build_metadata_block(sf)
         assert "HDR" in block
 
     def test_dovi_included(self):
         sf = self._make_source()
+        assert sf.media is not None
         sf.media.hdr_type = "DoVi"
         sf.media.resolution = "4K"
         block = anime.build_metadata_block(sf)
@@ -561,6 +547,7 @@ class TestMetadataBlock:
 
     def test_no_encoding_lib(self):
         sf = self._make_source()
+        assert sf.media is not None
         sf.media.encoding_lib = ""
         block = anime.build_metadata_block(sf)
         assert "x264" not in block
@@ -573,6 +560,7 @@ class TestMetadataBlock:
 
     def test_multi_audio_detection(self):
         sf = self._make_source()
+        assert sf.media is not None
         sf.media.audio_tracks.append(anime.AudioTrack("aac", "de", "German", False))
         block = anime.build_metadata_block(sf)
         assert "multi-audio" in block
@@ -581,6 +569,7 @@ class TestMetadataBlock:
     def test_commentary_excluded_from_dual_audio(self):
         """Commentary tracks don't count toward dual-audio."""
         sf = self._make_source()
+        assert sf.media is not None
         sf.media.audio_tracks = [
             anime.AudioTrack("flac", "ja", "Japanese", False),
             anime.AudioTrack("flac", "ja", "Commentary", True),
@@ -591,6 +580,7 @@ class TestMetadataBlock:
 
     def test_audio_codecs_joined_with_plus(self):
         sf = self._make_source()
+        assert sf.media is not None
         sf.media.audio_tracks = [
             anime.AudioTrack("DTS", "ja", "Japanese", False),
             anime.AudioTrack("flac", "en", "English", False),
