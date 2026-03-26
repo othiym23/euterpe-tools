@@ -707,6 +707,56 @@ class TestNormalizeForMatching:
         assert "少女と戦車" in result
 
 
+class TestBonusType:
+    """Tests for Japanese bonus content type classification."""
+
+    def test_pv(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 映像特典「PV1」(1920x1080 HEVC 10bit FLAC).mkv"
+        )
+        assert pm.bonus_type == "PV"
+        assert pm.episode is None
+
+    def test_ncop(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「Title」(specs).mkv"
+        )
+        assert pm.bonus_type == "NCOP"
+
+    def test_nced(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「Title」(specs).mkv"
+        )
+        assert pm.bonus_type == "NCED"
+
+    def test_cm(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 映像特典「告知CM(発売中)」(specs).mkv"
+        )
+        assert pm.bonus_type == "CM"
+
+    def test_preview(self):
+        pm = mp.parse_component("[アニメ BD] Show(第4期) 映像特典「予告」(specs).mkv")
+        assert pm.bonus_type == "Preview"
+
+    def test_menu(self):
+        pm = mp.parse_component("[アニメ BD] Show(第3期)「メニュー画面集」.rar")
+        assert pm.bonus_type == "Menu"
+
+    def test_regular_episode_no_bonus(self):
+        pm = mp.parse_component("[アニメ BD] Show(第1期) 第01話「Title」(specs).mkv")
+        assert pm.bonus_type == ""
+
+    def test_classify_bonus_type_function(self):
+        assert mp.classify_bonus_type("ノンテロップOP") == "NCOP"
+        assert mp.classify_bonus_type("ノンテロップED") == "NCED"
+        assert mp.classify_bonus_type("PV1") == "PV"
+        assert mp.classify_bonus_type("告知CM(BD)") == "CM"
+        assert mp.classify_bonus_type("予告") == "Preview"
+        assert mp.classify_bonus_type("メニュー画面集") == "Menu"
+        assert mp.classify_bonus_type("random text") == ""
+
+
 class TestCleanSeriesTitle:
     def test_space_separated(self):
         assert mp.clean_series_title("Show S01-S02 BDRip x265") == "Show"

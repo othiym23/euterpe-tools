@@ -17,8 +17,54 @@ from etp_lib.conflicts import (
     prompt_value,
     verify_hash,
 )
+from etp_lib.media_parser import normalize_for_matching, parse_component
 from etp_lib.naming import format_episode_filename, format_series_dirname
-from etp_lib.types import AnimeInfo, ManifestEntry, SourceFile
+from etp_lib.types import AnimeInfo, Episode, ManifestEntry, SourceFile
+
+# HamaTV-compatible special episode ranges.
+# Offset by +20 from each range start to avoid collisions with
+# AniDB-tracked specials that may be added later.
+_HAMATV_RANGES: dict[str, int] = {
+    "NCOP": 171,  # s0e151+ range, +20 buffer
+    "NCED": 191,  # separate from NCOP to avoid collisions
+    "PV": 321,  # s0e301+ range, +20 buffer
+    "Preview": 321,
+    "CM": 521,  # s0e501+ range, +20 buffer
+    "Bonus": 521,
+    "Menu": 921,  # s0e901+ range, +20 buffer
+}
+
+
+def _match_bonus_to_anidb_special(
+    bonus_type: str, episode_title: str, specials: list[Episode]
+) -> Episode | None:
+    """Try to match a bonus file against AniDB special episodes.
+
+    Uses bonus type to guide matching:
+    - NCOP → credit episodes with "Opening" in title
+    - NCED → credit episodes with "Ending" in title
+    - Others → compare normalized episode titles
+    """
+    if not specials:
+        return None
+
+    if bonus_type == "NCOP":
+        for ep in specials:
+            if ep.ep_type == "credit" and "opening" in ep.title_en.lower():
+                return ep
+    elif bonus_type == "NCED":
+        for ep in specials:
+            if ep.ep_type == "credit" and "ending" in ep.title_en.lower():
+                return ep
+    elif episode_title:
+        ep_norm = normalize_for_matching(episode_title)
+        if ep_norm:
+            for ep in specials:
+                en_norm = normalize_for_matching(ep.title_en)
+                ja_norm = normalize_for_matching(ep.title_ja)
+                if (en_norm and ep_norm in en_norm) or (ja_norm and ep_norm in ja_norm):
+                    return ep
+    return None
 
 
 def escape_kdl(s: str) -> str:
@@ -43,6 +89,10 @@ def build_manifest_entries(
     destination paths using defaults.
     """
     entries: list[ManifestEntry] = []
+    hamatv_counters: dict[str, int] = {}
+    # Track AniDB specials already matched so each is used at most once
+    matched_special_tags: set[str] = set()
+    specials = [ep for ep in info.episodes if ep.ep_type != "regular"]
     total = len(parsed)
     for i, sf in enumerate(parsed, 1):
         print(f"  Analyzing {i}/{total}: {sf.path.name}")
@@ -67,15 +117,42 @@ def build_manifest_entries(
             elif verbose:
                 print(f"    CRC32 verified: {sf.hash_code}")
 
-        # Match episode
         ep_number = sf.parsed_episode
         season = sf.parsed_season or 1
         is_special = False
         special_tag = ""
         episode_name = ""
+        is_unmatched_special = False
+
+        file_pm = parse_component(sf.path.name)
+        bonus_type = file_pm.bonus_type
 
         if ep_number is not None:
             episode_name = info.find_episode_title(ep_number, season)
+        elif bonus_type:
+            available = [
+                ep for ep in specials if ep.special_tag not in matched_special_tags
+            ]
+            matched_ep = _match_bonus_to_anidb_special(
+                bonus_type, file_pm.episode_title, available
+            )
+            if matched_ep is not None:
+                is_special = True
+                special_tag = matched_ep.special_tag
+                ep_number = matched_ep.number
+                episode_name = matched_ep.title_en
+                matched_special_tags.add(matched_ep.special_tag)
+            else:
+                # Assign HamaTV-compatible s0e number, tagged (todo)
+                is_special = True
+                range_start = _HAMATV_RANGES.get(bonus_type, 521)
+                ep_number = hamatv_counters.get(bonus_type, range_start)
+                hamatv_counters[bonus_type] = ep_number + 1
+                episode_name = bonus_type
+                if file_pm.episode_title:
+                    episode_name = f"{bonus_type} - {file_pm.episode_title}"
+                season = 0
+                is_unmatched_special = True
 
         # Build destination path
         if ep_number is None:
@@ -117,6 +194,7 @@ def build_manifest_entries(
                 ManifestEntry(
                     source=sf,
                     dest_path=dest_dir / filename,
+                    is_todo=is_unmatched_special,
                     hash_failed=hash_failed,
                 )
             )

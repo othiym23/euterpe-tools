@@ -13,6 +13,7 @@ from etp_lib.manifest import (
     parse_manifest,
     write_manifest,
 )
+from etp_lib.manifest import _match_bonus_to_anidb_special
 from etp_lib.types import AnimeInfo, Episode, ManifestEntry, MediaInfo, SourceFile
 
 
@@ -482,3 +483,71 @@ class TestExecuteManifest:
         )
         assert success == 2
         assert failed == 1
+
+
+class TestBonusToAnidbMatching:
+    """Tests for matching bonus files against AniDB specials."""
+
+    def test_ncop_matches_opening_credit(self):
+        specials = [
+            Episode(1, "credit", "Opening 1", "", "C1"),
+            Episode(1, "credit", "Ending 1", "", "C2"),
+            Episode(1, "special", "Special 1", "", "S1"),
+        ]
+        ep = _match_bonus_to_anidb_special("NCOP", "", specials)
+        assert ep is not None
+        assert ep.special_tag == "C1"
+
+    def test_nced_matches_ending_credit(self):
+        specials = [
+            Episode(1, "credit", "Opening 1", "", "C1"),
+            Episode(1, "credit", "Ending 1", "", "C2"),
+        ]
+        ep = _match_bonus_to_anidb_special("NCED", "", specials)
+        assert ep is not None
+        assert ep.special_tag == "C2"
+
+    def test_no_match_returns_none(self):
+        specials = [
+            Episode(1, "special", "Special 1", "", "S1"),
+        ]
+        ep = _match_bonus_to_anidb_special("PV", "", specials)
+        assert ep is None
+
+    def test_empty_specials(self):
+        assert _match_bonus_to_anidb_special("NCOP", "", []) is None
+
+    def test_title_match(self):
+        specials = [
+            Episode(1, "special", "Preview", "", "S1"),
+        ]
+        ep = _match_bonus_to_anidb_special("Preview", "Preview", specials)
+        assert ep is not None
+
+
+class TestHamatvNumbering:
+    """Tests for HamaTV-compatible special episode numbering."""
+
+    def test_bonus_gets_hamatv_number(self, tmp_path):
+        """Bonus files without AniDB match get s0e numbering."""
+        sf = SourceFile(
+            path=tmp_path
+            / "[アニメ BD] Show(第1期) 映像特典「PV1」(1920x1080 HEVC 10bit FLAC).mkv",
+        )
+        sf.parsed_season = 1
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[Episode(1, "regular", "Ep 1", "", "")],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        # Should be in Specials dir with s0e numbering
+        assert "Specials" in str(entries[0].dest_path)
+        assert entries[0].is_todo  # tagged as todo

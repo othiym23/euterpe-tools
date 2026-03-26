@@ -462,6 +462,39 @@ _RE_BONUS_KEYWORD = re.compile(
     re.IGNORECASE,
 )
 
+# Japanese bonus type → English abbreviation for HamaTV naming
+_BONUS_TYPE_MAP: dict[str, str] = {
+    "ノンテロップOP": "NCOP",
+    "ノンテロップED": "NCED",
+    "ノンテロップ": "NCOP",  # fallback when OP/ED not specified
+    "PV": "PV",
+    "予告": "Preview",
+    "告知CM": "CM",
+    "メニュー画面集": "Menu",
+    "メニュー画面": "Menu",
+    "映像特典": "Bonus",  # generic bonus marker
+    "特典": "Bonus",
+}
+
+
+def classify_bonus_type(text: str) -> str:
+    """Extract a bonus type abbreviation from Japanese bonus content text.
+
+    Checks for known Japanese bonus keywords and returns the English
+    abbreviation. Handles compound content like ``ノンテロップED「Title」``.
+    """
+    for jp, en in _BONUS_TYPE_MAP.items():
+        if jp in text:
+            # Distinguish NCOP vs NCED when ノンテロップ is present
+            if jp == "ノンテロップ":
+                if "OP" in text or "op" in text:
+                    return "NCOP"
+                if "ED" in text or "ed" in text:
+                    return "NCED"
+            return en
+    return ""
+
+
 # HDR
 _HDR_KEYWORDS = frozenset(
     {
@@ -1026,6 +1059,7 @@ class ParsedMedia:
     version: int | None = None
     is_special: bool = False
     special_tag: str = ""
+    bonus_type: str = ""  # "NCOP", "NCED", "PV", "CM", "Preview", "Menu", "Bonus"
     batch_range: tuple[int, int] | None = None
     release_group: str = ""
     source_type: str = ""  # "BD", "Web"
@@ -1212,6 +1246,19 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
             if pm.batch_range is None and token.batch_start is not None:
                 pm.batch_range = (token.batch_start, token.batch_end or 0)
                 pm.path_is_batch = True
+        elif token.kind == TokenKind.BONUS:
+            bt = classify_bonus_type(token.text)
+            if bt and bt != "Bonus":
+                pm.bonus_type = bt
+            elif not pm.bonus_type:
+                pm.bonus_type = bt or "Bonus"
+        elif token.kind == TokenKind.EPISODE_TITLE:
+            # Episode title content may contain a specific bonus type
+            # (e.g., 「PV1」or 「ノンテロップED「Title」」) that is more
+            # specific than the generic 映像特典 BONUS marker.
+            bt = classify_bonus_type(token.text)
+            if bt and (not pm.bonus_type or pm.bonus_type == "Bonus"):
+                pm.bonus_type = bt
         elif token.kind == TokenKind.EXTENSION:
             pm.extension = token.text
 

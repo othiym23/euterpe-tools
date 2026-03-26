@@ -1066,7 +1066,7 @@ class TestMatchFilesToSeason:
 
         pool = [
             anime.SourceFile(path=Path("ep1.mkv"), parsed_season=1, parsed_episode=1),
-            anime.SourceFile(path=Path("special.mkv")),  # no season or episode
+            anime.SourceFile(path=Path("01.mkv")),  # no season, episode, or series name
         ]
         info = anime.AnimeInfo(
             anidb_id=100,

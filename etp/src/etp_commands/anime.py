@@ -997,10 +997,30 @@ def _match_files_to_season(
     """
     regular_count = sum(1 for ep in info.episodes if ep.ep_type == "regular")
 
-    # Group by parsed season
+    # Filter pool by sub-series title similarity against AniDB entry.
+    # This prevents files from other sub-series in a batch from being
+    # mixed in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD).
+    anidb_title_norm = media_parser.normalize_for_matching(info.title_ja)
+    title_matched: list[SourceFile] = []
+    title_unmatched: list[SourceFile] = []
+    if anidb_title_norm:
+        for sf in pool:
+            sf_pm = media_parser.parse_component(sf.path.name)
+            sf_title_norm = media_parser.normalize_for_matching(sf_pm.series_name)
+            if not sf_title_norm:
+                # Can't determine series name — include by default
+                title_matched.append(sf)
+            elif sf_title_norm in anidb_title_norm or anidb_title_norm in sf_title_norm:
+                title_matched.append(sf)
+            else:
+                title_unmatched.append(sf)
+    else:
+        title_matched = list(pool)
+
+    # Group by parsed season (only title-matched files)
     by_season: dict[int, list[SourceFile]] = {}
     no_season: list[SourceFile] = []
-    for sf in pool:
+    for sf in title_matched:
         if sf.parsed_season is not None:
             by_season.setdefault(sf.parsed_season, []).append(sf)
         elif sf.parsed_episode is not None:
@@ -1014,6 +1034,8 @@ def _match_files_to_season(
     # Show candidates
     dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
     print(f"\n  {dirname} ({regular_count} regular episodes)")
+    if title_unmatched:
+        print(f"  ({len(title_unmatched)} files from other sub-series excluded)")
     print("  Candidate season matches:")
     season_keys = sorted(by_season.keys())
     for s in season_keys:
@@ -1126,6 +1148,18 @@ def _process_group_batch(
         id_map[("anidb", info.anidb_id)] = series_dir
     if info.tvdb_id is not None:
         id_map[("tvdb", info.tvdb_id)] = series_dir
+
+    # Prompt for release group if any files are missing one
+    missing_group = [sf for sf in parsed if not sf.release_group]
+    if missing_group:
+        have_group = next((sf.release_group for sf in parsed if sf.release_group), "")
+        group = prompt_value(
+            f"Release group ({len(missing_group)}/{len(parsed)} files missing)",
+            have_group,
+        )
+        if group:
+            for sf in missing_group:
+                sf.release_group = group
 
     # Build manifest entries (mediainfo + CRC32 verification)
     print()
