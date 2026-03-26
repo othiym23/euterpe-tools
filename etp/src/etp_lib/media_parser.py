@@ -1140,10 +1140,19 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
     """Build a ParsedMedia from a list of classified tokens for one component."""
     pm = ParsedMedia()
 
+    # Collect all release group tokens — for fansub style the first is
+    # correct ([Group] Title...), for scene style the last is correct
+    # (Title.S01E05.x265-GROUP).  We pick the first if there's only one,
+    # otherwise the last (scene names produce spurious groups from
+    # dash-splits like "10-Bit" → "Bit").
+    all_groups = [t.text for t in tokens if t.kind == TokenKind.RELEASE_GROUP]
+    if len(all_groups) == 1:
+        pm.release_group = all_groups[0]
+    elif len(all_groups) > 1:
+        pm.release_group = all_groups[-1]
+
     for token in tokens:
-        if token.kind == TokenKind.RELEASE_GROUP and not pm.release_group:
-            pm.release_group = token.text
-        elif token.kind == TokenKind.CRC32 and not pm.hash_code:
+        if token.kind == TokenKind.CRC32 and not pm.hash_code:
             pm.hash_code = token.text
         elif token.kind == TokenKind.EPISODE:
             if pm.episode is None:
@@ -1377,6 +1386,23 @@ class TitleAliasIndex:
             return None
         return self._key_to_titles.get(key)
 
+    def matching_keys(self, series_name: str) -> set[str]:
+        """Return all normalized keys that could identify *series_name*.
+
+        Combines direct name variants (raw, parsed, cleaned) with alias
+        expansions from the title index.  The result is the full set of
+        keys to probe when looking up download index entries.
+        """
+        keys: set[str] = set()
+        for variant in name_variants(series_name):
+            keys.add(variant)
+            idx_key = self._title_to_key.get(variant)
+            if idx_key is not None:
+                aliases = self._key_to_titles.get(idx_key)
+                if aliases:
+                    keys.update(aliases)
+        return keys
+
     @property
     def series_count(self) -> int:
         return len(self._key_to_titles)
@@ -1384,6 +1410,52 @@ class TitleAliasIndex:
     @property
     def title_count(self) -> int:
         return len(self._title_to_key)
+
+
+# ---------------------------------------------------------------------------
+# Series name cleaning (for undelimited metadata in directory names)
+# ---------------------------------------------------------------------------
+
+# Truncate at the first recognized metadata keyword.
+# Handles directory names like "Show S01-S02 BDRip x265-GROUP" and
+# scene-style dotted names like "Show.S02.1080p.BluRay.x265-GROUP"
+# where the parser can't separate title from metadata without delimiters.
+_RE_META_BOUNDARY = re.compile(
+    r"[\s.]+(?:S\d+(?:[+-]S?\d+)?(?:\+OVA)?|"
+    r"BD|BDRip|BluRay|Blu-Ray|WEB|WEB-DL|WEBRip|REMUX|"
+    r"Dual[\s.]Audio|x26[45]|HEVC|AVC|H\.26[45]|"
+    r"1080p|720p|2160p|4K|"
+    r"FLAC|AAC|DTS|AC3|DD|EAC3)\b",
+    re.IGNORECASE,
+)
+
+
+def clean_series_title(name: str) -> str:
+    """Extract series title by truncating at the first metadata keyword.
+
+    Handles both space-separated and dot-separated names, e.g.
+    ``"Show S01-S02 Dual Audio BDRip x265-GROUP"`` → ``"Show"``
+    ``"Show.S02.1080p.BluRay.x265-GROUP"`` → ``"Show"``.
+    """
+    m = _RE_META_BOUNDARY.search(name)
+    if m:
+        return name[: m.start()].strip(" .-")
+    return name
+
+
+def name_variants(name: str) -> set[str]:
+    """Return all normalized key variants for a series name.
+
+    Produces keys from the raw name, the parser-extracted name (without
+    year/quality), and the metadata-truncated name.  Any of these may
+    match download index keys.
+    """
+    keys: set[str] = set()
+    for variant in (name, parse_component(name).series_name, clean_series_title(name)):
+        k = normalize_for_matching(variant)
+        if k:
+            keys.add(k)
+    return keys
 
 
 def _load_anidb_titles(xml_path: str) -> list[str]:

@@ -166,6 +166,8 @@ class AnimeConfig:
     anime_source_dir: Path = field(default_factory=lambda: DEFAULT_ANIME_SOURCE_DIR)
     anime_dest_dir: Path = field(default_factory=lambda: DEFAULT_DEST_DIR)
     series_mappings: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
+    # series directory name → concise name from parser (for title matching)
+    concise_names: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +225,26 @@ def load_anime_config(path: Path | None = None) -> AnimeConfig:
                 entry = ("tvdb", int(child.args[0]))
                 if entry not in ids:
                     ids.append(entry)
+            elif child.name == "concise" and child.args:
+                config.concise_names[name] = str(child.args[0])
 
     return config
 
 
 def save_series_mapping(
-    name: str, provider: str, provider_id: int, path: Path | None = None
+    name: str,
+    provider: str,
+    provider_id: int,
+    *,
+    concise_name: str = "",
+    path: Path | None = None,
 ) -> None:
-    """Append a series→ID mapping to the config file."""
+    """Append a series→ID mapping to the config file.
+
+    *concise_name* is the parser-extracted series name (without year,
+    quality tags, etc.) stored as a ``concise`` property so that future
+    title matching can use it alongside the directory name.
+    """
     if path is None:
         from etp_lib import paths as etp_paths
 
@@ -238,7 +252,15 @@ def save_series_mapping(
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    line = f'\nseries "{_escape_kdl(name)}" {{\n  {provider} {provider_id}\n}}\n'
+    concise_line = ""
+    if concise_name and concise_name != name:
+        concise_line = f'\n  concise "{_escape_kdl(concise_name)}"'
+
+    line = (
+        f'\nseries "{_escape_kdl(name)}" {{\n'
+        f"  {provider} {provider_id}{concise_line}\n"
+        f"}}\n"
+    )
     with path.open("a", encoding="utf-8") as f:
         f.write(line)
 
@@ -275,6 +297,7 @@ def _maybe_save_mapping(
     pid: int,
     config: AnimeConfig,
     dry_run: bool,
+    concise_name: str = "",
 ) -> None:
     """Save a series→ID mapping to config if this specific ID is not already saved."""
     if dry_run:
@@ -283,7 +306,7 @@ def _maybe_save_mapping(
     existing = lookup_series_ids(name, config)
     if entry in existing:
         return
-    save_series_mapping(name, provider, pid)
+    save_series_mapping(name, provider, pid, concise_name=concise_name)
     config.series_mappings.setdefault(name, []).append(entry)
 
 
@@ -1482,19 +1505,32 @@ def copy_reflink(src: Path, dst: Path, dry_run: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _iter_media_files(source_dirs: list[Path]) -> list[Path]:
-    """Walk source directories (one level deep) for media files."""
+def _iter_media_files(
+    source_dirs: list[Path], *, recursive: bool = False
+) -> list[Path]:
+    """Walk source directories for media files.
+
+    By default scans one level of subdirectories.  With *recursive=True*
+    walks the full tree (used for the download index where batch releases
+    may nest several directories deep).
+    """
     results: list[Path] = []
     for source_dir in source_dirs:
         if not source_dir.is_dir():
             continue
-        for entry in source_dir.iterdir():
-            if entry.is_file() and entry.suffix.lower() in _MEDIA_EXTENSIONS:
-                results.append(entry)
-            elif entry.is_dir():
-                for f in entry.iterdir():
-                    if f.is_file() and f.suffix.lower() in _MEDIA_EXTENSIONS:
-                        results.append(f)
+        if recursive:
+            for root, _dirs, files in os.walk(source_dir):
+                for name in files:
+                    if Path(name).suffix.lower() in _MEDIA_EXTENSIONS:
+                        results.append(Path(root) / name)
+        else:
+            for entry in source_dir.iterdir():
+                if entry.is_file() and entry.suffix.lower() in _MEDIA_EXTENSIONS:
+                    results.append(entry)
+                elif entry.is_dir():
+                    for f in entry.iterdir():
+                        if f.is_file() and f.suffix.lower() in _MEDIA_EXTENSIONS:
+                            results.append(f)
     return results
 
 
@@ -1504,14 +1540,6 @@ def _extract_series_name(text: str) -> str:
     Delegates to media_parser for tokenization-based extraction.
     """
     return media_parser.parse_component(text).series_name
-
-
-def _normalize_for_grouping(name: str) -> str:
-    """Normalize a series name for grouping: lowercase, strip non-alnum.
-
-    Preserves CJK characters for Japanese title matching.
-    """
-    return media_parser.normalize_for_matching(name)
 
 
 def _extract_concise_name(source_files: list[SourceFile]) -> str:
@@ -1543,7 +1571,11 @@ def _build_download_index(downloads_dir: Path) -> DownloadIndex:
     full-path parsing (extracts series name from directory structure).
     """
     index = DownloadIndex()
-    for f in _iter_media_files([downloads_dir]):
+    # Cache per-directory keys to avoid re-parsing the same directory
+    # name for every file it contains.
+    dir_keys_cache: dict[tuple[str, str], set[str]] = {}
+
+    for f in _iter_media_files([downloads_dir], recursive=True):
         try:
             rel = str(f.relative_to(downloads_dir))
         except ValueError:
@@ -1558,11 +1590,26 @@ def _build_download_index(downloads_dir: Path) -> DownloadIndex:
         except OSError:
             continue
 
-        # Index by series name (prefer path_series_name from directory)
         raw_name = pm.path_series_name or pm.series_name
-        series_key = _normalize_for_grouping(raw_name)
-        if series_key:
-            index.by_series.setdefault(series_key, []).append((season, ep, f, size))
+        entry = (season, ep, f, size)
+
+        # Compute index keys, cached by (raw_name, directory) to avoid
+        # re-parsing the same series name + directory components.
+        dir_part = "/".join(rel.split("/")[:-1])
+        cache_key = (raw_name, dir_part)
+        if cache_key not in dir_keys_cache:
+            keys = media_parser.name_variants(raw_name)
+            for part in rel.split("/")[:-1]:
+                cleaned = media_parser.clean_series_title(part)
+                if cleaned != part:
+                    k = media_parser.normalize_for_matching(cleaned)
+                    if k:
+                        keys.add(k)
+            dir_keys_cache[cache_key] = keys
+        keys = dir_keys_cache[cache_key]
+
+        for k in keys:
+            index.by_series.setdefault(k, []).append(entry)
 
         index.file_count += 1
 
@@ -1600,24 +1647,26 @@ def _match_to_downloads(
     metadata (release group, hash, version, source type) replaces the
     source file's, but the path is kept.
     """
-    # Build series-specific lookup if we have a series name
-    series_key = _normalize_for_grouping(series_name) if series_name else ""
-    series_entries = download_index.by_series.get(series_key, []) if series_key else []
+    # Collect download entries from all matching keys.  A single series
+    # may be split across multiple download index keys (e.g. different
+    # release groups use different romanizations of the same title).
+    if title_index is not None:
+        candidate_keys = title_index.matching_keys(series_name)
+    else:
+        candidate_keys = media_parser.name_variants(series_name)
 
-    # If direct lookup failed and we have a title alias index, try alias keys
-    if not series_entries and series_key and title_index is not None:
-        aliases = title_index.lookup(series_name)
-        if aliases:
-            for alias in aliases:
-                entries = download_index.by_series.get(alias, [])
-                if entries:
-                    series_entries = entries
-                    break
+    series_entries: list[tuple[int, int, Path, int]] = []
+    for key in candidate_keys:
+        series_entries.extend(download_index.by_series.get(key, []))
 
-    # Index series entries by (season, ep) for fast lookup
+    # Index series entries by (season, ep) for exact matching and
+    # by file size for fallback matching when episode numbering
+    # differs (DVD vs aired order renumbering).
     series_by_ep: dict[tuple[int, int], list[tuple[Path, int]]] = {}
+    series_by_size: dict[int, list[tuple[Path, int, int]]] = {}
     for season, ep, path, size in series_entries:
         series_by_ep.setdefault((season, ep), []).append((path, size))
+        series_by_size.setdefault(size, []).append((path, season, ep))
 
     enriched: list[SourceFile] = []
     for sf in source_files:
@@ -1628,35 +1677,56 @@ def _match_to_downloads(
             enriched.append(sf)
             continue
 
-        key = (sf.parsed_season, sf.parsed_episode)
         try:
             src_size = sf.path.stat().st_size
         except OSError:
             enriched.append(sf)
             continue
 
-        # Match only within the same series — no global fallback, since
-        # matching by episode number alone produces cross-series false matches
-        candidates = series_by_ep.get(key, [])
-        best = _best_size_match(candidates, src_size) if candidates else None
+        src_group = sf.release_group.split()[0] if sf.release_group else ""
+        best: Path | None = None
+        best_sf: SourceFile | None = None
 
-        if best is None:
+        # Pass 1: exact (season, episode) match.
+        # Exact tuple match naturally prevents season 0 (TVDB specials)
+        # from matching regular seasons.
+        key = (sf.parsed_season, sf.parsed_episode)
+        candidates = series_by_ep.get(key, [])
+        ep_best = _best_size_match(candidates, src_size) if candidates else None
+        if ep_best is not None:
+            dl_sf = parse_source_filename(ep_best.name)
+            dl_group = dl_sf.release_group.split()[0] if dl_sf.release_group else ""
+            if not src_group or not dl_group or src_group == dl_group:
+                best = ep_best
+                best_sf = dl_sf
+
+        # Pass 2: exact-size + matching release group across all entries.
+        # Handles DVD→aired order renumbering where episode numbers differ
+        # but the file contents (and therefore size) are identical.
+        if best is None and src_group:
+            size_candidates = series_by_size.get(src_size, [])
+            for dl_path, _dl_season, _dl_ep in size_candidates:
+                dl_sf = parse_source_filename(dl_path.name)
+                dl_group = dl_sf.release_group.split()[0] if dl_sf.release_group else ""
+                if dl_group == src_group:
+                    best = dl_path
+                    best_sf = dl_sf
+                    break
+
+        if best is None or best_sf is None:
             enriched.append(sf)
             continue
 
-        # Parse the download filename for richer metadata
-        dl_sf = parse_source_filename(best.name)
-
         # Enrich: use download's metadata but keep source path
         sf.matched_download = best
-        if dl_sf.release_group:
-            sf.release_group = dl_sf.release_group
-        if dl_sf.hash_code:
-            sf.hash_code = dl_sf.hash_code
-        if dl_sf.version is not None:
-            sf.version = dl_sf.version
-        if dl_sf.source_type:
-            sf.source_type = dl_sf.source_type
+        if best_sf.release_group:
+            sf.release_group = best_sf.release_group
+        if best_sf.hash_code:
+            sf.hash_code = best_sf.hash_code
+        if best_sf.version is not None:
+            sf.version = best_sf.version
+        if best_sf.source_type:
+            sf.source_type = best_sf.source_type
 
         enriched.append(sf)
 
@@ -1698,7 +1768,7 @@ def _scan_and_group(source_dirs: list[Path]) -> dict[str, list[Path]]:
 
     for f in _iter_media_files(source_dirs):
         raw_name = _extract_group_name(f, source_dirs)
-        key = _normalize_for_grouping(raw_name)
+        key = media_parser.normalize_for_matching(raw_name)
         key_to_paths.setdefault(key, []).append(f)
         key_to_names.setdefault(key, []).append(raw_name)
 
@@ -2591,6 +2661,12 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
 
     # Build title alias index from cached AniDB/TVDB metadata
     title_index = media_parser.build_title_index(str(_cache_dir("anidb").parent))
+
+    # Feed concise names from config into the alias index so that
+    # directory names and parser-extracted names are linked
+    for dir_name, concise in config.concise_names.items():
+        title_index.add_series([dir_name, concise])
+
     if title_index.title_count:
         print(
             f"  Title alias index: {title_index.series_count} series, "
@@ -2727,7 +2803,12 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
                 pid = anidb_id if anidb_id is not None else tvdb_id
                 assert pid is not None  # guaranteed by the continue above
                 _maybe_save_mapping(
-                    series_path.name, provider, pid, config, args.dry_run
+                    series_path.name,
+                    provider,
+                    pid,
+                    config,
+                    args.dry_run,
+                    concise_name=_extract_concise_name(pool),
                 )
 
             try:
@@ -3006,7 +3087,14 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
             provider = "anidb" if anidb_id is not None else "tvdb"
             pid = anidb_id if anidb_id is not None else tvdb_id
             if pid is not None:
-                _maybe_save_mapping(name, provider, pid, config, args.dry_run)
+                _maybe_save_mapping(
+                    name,
+                    provider,
+                    pid,
+                    config,
+                    args.dry_run,
+                    concise_name=_extract_concise_name(pool),
+                )
 
             if anidb_id is not None:
                 # AniDB per-season: match files to this season, force s1eYY

@@ -1360,27 +1360,6 @@ class TestExtractSeriesName:
         assert name == ""
 
 
-class TestNormalizeForGrouping:
-    """Tests for grouping normalization."""
-
-    def test_lowercase(self):
-        assert anime._normalize_for_grouping("Champignon no Majo") == "champignonnomajo"
-
-    def test_strip_punctuation(self):
-        assert anime._normalize_for_grouping("Girls & Panzer!") == "girlspanzer"
-
-    def test_strip_spaces_and_dashes(self):
-        assert anime._normalize_for_grouping("My-Anime Name") == "myanimename"
-
-    def test_identical_after_normalization(self):
-        a = anime._normalize_for_grouping("Champignon no Majo")
-        b = anime._normalize_for_grouping("champignon no majo")
-        assert a == b
-
-    def test_empty(self):
-        assert anime._normalize_for_grouping("") == ""
-
-
 class TestScanAndGroup:
     """Tests for scanning and grouping source files."""
 
@@ -2303,12 +2282,12 @@ class TestMatchToDownloads:
     """Tests for enriching source files with download metadata."""
 
     def test_enriches_release_group(self, tmp_path):
-        # Source file (Sonarr name, weak metadata)
-        src = tmp_path / "source" / "Show - s01e01 - Title [VARYG WEBDL-1080p].mkv"
+        # Source file (Sonarr name with matching release group)
+        src = tmp_path / "source" / "Show - s01e01 - Title [FLE WEBDL-1080p].mkv"
         src.parent.mkdir(parents=True)
         src.write_bytes(b"x" * 100)
 
-        # Download file (original name, rich metadata)
+        # Download file (original name, rich metadata, same group)
         dl = tmp_path / "downloads" / "[FLE] Show - 01 [BD 1080p] [ABCD1234].mkv"
         dl.parent.mkdir(parents=True)
         dl.write_bytes(b"x" * 100)  # same size
@@ -2320,8 +2299,25 @@ class TestMatchToDownloads:
         assert len(enriched) == 1
         assert enriched[0].release_group == "FLE"
         assert enriched[0].hash_code == "ABCD1234"
-        # Path still points to source
         assert enriched[0].path == src
+
+    def test_mismatched_group_rejects_match(self, tmp_path):
+        """Different release groups = different encodes, no match."""
+        src = tmp_path / "source" / "Show - s01e01 - Title [VARYG WEBDL-1080p].mkv"
+        src.parent.mkdir(parents=True)
+        src.write_bytes(b"x" * 100)
+
+        dl = tmp_path / "downloads" / "[FLE] Show - 01 [BD 1080p] [ABCD1234].mkv"
+        dl.parent.mkdir(parents=True)
+        dl.write_bytes(b"x" * 100)
+
+        index = anime._build_download_index(tmp_path / "downloads")
+        parsed = anime._parse_files([src])
+        enriched = anime._match_to_downloads(parsed, index, series_name="Show")
+
+        assert len(enriched) == 1
+        assert enriched[0].matched_download is None
+        assert enriched[0].release_group == "VARYG WEBDL-1080p"  # unchanged
 
     def test_picks_closest_size(self, tmp_path):
         src = tmp_path / "source" / "Show - s01e01 - Title.mkv"
