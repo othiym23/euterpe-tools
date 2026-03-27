@@ -368,10 +368,56 @@ _SOURCES = frozenset(
         "funi",
         "hdtv",
         "dvd",
+        "dvd-r",
+        "dvdr",
+        "dvdrip",
+        "vcd",
+        "cd-r",
+        "cdr",
         "sdtv",
         "raw",
     }
 )
+
+# Map lowercase source keywords to canonical source_type values.
+# Keywords not in this map (e.g. "raw") are recognized as SOURCE tokens
+# but don't set a source_type.
+_SOURCE_TYPE_MAP: dict[str, str] = {
+    # Blu-ray
+    "bd": "BD",
+    "blu-ray": "BD",
+    "bluray": "BD",
+    "bdrip": "BD",
+    "bdremux": "BD",
+    # Web / streaming
+    "web": "Web",
+    "web-dl": "Web",
+    "webdl": "Web",
+    "webrip": "Web",
+    "cr": "Web",
+    "amzn": "Web",
+    "dsnp": "Web",
+    "nf": "Web",
+    "hidive": "Web",
+    "hidi": "Web",
+    "hulu": "Web",
+    "adn": "Web",
+    "unext": "Web",
+    "atvp": "Web",
+    "funi": "Web",
+    # DVD
+    "dvd": "DVD",
+    "dvdrip": "DVD",
+    "dvd-r": "DVD-R",
+    "dvdr": "DVD-R",
+    # TV capture
+    "hdtv": "HDTV",
+    "sdtv": "SDTV",
+    # Optical
+    "vcd": "VCD",
+    "cd-r": "CD-R",
+    "cdr": "CD-R",
+}
 
 _RESOLUTIONS = frozenset(
     {
@@ -1108,7 +1154,7 @@ class ParsedMedia:
     bonus_type: str = ""  # "NCOP", "NCED", "PV", "CM", "Preview", "Menu", "Bonus"
     batch_range: tuple[int, int] | None = None
     release_group: str = ""
-    source_type: str = ""  # "BD", "Web"
+    source_type: str = ""  # "BD", "Web", "DVD", "HDTV", "SDTV", "VCD", "CD-R"
     is_remux: bool = False
     hash_code: str = ""
     resolution: str = ""
@@ -1263,26 +1309,11 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
         elif token.kind == TokenKind.SOURCE:
             if not pm.source_type:
                 lower = token.text.lower()
-                if lower in {"bd", "blu-ray", "bluray", "bdrip", "bdremux"}:
-                    pm.source_type = "BD"
+                mapped = _SOURCE_TYPE_MAP.get(lower)
+                if mapped:
+                    pm.source_type = mapped
                     if "remux" in lower:
                         pm.is_remux = True
-                elif lower in {
-                    "web",
-                    "web-dl",
-                    "webdl",
-                    "webrip",
-                    "cr",
-                    "amzn",
-                    "dsnp",
-                    "nf",
-                    "hidive",
-                    "hidi",
-                    "hulu",
-                    "adn",
-                    "funi",
-                }:
-                    pm.source_type = "Web"
         elif token.kind == TokenKind.REMUX:
             pm.is_remux = True
             if not pm.source_type:
@@ -1543,7 +1574,7 @@ class TitleAliasIndex:
 # where the parser can't separate title from metadata without delimiters.
 _RE_META_BOUNDARY = re.compile(
     r"[\s.]+(?:S\d+(?:[+-]S?\d+)?(?:\+OVA)?|"
-    r"BD|BDRip|BluRay|Blu-Ray|WEB|WEB-DL|WEBRip|REMUX|"
+    r"BD|BDRip|BluRay|Blu-Ray|WEB|WEB-DL|WEBRip|REMUX|DVD|DVDRip|DVD-R|HDTV|SDTV|VCD|CD-R|"
     r"Dual[\s.]Audio|x26[45]|HEVC|AVC|H\.26[45]|"
     r"1080p|720p|2160p|4K|"
     r"FLAC|AAC|DTS|AC3|DD|EAC3)\b",

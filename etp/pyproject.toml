@@ -18,7 +18,13 @@ build-backend = "hatchling.build"
 packages = ["src/etp_lib", "src/etp_commands"]
 
 [dependency-groups]
-dev = ["ruff>=0.9", "pytest>=8", "pyright>=1.1", "ty>=0.0.25"]
+dev = [
+    "ruff>=0.9",
+    "pytest>=8",
+    "pyright>=1.1",
+    "ty>=0.0.25",
+    "hypothesis>=6.151.9",
+]
 
 [tool.ruff]
 src = ["src", "tests"]

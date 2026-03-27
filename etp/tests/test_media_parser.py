@@ -374,6 +374,38 @@ class TestClassifySource:
         pm = mp.parse_component("[Group] Show [BD 1080p].mkv")
         assert pm.source_type == "BD"
 
+    def test_web_source(self):
+        pm = mp.parse_component("[Group] Show [WEB-DL 1080p].mkv")
+        assert pm.source_type == "Web"
+
+    def test_dvd_source(self):
+        pm = mp.parse_component("[Group] Show [DVD].mkv")
+        assert pm.source_type == "DVD"
+
+    def test_dvdrip_source(self):
+        pm = mp.parse_component("[Group] Show [DVDRip].mkv")
+        assert pm.source_type == "DVD"
+
+    def test_dvd_r_source(self):
+        pm = mp.parse_component("[Group] Show [DVD-R].mkv")
+        assert pm.source_type == "DVD-R"
+
+    def test_hdtv_source(self):
+        pm = mp.parse_component("[Group] Show [HDTV].mkv")
+        assert pm.source_type == "HDTV"
+
+    def test_sdtv_source(self):
+        pm = mp.parse_component("[Group] Show [SDTV].mkv")
+        assert pm.source_type == "SDTV"
+
+    def test_vcd_source(self):
+        pm = mp.parse_component("[Group] Show [VCD].mkv")
+        assert pm.source_type == "VCD"
+
+    def test_cd_r_source(self):
+        pm = mp.parse_component("[Group] Show [CD-R].mkv")
+        assert pm.source_type == "CD-R"
+
     def test_web_dl_dot_text(self):
         tokens = _classify("Show.S01E05.1080p.CR.WEB-DL.mkv")
         # WEB-DL has a dash not a dot, so it stays as one DOT_TEXT token

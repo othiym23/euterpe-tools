@@ -80,7 +80,7 @@ class MediaInfo:
 class SourceFile:
     path: Path
     release_group: str = ""
-    source_type: str = ""  # "BD", "Web"
+    source_type: str = ""  # "BD", "Web", "DVD", "HDTV", "SDTV", "VCD", "CD-R"
     is_remux: bool = False
     hash_code: str = ""  # e.g. "ABCD1234"
     parsed_episode: int | None = None
