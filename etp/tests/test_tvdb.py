@@ -43,7 +43,7 @@ class TestTvdbParsing:
         info = _parse_tvdb_json(TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345)
         specials = [e for e in info.episodes if e.ep_type == "special"]
         assert len(specials) == 1
-        assert specials[0].special_tag == "S1"
+        assert specials[0].special_tag == "s0e01"
 
     def test_episode_names(self):
         info = _parse_tvdb_json(TVDB_SERIES_DATA, TVDB_EPISODES_DATA, 12345)

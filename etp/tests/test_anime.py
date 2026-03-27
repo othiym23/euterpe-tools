@@ -1449,3 +1449,55 @@ class TestMatchFilesToSeason:
         # Remaining should have ep 13-24 still with original numbering
         remaining_eps = sorted(sf.parsed_episode or 0 for sf in remaining)
         assert remaining_eps == list(range(13, 25))
+
+    def test_title_filter_matches_english_name(self, monkeypatch):
+        """Files with English series name match when AniDB title is Japanese."""
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path(f"[SubGroup] Journal with Witch - {i:02d}.mkv"),
+                parsed_episode=i,
+            )
+            for i in range(1, 4)
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="違国日記",
+            title_en="Journal with Witch",
+            year=2026,
+            episodes=[
+                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 14)
+            ],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        assert len(matched) == 3
+        assert len(remaining) == 0
+
+    def test_title_filter_matches_japanese_name(self, monkeypatch):
+        """Files with Japanese series name still match against title_ja."""
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path(f"[SubGroup] 違国日記 - {i:02d}.mkv"),
+                parsed_episode=i,
+            )
+            for i in range(1, 4)
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="違国日記",
+            title_en="Journal with Witch",
+            year=2026,
+            episodes=[
+                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 14)
+            ],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        assert len(matched) == 3
+        assert len(remaining) == 0

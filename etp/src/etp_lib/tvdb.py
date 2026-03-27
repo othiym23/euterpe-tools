@@ -82,7 +82,7 @@ def _parse_tvdb_json(
 
         is_special = season_num == 0
         ep_type = "special" if is_special else "regular"
-        special_tag = f"S{ep_num}" if is_special else ""
+        special_tag = f"s0e{ep_num:02d}" if is_special else ""
 
         episodes.append(
             Episode(

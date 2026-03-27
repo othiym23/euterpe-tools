@@ -1001,17 +1001,22 @@ def _match_files_to_season(
     # Filter pool by sub-series title similarity against AniDB entry.
     # This prevents files from other sub-series in a batch from being
     # mixed in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD).
-    anidb_title_norm = media_parser.normalize_for_matching(info.title_ja)
+    # Try English first, then Japanese, then romaji — files may use any.
+    known_titles: list[str] = []
+    for t in (info.title_en, info.title_ja):
+        norm = media_parser.normalize_for_matching(t)
+        if norm and norm not in known_titles:
+            known_titles.append(norm)
     title_matched: list[SourceFile] = []
     title_unmatched: list[SourceFile] = []
-    if anidb_title_norm:
+    if known_titles:
         for sf in pool:
             sf_pm = media_parser.parse_component(sf.path.name)
             sf_title_norm = media_parser.normalize_for_matching(sf_pm.series_name)
             if not sf_title_norm:
                 # Can't determine series name — include by default
                 title_matched.append(sf)
-            elif sf_title_norm == anidb_title_norm:
+            elif sf_title_norm in known_titles:
                 title_matched.append(sf)
             else:
                 title_unmatched.append(sf)
@@ -1037,7 +1042,7 @@ def _match_files_to_season(
     if not by_season:
         if title_unmatched:
             print(
-                f"\n  No files matched title '{info.title_ja}'."
+                f"\n  No files matched title '{info.title_en or info.title_ja}'."
                 f" ({len(title_unmatched)} files excluded by title filter)"
             )
             if prompt_confirm("  Include all files anyway?", default=False):

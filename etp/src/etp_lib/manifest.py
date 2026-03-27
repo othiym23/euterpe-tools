@@ -94,6 +94,9 @@ def build_manifest_entries(
     # Track AniDB specials already matched so each is used at most once
     matched_special_tags: set[str] = set()
     specials = [ep for ep in info.episodes if ep.ep_type != "regular"]
+    specials_by_num: dict[int, Episode] = {
+        ep.number: ep for ep in specials if ep.season == 0
+    }
     total = len(parsed)
     for i, sf in enumerate(parsed, 1):
         print(f"  Analyzing {i}/{total}: {sf.path.name}")
@@ -119,8 +122,8 @@ def build_manifest_entries(
                 print(f"    CRC32 verified: {sf.hash_code}")
 
         ep_number = sf.parsed_episode
-        season = sf.parsed_season or 1
-        is_special = False
+        season = sf.parsed_season if sf.parsed_season is not None else 1
+        is_special = season == 0
         special_tag = ""
         episode_name = ""
         is_unmatched_special = False
@@ -128,7 +131,13 @@ def build_manifest_entries(
         file_pm = parse_component(sf.path.name)
         bonus_type = file_pm.bonus_type
 
-        if ep_number is not None:
+        if ep_number is not None and is_special:
+            # TVDB specials (s00eXX): look up by special episode number
+            ep = specials_by_num.get(ep_number)
+            if ep is not None:
+                episode_name = ep.title_en
+                special_tag = ep.special_tag
+        elif ep_number is not None:
             episode_name = info.find_episode_title(ep_number, season)
         elif bonus_type:
             available = [

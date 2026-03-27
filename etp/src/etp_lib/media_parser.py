@@ -826,6 +826,19 @@ def _expand_metadata_words(text: str) -> list[Token]:
     return tokens
 
 
+def _is_metadata_word(word: str) -> bool:
+    """Check if a word (or any of its dash-separated parts) is metadata."""
+    if _classify_text_content(word) is not None:
+        return True
+    if "-" in word:
+        return any(
+            _classify_text_content(sp) is not None
+            for sp in word.split("-")
+            if sp
+        )
+    return False
+
+
 def _count_metadata_words(text: str) -> int:
     """Count how many whitespace/comma-separated words classify as metadata."""
     count = 0
@@ -1023,14 +1036,7 @@ def classify(tokens: list[Token]) -> list[Token]:
                 words = text.split()
                 meta_start = None
                 for i, w in enumerate(words):
-                    is_meta = _classify_text_content(w) is not None
-                    if not is_meta and "-" in w:
-                        is_meta = any(
-                            _classify_text_content(sp) is not None
-                            for sp in w.split("-")
-                            if sp
-                        )
-                    if is_meta:
+                    if _is_metadata_word(w):
                         meta_start = i
                         break
                 if meta_start is not None:
