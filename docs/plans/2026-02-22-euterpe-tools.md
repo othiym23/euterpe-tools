@@ -465,6 +465,41 @@ providing a raw query escape hatch.
 **Done when**: all query subcommands work. `etp query size` replaces `du -sm` in
 `etp-catalog`.
 
+### SP2.6: File-Move Tracking
+
+When a file is moved or renamed, the current UPSERT design treats it as a
+deletion from the old location and an insertion at the new one. The old
+`files.id` (and all associated metadata, images, cue sheets) is lost, forcing a
+full metadata re-read of the "new" file.
+
+File-move tracking detects these moves during a filesystem scan and updates the
+file's `dir_id` and/or `filename` instead of deleting and re-creating the row.
+This preserves the `files.id` and all dependent metadata.
+
+**Detection strategy**: When files disappear from one directory and appear in
+another during the same scan, match them by content fingerprint. Candidates:
+
+- **Size + mtime**: fast (no I/O beyond stat), but not unique — multiple files
+  can share size and mtime.
+- **Partial content hash**: hash the first N bytes. Requires reading the file
+  but avoids a full-file hash.
+- **BLAKE3 hash**: most reliable, but requires reading the entire file. Could be
+  computed lazily only for files that match on size.
+
+A two-pass approach works well: (1) collect all disappeared files and their
+sizes, (2) when inserting a new file whose size matches a disappeared file,
+compute hashes on both and match. This avoids hashing files that weren't moved.
+
+**Implementation**: Modify `replace_files_on` to return removed files (with
+their IDs and sizes) instead of immediately deleting them. A post-scan
+reconciliation pass matches removed files against newly appeared files across
+all directories in the same scan. Matched files get an UPDATE to their `dir_id`
+and `filename`; unmatched files are deleted with dependent cleanup.
+
+**Done when**: moving a file between directories preserves its `files.id` and
+all metadata. A file renamed in place (same directory, different name) is also
+tracked.
+
 ---
 
 ## Subproject 3: Large-Scale Metadata Management
@@ -548,9 +583,10 @@ SP1.1 Workspace Restructure
              └→ SP1.5 Python Porcelain
                  └→ SP2.1 Metadata Reading (lofty)
                      ├→ SP2.2 TagLib FFI (parallel)
-                     ├→ SP2.3 CAS Images (parallel)
-                     ├→ SP2.4 Cue Sheets (parallel)
-                     └→ SP2.5 Query Interface (incremental)
+                     ├→ SP2.3 CAS CLI (parallel, reduced scope)
+                     ├→ SP2.4 Cue Sheets (parallel, reduced scope)
+                     ├→ SP2.5 Query Interface (incremental)
+                     └→ SP2.6 File-Move Tracking (parallel)
                          └→ SP3.1 Write Path
                              ├→ SP3.2 Lua Scripting
                              │   └→ SP3.4 Declarative Transforms
