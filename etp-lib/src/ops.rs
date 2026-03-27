@@ -1,10 +1,11 @@
 use crate::db::dao;
-use crate::scanner;
+use crate::{cas, metadata, scanner};
 use crate::{csv_writer, tree};
 use sqlx::SqlitePool;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Instant;
 
 /// Compile a regex pattern, optionally case-insensitive. Exits on invalid pattern.
 pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> regex::Regex {
@@ -415,4 +416,199 @@ mod tests {
     fn is_excluded_path_empty_exclude() {
         assert!(!is_excluded_path("/data/@eaDir", &[]));
     }
+}
+
+/// Stats returned by a metadata scan.
+pub struct MetadataScanStats {
+    pub files_scanned: usize,
+    pub files_skipped: usize,
+    pub errors: usize,
+    pub elapsed_ms: u128,
+}
+
+/// Scan audio files in the database and extract metadata using lofty.
+/// Files are processed in directory order for sequential I/O on spinning disks.
+/// Errors on individual files are logged and skipped.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "run_metadata_scan", skip_all)
+)]
+pub async fn run_metadata_scan(
+    pool: &SqlitePool,
+    scan_id: i64,
+    force: bool,
+    verbose: bool,
+) -> MetadataScanStats {
+    let start = Instant::now();
+    let mut stats = MetadataScanStats {
+        files_scanned: 0,
+        files_skipped: 0,
+        errors: 0,
+        elapsed_ms: 0,
+    };
+
+    let files =
+        match dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS, force)
+            .await
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("error: failed to query files for metadata scan: {e}");
+                return stats;
+            }
+        };
+
+    if verbose {
+        eprintln!("metadata scan: {} file(s) to process", files.len());
+    }
+
+    for record in &files {
+        match process_audio_file(pool, record, verbose).await {
+            Ok(()) => stats.files_scanned += 1,
+            Err(e) => {
+                if verbose {
+                    eprintln!("  warning: {}: {e}", record.filename);
+                }
+                stats.errors += 1;
+            }
+        }
+    }
+
+    stats.elapsed_ms = start.elapsed().as_millis();
+    stats
+}
+
+/// Extract and persist metadata for a single audio file.
+async fn process_audio_file(
+    pool: &SqlitePool,
+    record: &dao::AudioFileRecord,
+    verbose: bool,
+) -> Result<(), String> {
+    let full_path = if record.dir_path.is_empty() {
+        PathBuf::from(&record.root_path).join(&record.filename)
+    } else {
+        PathBuf::from(&record.root_path)
+            .join(&record.dir_path)
+            .join(&record.filename)
+    };
+
+    if verbose {
+        eprintln!("  reading: {}", full_path.display());
+    }
+
+    let file_meta = metadata::read_metadata(&full_path).map_err(|e| format!("{e}"))?;
+
+    // Store tags + audio properties as metadata
+    let all_tags: Vec<(String, String)> = file_meta
+        .properties
+        .iter()
+        .chain(file_meta.tags.iter())
+        .map(|(key, val)| (key.clone(), val.to_string()))
+        .collect();
+
+    dao::replace_file_metadata(pool, record.file_id, &all_tags)
+        .await
+        .map_err(|e| format!("metadata: {e}"))?;
+
+    // Store embedded images in CAS + DB
+    if !file_meta.images.is_empty() {
+        let mut image_inputs = Vec::new();
+        for img in &file_meta.images {
+            match cas::store_blob(&img.data) {
+                Ok((hash, size)) => {
+                    image_inputs.push(dao::EmbeddedImageInput {
+                        image_type: img.image_type.clone(),
+                        mime_type: img.mime_type.clone(),
+                        blob_hash: hash,
+                        blob_size: size,
+                        width: img.width.map(|w| w as i64),
+                        height: img.height.map(|h| h as i64),
+                    });
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!("  warning: failed to store image blob: {e}");
+                    }
+                }
+            }
+        }
+        if let Ok(orphan_hashes) =
+            dao::replace_embedded_images(pool, record.file_id, &image_inputs).await
+        {
+            for hash in &orphan_hashes {
+                let _ = cas::remove_blob(hash);
+            }
+        }
+    }
+
+    // Store cue sheet if present
+    if let Some(cue) = &file_meta.cue_sheet {
+        let _ = dao::upsert_cue_sheet(pool, record.file_id, "embedded", cue).await;
+    }
+
+    dao::mark_metadata_scanned(pool, record.file_id)
+        .await
+        .map_err(|e| format!("mark scanned: {e}"))?;
+
+    Ok(())
+}
+
+/// Read metadata from a single audio file (no database). Returns JSON.
+pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
+    let meta = metadata::read_metadata(path).map_err(|e| format!("{e}"))?;
+    let mut json = serde_json::to_value(&meta).map_err(|e| format!("{e}"))?;
+
+    // Add file path and replace image data with sizes
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert(
+            "file".into(),
+            serde_json::Value::String(path.display().to_string()),
+        );
+        // Images: strip raw data (not serialized due to #[serde(skip)]),
+        // add byte sizes instead
+        if let Some(serde_json::Value::Array(images)) = obj.get_mut("images") {
+            for (i, img_val) in images.iter_mut().enumerate() {
+                if let Some(img_obj) = img_val.as_object_mut() {
+                    img_obj.insert(
+                        "size".into(),
+                        serde_json::Value::Number(meta.images[i].data.len().into()),
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(json)
+}
+
+/// Remove CAS blobs that are not referenced by any database record.
+/// Returns the number of blobs removed.
+pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool) -> usize {
+    let referenced = match dao::referenced_blob_hashes(pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: failed to query referenced blobs: {e}");
+            return 0;
+        }
+    };
+
+    let on_disk = match cas::list_blob_hashes() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("error: failed to list CAS blobs: {e}");
+            return 0;
+        }
+    };
+
+    let mut removed = 0;
+    for hash in &on_disk {
+        if !referenced.contains(hash) {
+            if verbose {
+                eprintln!("  removing orphan blob: {hash}");
+            }
+            let _ = cas::remove_blob(hash);
+            removed += 1;
+        }
+    }
+    removed
 }

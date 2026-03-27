@@ -1,7 +1,9 @@
+pub mod cas;
 pub mod config;
 pub mod csv_writer;
 pub mod db;
 pub mod finder;
+pub mod metadata;
 pub mod ops;
 pub mod paths;
 #[cfg(feature = "profiling")]

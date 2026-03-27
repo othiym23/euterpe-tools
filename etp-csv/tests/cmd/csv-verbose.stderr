@@ -1,8 +1,5 @@
 creating new database: ./.etp.db
-applying 3 database migration(s):
-  initial
-  add directory size
-  covering index files
+initializing from clean schema
 starting scan: .
 scanning: . (4 files)
 scan complete in [..]ms: 0 cached, 1 scanned, 0 removed

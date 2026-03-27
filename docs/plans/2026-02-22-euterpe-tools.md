@@ -173,23 +173,26 @@ CREATE TABLE scans (
 
 CREATE TABLE directories (
     id       INTEGER PRIMARY KEY,
-    scan_id  INTEGER NOT NULL REFERENCES scans(id),
+    scan_id  INTEGER NOT NULL REFERENCES scans(id) ON DELETE RESTRICT,
     path     TEXT NOT NULL,            -- relative to scans.root_path
     mtime    INTEGER NOT NULL,
+    size     INTEGER NOT NULL DEFAULT 0,
     UNIQUE(scan_id, path)
 );
 
 CREATE TABLE files (
-    id       INTEGER PRIMARY KEY,
-    dir_id   INTEGER NOT NULL REFERENCES directories(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL,
-    size     INTEGER NOT NULL,
-    ctime    INTEGER NOT NULL,
-    mtime    INTEGER NOT NULL,
+    id                  INTEGER PRIMARY KEY,
+    dir_id              INTEGER NOT NULL REFERENCES directories(id) ON DELETE RESTRICT,
+    filename            TEXT NOT NULL,
+    size                INTEGER NOT NULL,
+    ctime               INTEGER NOT NULL,
+    mtime               INTEGER NOT NULL,
+    metadata_scanned_at TEXT,          -- NULL = needs scan; cleared when mtime changes
     UNIQUE(dir_id, filename)
 );
 
--- SP2: metadata
+-- SP2: metadata (all FKs use ON DELETE RESTRICT per ADR; see also
+-- 2026-03-27-03-upsert-file-sync.md for the orphan cleanup design)
 CREATE TABLE blobs (
     hash      TEXT PRIMARY KEY,        -- BLAKE3 hex
     size      INTEGER NOT NULL,
@@ -198,7 +201,7 @@ CREATE TABLE blobs (
 
 CREATE TABLE metadata (
     id        INTEGER PRIMARY KEY,
-    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
     tag_name  TEXT NOT NULL,            -- normalized lowercase_snake_case
     value     TEXT NOT NULL,            -- JSON: scalar or array for multi-value
     UNIQUE(file_id, tag_name)
@@ -206,7 +209,7 @@ CREATE TABLE metadata (
 
 CREATE TABLE cue_sheets (
     id       INTEGER PRIMARY KEY,
-    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
     source   TEXT NOT NULL,             -- 'embedded' or 'standalone'
     content  TEXT NOT NULL,
     UNIQUE(file_id, source)
@@ -214,10 +217,10 @@ CREATE TABLE cue_sheets (
 
 CREATE TABLE embedded_images (
     id         INTEGER PRIMARY KEY,
-    file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
     image_type TEXT NOT NULL,            -- 'front_cover', 'back_cover', etc.
     mime_type  TEXT NOT NULL,
-    blob_hash  TEXT NOT NULL REFERENCES blobs(hash),
+    blob_hash  TEXT NOT NULL REFERENCES blobs(hash) ON DELETE RESTRICT,
     width      INTEGER,
     height     INTEGER,
     UNIQUE(file_id, image_type)
@@ -420,25 +423,28 @@ of formats and always works statically.
 
 **Done when**: DSF, WMA, MKA metadata read and stored. Feature gate documented.
 
-### SP2.3: CAS for Embedded Images
+### SP2.3: CAS CLI (reduced scope)
 
-BLAKE3 hashing, filesystem storage at
-`$XDG_DATA_HOME/euterpe-tools/assets/{ab}/{abcdef...}`.
-
-Write invariant: always write blob to disk BEFORE inserting DB reference.
-Orphaned blobs (harmless) cleaned by `etp cas gc`.
+**Note**: The CAS library (`cas.rs`) and embedded image extraction were
+implemented in SP2.1. The `blobs` and `embedded_images` tables exist, images are
+extracted during metadata scan, and `gc_orphan_blobs` handles cleanup. What
+remains is the `etp-cas` CLI binary for manual blob operations.
 
 Add `etp-cas` binary: `etp cas store`, `etp cas get`, `etp cas gc`.
 
-**Done when**: cover art extracted during metadata scan, deduplicated via CAS,
-referenced in DB. GC cleans orphaned blobs.
+**Done when**: CLI binary provides user-facing CAS operations.
 
-### SP2.4: Cue Sheet Parsing
+### SP2.4: Cue Sheet Parsing (reduced scope)
 
-Parse standalone `.cue` files (alongside audio) and embedded cue sheets (FLAC
-metadata frames). Store raw content in `cue_sheets` table.
+**Note**: Embedded cue sheet detection and storage were implemented in SP2.1.
+The `cue_sheets` table exists and embedded FLAC CUESHEET vorbis comments are
+extracted during metadata scan. What remains is standalone `.cue` file detection
+and deeper content parsing (track indices, etc.).
 
-**Done when**: cue sheets detected, stored, queryable.
+Parse standalone `.cue` files (alongside audio). Optionally parse cue sheet
+content for track-level metadata.
+
+**Done when**: standalone cue sheets detected and stored.
 
 ### SP2.5: Query Interface
 
@@ -458,6 +464,41 @@ providing a raw query escape hatch.
 
 **Done when**: all query subcommands work. `etp query size` replaces `du -sm` in
 `etp-catalog`.
+
+### SP2.6: File-Move Tracking
+
+When a file is moved or renamed, the current UPSERT design treats it as a
+deletion from the old location and an insertion at the new one. The old
+`files.id` (and all associated metadata, images, cue sheets) is lost, forcing a
+full metadata re-read of the "new" file.
+
+File-move tracking detects these moves during a filesystem scan and updates the
+file's `dir_id` and/or `filename` instead of deleting and re-creating the row.
+This preserves the `files.id` and all dependent metadata.
+
+**Detection strategy**: When files disappear from one directory and appear in
+another during the same scan, match them by content fingerprint. Candidates:
+
+- **Size + mtime**: fast (no I/O beyond stat), but not unique — multiple files
+  can share size and mtime.
+- **Partial content hash**: hash the first N bytes. Requires reading the file
+  but avoids a full-file hash.
+- **BLAKE3 hash**: most reliable, but requires reading the entire file. Could be
+  computed lazily only for files that match on size.
+
+A two-pass approach works well: (1) collect all disappeared files and their
+sizes, (2) when inserting a new file whose size matches a disappeared file,
+compute hashes on both and match. This avoids hashing files that weren't moved.
+
+**Implementation**: Modify `replace_files_on` to return removed files (with
+their IDs and sizes) instead of immediately deleting them. A post-scan
+reconciliation pass matches removed files against newly appeared files across
+all directories in the same scan. Matched files get an UPDATE to their `dir_id`
+and `filename`; unmatched files are deleted with dependent cleanup.
+
+**Done when**: moving a file between directories preserves its `files.id` and
+all metadata. A file renamed in place (same directory, different name) is also
+tracked.
 
 ---
 
@@ -542,9 +583,10 @@ SP1.1 Workspace Restructure
              └→ SP1.5 Python Porcelain
                  └→ SP2.1 Metadata Reading (lofty)
                      ├→ SP2.2 TagLib FFI (parallel)
-                     ├→ SP2.3 CAS Images (parallel)
-                     ├→ SP2.4 Cue Sheets (parallel)
-                     └→ SP2.5 Query Interface (incremental)
+                     ├→ SP2.3 CAS CLI (parallel, reduced scope)
+                     ├→ SP2.4 Cue Sheets (parallel, reduced scope)
+                     ├→ SP2.5 Query Interface (incremental)
+                     └→ SP2.6 File-Move Tracking (parallel)
                          └→ SP3.1 Write Path
                              ├→ SP3.2 Lua Scripting
                              │   └→ SP3.4 Declarative Transforms
