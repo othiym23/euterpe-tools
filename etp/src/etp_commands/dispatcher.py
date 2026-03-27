@@ -1,40 +1,27 @@
-#!/usr/bin/env python3.14
 """Git-style dispatcher for euterpe-tools.
 
 Usage: etp <command> [args...]
 
-Finds etp-<command> on $PATH or in the same directory as this script,
-then replaces the current process with it.
+Finds etp-<command> in libexec or on $PATH, then replaces the
+current process with it.
 """
 
+from __future__ import annotations
+
 import os
-import shutil
 import sys
-from pathlib import Path
+
+from etp_lib.paths import find_binary
 
 VERSION = "0.1.0"
 
 BUILTIN_COMMANDS = {
+    "anime": "Interactive anime collection manager",
     "catalog": "Run catalog scans across configured directory trees",
     "csv": "Incremental filesystem scanner with CSV output",
     "find": "Search indexed files by regex pattern",
     "tree": "Incremental filesystem scanner with tree output",
 }
-
-
-def find_subcommand(name: str) -> str | None:
-    """Find etp-<name> on $PATH or in this script's directory."""
-    bin_name = f"etp-{name}"
-
-    # Check the script's own directory first
-    script_dir = Path(__file__).resolve().parent
-    local = script_dir / bin_name
-    if local.is_file() and os.access(local, os.X_OK):
-        return str(local)
-
-    # Fall back to $PATH
-    found = shutil.which(bin_name)
-    return found
 
 
 def print_help() -> None:
@@ -62,10 +49,10 @@ def main() -> int:
         print(f"etp {VERSION}")
         return 0
 
-    exe = find_subcommand(cmd)
+    exe = find_binary(f"etp-{cmd}")
     if exe is None:
         print(f"error: unknown command '{cmd}'", file=sys.stderr)
-        print(f"Run 'etp --help' for available commands.", file=sys.stderr)
+        print("Run 'etp --help' for available commands.", file=sys.stderr)
         return 1
 
     # Replace current process

@@ -66,9 +66,10 @@ check:
 test:
     cargo nextest run --workspace
     cd scripts && uv run pytest test_catalog.py -q
-    cd etp && uv run pytest test_catalog.py -q
+    cd etp && uv run pytest tests/ -q
 
 nas_home := "/Volumes/home"
+nas_host := "euterpe.local"
 
 # Mount NAS home directory via SMB if not already mounted
 mount-home:
@@ -78,41 +79,36 @@ mount-home:
         echo "{{ nas_home }} already mounted"
     else
         sudo mkdir -p "{{ nas_home }}"
-        sudo mount_smbfs "//ogd@euterpe.local/home" "{{ nas_home }}"
+        sudo mount_smbfs "//ogd@{{ nas_host }}/home" "{{ nas_home }}"
         echo "Mounted {{ nas_home }}"
     fi
 
-# Build for NAS and deploy binaries + scripts to NAS home directory
+# Build for NAS and deploy binaries + Python package to NAS
 deploy: check test build-nas mount-home
     #!/usr/bin/env bash
     set -euo pipefail
-    # binaries
-    mkdir -p "{{ nas_home }}/bin"
-    # clean out legacy binaries
-    rm -f "{{ nas_home }}/bin/fsscan"
-    rm -f "{{ nas_home }}/bin/cached-tree"
-    rm -f "{{ nas_home }}/bin/dir-tree-scanner"
-    cp target/x86_64-unknown-linux-musl/release/etp-csv "{{ nas_home }}/bin"
-    cp target/x86_64-unknown-linux-musl/release/etp-tree "{{ nas_home }}/bin"
-    cp target/x86_64-unknown-linux-musl/release/etp-find "{{ nas_home }}/bin"
-    # etp porcelain
-    mkdir -p "{{ nas_home }}/bin"
-    cp etp/etp "{{ nas_home }}/bin"
-    cp etp/etp-catalog "{{ nas_home }}/bin"
-    chmod +x "{{ nas_home }}/bin/etp" "{{ nas_home }}/bin/etp-catalog"
-    # shared Python libraries ($HOME/.local/lib/etp/)
-    mkdir -p "{{ nas_home }}/.local/lib/etp"
-    cp etp/paths.py "{{ nas_home }}/.local/lib/etp"
-    cp -R etp/kdl "{{ nas_home }}/.local/lib/etp/kdl"
-    # config ($HOME/.config/euterpe-tools/) — don't overwrite existing
+    # Rust plumbing → libexec
+    mkdir -p "{{ nas_home }}/.local/libexec/etp"
+    cp target/x86_64-unknown-linux-musl/release/etp-csv "{{ nas_home }}/.local/libexec/etp"
+    cp target/x86_64-unknown-linux-musl/release/etp-tree "{{ nas_home }}/.local/libexec/etp"
+    cp target/x86_64-unknown-linux-musl/release/etp-find "{{ nas_home }}/.local/libexec/etp"
+    # Python porcelain → copy source and uv tool install on NAS
+    mkdir -p "{{ nas_home }}/.local/src/etp"
+    rsync -a --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache --exclude .ruff_cache --exclude '*.pyc' \
+        etp/ "{{ nas_home }}/.local/src/etp/"
+    ssh ogd@{{ nas_host }} "cd ~/.local/src/etp && ~/.local/bin/uv tool install --force --python python3.14 ."
+    # Config ($HOME/.config/euterpe-tools/) — don't overwrite existing
     mkdir -p "{{ nas_home }}/.config/euterpe-tools"
     if [ ! -f "{{ nas_home }}/.config/euterpe-tools/catalog.kdl" ]; then
         cp conf/catalog.kdl "{{ nas_home }}/.config/euterpe-tools"
     else
         echo "catalog.kdl already exists, skipping"
     fi
-    # clean out legacy paths
-    rm -f "{{ nas_home }}/scripts/catalog-nas.py"
-    rm -f "{{ nas_home }}/scripts/catalog.toml"
+    # Clean up legacy locations
+    rm -f "{{ nas_home }}/bin/etp-csv" "{{ nas_home }}/bin/etp-tree" "{{ nas_home }}/bin/etp-find"
+    rm -f "{{ nas_home }}/bin/etp" "{{ nas_home }}/bin/etp-anime" "{{ nas_home }}/bin/etp-catalog"
+    rm -rf "{{ nas_home }}/.local/lib/etp"
+    rm -f "{{ nas_home }}/bin/fsscan" "{{ nas_home }}/bin/cached-tree" "{{ nas_home }}/bin/dir-tree-scanner"
     rm -rf "{{ nas_home }}/bin/kdl"
+    rm -f "{{ nas_home }}/scripts/catalog-nas.py" "{{ nas_home }}/scripts/catalog.toml"
     rm -f "{{ nas_home }}/conf/catalog.kdl"

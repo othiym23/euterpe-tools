@@ -12,11 +12,16 @@ Cargo workspace with four crates:
 - `etp-tree` — tree output binary
 - `etp-find` — regex-based file search binary
 
-Python porcelain in `etp/`:
+Installable Python package in `etp/` (uses `uv tool install .`):
 
-- `etp` — git-style dispatcher (`etp <cmd>` → `etp-<cmd>`)
-- `etp-catalog` — KDL-configured catalog orchestrator
-- `kdl/` — vendored `kdl-py` 1.2.0 (KDL 1 parser, no install step needed)
+- `etp_commands/dispatcher.py` — git-style dispatcher (`etp <cmd>` →
+  `etp-<cmd>`)
+- `etp_commands/anime.py` — interactive anime collection manager
+  (triage/series/episode subcommands)
+- `etp_commands/catalog.py` — KDL-configured catalog orchestrator
+- `etp_lib/paths.py` — XDG-based path resolution and binary search
+- `etp_lib/media_parser.py` — tokenizer/parser for anime/media file paths
+- `kdl-py` — KDL 1 parser (PyPI dependency)
 
 ## Build & run
 
@@ -38,6 +43,9 @@ etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i]
 etp tree <directory> [args...]
 etp find <pattern> [-R <directory>] [args...]
 etp catalog [--dry-run] [config.kdl]
+etp anime triage [pattern] [--source DIR] [--dest DIR] [--force] [--dry-run]
+etp anime series [pattern] [--source DIR] [--dest DIR] [--force] [--dry-run]
+etp anime episode <file> --anidb ID | --tvdb ID [--dest DIR] [--dry-run]
 ```
 
 Defaults: output is `<dir>/index.csv`, database is `<dir>/.etp.db`, exclude is
@@ -82,6 +90,11 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
 - **Explicit deletion** — all foreign keys use `ON DELETE RESTRICT`. Application
   code must delete child rows before parent rows. Never use `ON DELETE CASCADE`.
   See `docs/adrs/2026-02-22-10-explicit-deletion-no-cascade.md`.
+- **Python dependencies welcome** — `uv` is available on the NAS, so PyPI
+  packages can be used freely in the Python plumbing. Prefer the standard
+  library when sufficient, but don't reimplement what a well-maintained package
+  already does. Declare all dependencies in `pyproject.toml`. See
+  `docs/adrs/2026-03-27-01-python-dependencies-welcome.md`.
 
 ## Testing
 
@@ -93,6 +106,10 @@ Install with `cargo install --locked cargo-nextest`.
 - `etp-csv/tests/cmd/` — CSV snapshot tests (4 tests)
 - `etp-tree/tests/cmd/` — tree snapshot tests (3 tests)
 - `etp-find/tests/cmd/` — find snapshot tests (5 tests)
+- `etp/tests/test_anime.py` — anime manager tests (pytest)
+- `etp/tests/test_catalog.py` — catalog orchestrator tests (pytest)
+- `etp/tests/test_media_parser.py` — media path parser tests (pytest)
+- `etp/tests/test_paths.py` — path resolution tests (pytest)
 
 ### trycmd tests
 
@@ -139,18 +156,18 @@ subscriber).
 `scripts/` contains the legacy Python orchestrator (`catalog-nas.py`) driven by
 `catalog.toml`. This is superseded by `etp/etp-catalog` with KDL config.
 
-`etp/` contains the current Python porcelain:
+`etp/` is an installable Python package (`uv tool install .`):
 
-- `etp` — git-style dispatcher
-- `etp-catalog` — KDL-configured catalog orchestrator
-- `test_catalog.py` — pytest tests
+- `src/etp_commands/` — CLI entry points (dispatcher, anime, catalog)
+- `src/etp_lib/` — shared library (paths, media_parser)
+- `tests/` — pytest test suite
 
 `conf/` contains KDL configuration files:
 
 - `catalog.kdl` — catalog scan configuration
 
 ```bash
-cd etp && uv sync     # creates .venv with kdl-py, ruff, pyright, pytest
+cd etp && uv sync     # creates .venv, installs package + dev tools
 just check            # clippy + ruff + pyright
 just test             # cargo nextest + pytest (scripts + etp)
 ```
