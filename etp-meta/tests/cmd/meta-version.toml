@@ -1,0 +1,5 @@
+bin.name = "etp-meta"
+args = ["--version"]
+status = "success"
+stdout = "etp-meta 0.2.0 ([..])\n"
+stderr = ""

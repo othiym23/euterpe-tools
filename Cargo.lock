@@ -534,6 +534,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "etp-meta"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "etp-lib",
+ "serde_json",
+ "tokio",
+ "trycmd",
+]
+
+[[package]]
 name = "etp-tree"
 version = "0.2.0"
 dependencies = [

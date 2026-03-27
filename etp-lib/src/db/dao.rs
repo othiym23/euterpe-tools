@@ -258,10 +258,9 @@ pub async fn delete_directory_dependents(
 pub async fn cleanup_orphan_blobs(
     conn: &mut sqlx::SqliteConnection,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let orphans: Vec<(String,)> =
-        sqlx::query_as("SELECT hash FROM blobs WHERE ref_count <= 0")
-            .fetch_all(&mut *conn)
-            .await?;
+    let orphans: Vec<(String,)> = sqlx::query_as("SELECT hash FROM blobs WHERE ref_count <= 0")
+        .fetch_all(&mut *conn)
+        .await?;
     sqlx::query("DELETE FROM blobs WHERE ref_count <= 0")
         .execute(&mut *conn)
         .await?;
@@ -289,7 +288,7 @@ pub async fn remove_stale_directories(
     let mut conn = pool.acquire().await?;
     for (dir_id, path) in &all_dirs {
         if !seen_paths.contains(path) {
-            delete_directory_dependents(&mut *conn, *dir_id).await?;
+            delete_directory_dependents(&mut conn, *dir_id).await?;
             sqlx::query("DELETE FROM files WHERE dir_id = ?")
                 .bind(dir_id)
                 .execute(&mut *conn)
@@ -301,7 +300,7 @@ pub async fn remove_stale_directories(
             removed += 1;
         }
     }
-    let orphan_hashes = cleanup_orphan_blobs(&mut *conn).await?;
+    let orphan_hashes = cleanup_orphan_blobs(&mut conn).await?;
     Ok((removed, orphan_hashes))
 }
 
@@ -605,6 +604,236 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+// --- Metadata DAO functions ---
+
+/// A file record for metadata scanning, with its database ID.
+#[derive(Debug, Clone)]
+pub struct AudioFileRecord {
+    pub file_id: i64,
+    pub root_path: String,
+    pub dir_path: String,
+    pub filename: String,
+    pub mtime: i64,
+}
+
+/// A tag name/value pair from the metadata table.
+#[derive(Debug, Clone)]
+pub struct MetadataRecord {
+    pub tag_name: String,
+    pub value: String,
+}
+
+/// Input for inserting an embedded image reference.
+pub struct EmbeddedImageInput {
+    pub image_type: String,
+    pub mime_type: String,
+    pub blob_hash: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+}
+
+/// Query files that need a metadata scan: either never scanned or stale
+/// (mtime changed since last scan). Filtered by extension, ordered by
+/// directory path then filename for sequential I/O on spinning disks.
+pub async fn files_needing_metadata_scan(
+    pool: &SqlitePool,
+    scan_id: i64,
+    extensions: &[&str],
+) -> Result<Vec<AudioFileRecord>, sqlx::Error> {
+    // Use LIKE patterns for extension matching (e.g., "%.mp3") since SQLite
+    // lacks a built-in way to extract the last dot-delimited extension.
+    let like_clauses: Vec<String> = extensions
+        .iter()
+        .map(|_| "lower(f.filename) LIKE ?".to_string())
+        .collect();
+    let ext_filter = like_clauses.join(" OR ");
+    let query = format!(
+        "SELECT f.id, s.root_path, d.path, f.filename, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id
+         WHERE d.scan_id = ?
+           AND (f.metadata_scanned_at IS NULL
+                OR f.metadata_scanned_at < datetime(f.mtime, 'unixepoch'))
+           AND ({ext_filter})
+         ORDER BY d.path, f.filename"
+    );
+
+    let mut q = sqlx::query_as::<_, (i64, String, String, String, i64)>(&query).bind(scan_id);
+    for ext in extensions {
+        q = q.bind(format!("%.{ext}"));
+    }
+
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(file_id, root_path, dir_path, filename, mtime)| AudioFileRecord {
+                file_id,
+                root_path,
+                dir_path,
+                filename,
+                mtime,
+            },
+        )
+        .collect())
+}
+
+/// Replace all metadata tags for a file. Deletes existing tags and inserts
+/// the new set in a single transaction.
+pub async fn replace_file_metadata(
+    pool: &SqlitePool,
+    file_id: i64,
+    tags: &[(String, String)],
+) -> Result<(), sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("DELETE FROM metadata WHERE file_id = ?")
+        .bind(file_id)
+        .execute(&mut *conn)
+        .await?;
+    for (tag_name, value) in tags {
+        sqlx::query("INSERT INTO metadata (file_id, tag_name, value) VALUES (?, ?, ?)")
+            .bind(file_id)
+            .bind(tag_name)
+            .bind(value)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Insert or increment ref_count for a blob.
+pub async fn upsert_blob(pool: &SqlitePool, hash: &str, size: u64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO blobs (hash, size, ref_count) VALUES (?, ?, 1)
+         ON CONFLICT(hash) DO UPDATE SET ref_count = ref_count + 1",
+    )
+    .bind(hash)
+    .bind(size as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Replace all embedded image references for a file. Handles blob ref_count
+/// bookkeeping: decrements old refs, deletes old rows, inserts new rows,
+/// upserts new blobs. Returns hashes of any orphaned blobs.
+pub async fn replace_embedded_images(
+    pool: &SqlitePool,
+    file_id: i64,
+    images: &[EmbeddedImageInput],
+) -> Result<Vec<String>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+
+    // Decrement old blob refs
+    sqlx::query(
+        "UPDATE blobs SET ref_count = ref_count - 1
+         WHERE hash IN (SELECT blob_hash FROM embedded_images WHERE file_id = ?)",
+    )
+    .bind(file_id)
+    .execute(&mut *conn)
+    .await?;
+
+    // Delete old image rows
+    sqlx::query("DELETE FROM embedded_images WHERE file_id = ?")
+        .bind(file_id)
+        .execute(&mut *conn)
+        .await?;
+
+    // Insert new images and upsert blobs
+    for img in images {
+        sqlx::query(
+            "INSERT INTO blobs (hash, size, ref_count) VALUES (?, 0, 1)
+             ON CONFLICT(hash) DO UPDATE SET ref_count = ref_count + 1",
+        )
+        .bind(&img.blob_hash)
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO embedded_images (file_id, image_type, mime_type, blob_hash, width, height)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(file_id)
+        .bind(&img.image_type)
+        .bind(&img.mime_type)
+        .bind(&img.blob_hash)
+        .bind(img.width)
+        .bind(img.height)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    let orphans = cleanup_orphan_blobs(&mut conn).await?;
+    Ok(orphans)
+}
+
+/// Insert or update a cue sheet for a file.
+pub async fn upsert_cue_sheet(
+    pool: &SqlitePool,
+    file_id: i64,
+    source: &str,
+    content: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO cue_sheets (file_id, source, content) VALUES (?, ?, ?)
+         ON CONFLICT(file_id, source) DO UPDATE SET content = excluded.content",
+    )
+    .bind(file_id)
+    .bind(source)
+    .bind(content)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Mark a file's metadata as scanned at the current time.
+pub async fn mark_metadata_scanned(pool: &SqlitePool, file_id: i64) -> Result<(), sqlx::Error> {
+    let now = chrono_now();
+    sqlx::query("UPDATE files SET metadata_scanned_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(file_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Get all metadata tags for a file.
+pub async fn get_file_metadata(
+    pool: &SqlitePool,
+    file_id: i64,
+) -> Result<Vec<MetadataRecord>, sqlx::Error> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT tag_name, value FROM metadata WHERE file_id = ? ORDER BY tag_name")
+            .bind(file_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(tag_name, value)| MetadataRecord { tag_name, value })
+        .collect())
+}
+
+/// Look up a file's database ID by scan, directory path, and filename.
+pub async fn get_file_id_by_path(
+    pool: &SqlitePool,
+    scan_id: i64,
+    dir_path: &str,
+    filename: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT f.id FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         WHERE d.scan_id = ? AND d.path = ? AND f.filename = ?",
+    )
+    .bind(scan_id)
+    .bind(dir_path)
+    .bind(filename)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
 }
 
 #[cfg(test)]
@@ -1252,5 +1481,284 @@ mod tests {
             .execute(&pool)
             .await;
         assert!(result.is_err(), "expected foreign key violation");
+    }
+
+    // --- Metadata DAO tests ---
+
+    #[tokio::test]
+    async fn replace_file_metadata_roundtrips() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[FileInput {
+                filename: "song.mp3".into(),
+                size: 1000,
+                ctime: 100,
+                mtime: 200,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let file_id = get_file_id_by_path(&pool, scan_id, "", "song.mp3")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let tags = vec![
+            ("track_title".into(), "\"Test Song\"".into()),
+            ("track_artist".into(), "\"Test Artist\"".into()),
+        ];
+        replace_file_metadata(&pool, file_id, &tags).await.unwrap();
+
+        let result = get_file_metadata(&pool, file_id).await.unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].tag_name, "track_artist");
+        assert_eq!(result[1].tag_name, "track_title");
+    }
+
+    #[tokio::test]
+    async fn replace_file_metadata_overwrites() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[FileInput {
+                filename: "song.flac".into(),
+                size: 5000,
+                ctime: 100,
+                mtime: 200,
+            }],
+        )
+        .await
+        .unwrap();
+        let file_id = get_file_id_by_path(&pool, scan_id, "", "song.flac")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // First set
+        replace_file_metadata(&pool, file_id, &[("genre".into(), "\"Rock\"".into())])
+            .await
+            .unwrap();
+
+        // Overwrite
+        replace_file_metadata(&pool, file_id, &[("genre".into(), "\"Jazz\"".into())])
+            .await
+            .unwrap();
+
+        let result = get_file_metadata(&pool, file_id).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "\"Jazz\"");
+    }
+
+    #[tokio::test]
+    async fn upsert_blob_increments_ref_count() {
+        let pool = open_memory().await.unwrap();
+        upsert_blob(&pool, "abc123", 100).await.unwrap();
+        upsert_blob(&pool, "abc123", 100).await.unwrap();
+
+        let row: (i64,) = sqlx::query_as("SELECT ref_count FROM blobs WHERE hash = 'abc123'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0, 2);
+    }
+
+    #[tokio::test]
+    async fn mark_metadata_scanned_sets_timestamp() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[FileInput {
+                filename: "x.mp3".into(),
+                size: 100,
+                ctime: 100,
+                mtime: 200,
+            }],
+        )
+        .await
+        .unwrap();
+        let file_id = get_file_id_by_path(&pool, scan_id, "", "x.mp3")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Initially null
+        let row: (Option<String>,) =
+            sqlx::query_as("SELECT metadata_scanned_at FROM files WHERE id = ?")
+                .bind(file_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(row.0.is_none());
+
+        mark_metadata_scanned(&pool, file_id).await.unwrap();
+
+        let row: (Option<String>,) =
+            sqlx::query_as("SELECT metadata_scanned_at FROM files WHERE id = ?")
+                .bind(file_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(row.0.is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_file_dependents_cleans_all_tables() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[FileInput {
+                filename: "a.flac".into(),
+                size: 1000,
+                ctime: 100,
+                mtime: 200,
+            }],
+        )
+        .await
+        .unwrap();
+        let file_id = get_file_id_by_path(&pool, scan_id, "", "a.flac")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Add metadata, image, cue sheet
+        replace_file_metadata(&pool, file_id, &[("genre".into(), "\"Pop\"".into())])
+            .await
+            .unwrap();
+        upsert_blob(&pool, "imgblob1", 500).await.unwrap();
+        sqlx::query(
+            "INSERT INTO embedded_images (file_id, image_type, mime_type, blob_hash)
+             VALUES (?, 'front_cover', 'image/jpeg', 'imgblob1')",
+        )
+        .bind(file_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        upsert_cue_sheet(&pool, file_id, "embedded", "FILE data")
+            .await
+            .unwrap();
+
+        // Delete dependents
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            delete_file_dependents(&mut *conn, file_id).await.unwrap();
+        }
+
+        // Verify all cleaned up
+        let meta_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM metadata WHERE file_id = ?")
+            .bind(file_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(meta_count.0, 0);
+
+        let img_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM embedded_images WHERE file_id = ?")
+                .bind(file_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(img_count.0, 0);
+
+        let cue_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM cue_sheets WHERE file_id = ?")
+            .bind(file_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cue_count.0, 0);
+
+        // File itself should still exist (dependents only)
+        let file_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE id = ?")
+            .bind(file_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(file_count.0, 1);
+    }
+
+    #[tokio::test]
+    async fn files_needing_metadata_scan_filters_by_extension() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[
+                FileInput {
+                    filename: "song.mp3".into(),
+                    size: 100,
+                    ctime: 100,
+                    mtime: 200,
+                },
+                FileInput {
+                    filename: "video.mkv".into(),
+                    size: 500,
+                    ctime: 100,
+                    mtime: 200,
+                },
+                FileInput {
+                    filename: "track.flac".into(),
+                    size: 300,
+                    ctime: 100,
+                    mtime: 200,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let results = files_needing_metadata_scan(&pool, scan_id, &["mp3", "flac"])
+            .await
+            .unwrap();
+        let names: Vec<&str> = results.iter().map(|r| r.filename.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"song.mp3"));
+        assert!(names.contains(&"track.flac"));
+        assert!(!names.contains(&"video.mkv"));
+    }
+
+    #[tokio::test]
+    async fn files_needing_metadata_scan_skips_scanned() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+        replace_files(
+            &pool,
+            dir_id,
+            &[FileInput {
+                filename: "done.mp3".into(),
+                size: 100,
+                ctime: 100,
+                mtime: 200,
+            }],
+        )
+        .await
+        .unwrap();
+        let file_id = get_file_id_by_path(&pool, scan_id, "", "done.mp3")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Mark as scanned
+        mark_metadata_scanned(&pool, file_id).await.unwrap();
+
+        let results = files_needing_metadata_scan(&pool, scan_id, &["mp3"])
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "scanned file should be skipped");
     }
 }

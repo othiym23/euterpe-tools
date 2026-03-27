@@ -9,7 +9,7 @@ use std::io;
 pub fn store_blob(data: &[u8]) -> io::Result<(String, u64)> {
     let hash = blake3::hash(data).to_hex().to_string();
     let size = data.len() as u64;
-    let path = paths::cas_blob_path(&hash).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let path = paths::cas_blob_path(&hash).map_err(io::Error::other)?;
 
     if path.exists() {
         return Ok((hash, size));
@@ -27,13 +27,13 @@ pub fn store_blob(data: &[u8]) -> io::Result<(String, u64)> {
 
 /// Read a blob by its hash.
 pub fn get_blob(hash: &str) -> io::Result<Vec<u8>> {
-    let path = paths::cas_blob_path(hash).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let path = paths::cas_blob_path(hash).map_err(io::Error::other)?;
     fs::read(path)
 }
 
 /// Remove a blob by its hash.
 pub fn remove_blob(hash: &str) -> io::Result<()> {
-    let path = paths::cas_blob_path(hash).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let path = paths::cas_blob_path(hash).map_err(io::Error::other)?;
     if path.exists() {
         fs::remove_file(path)?;
     }

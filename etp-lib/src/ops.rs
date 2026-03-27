@@ -1,10 +1,11 @@
 use crate::db::dao;
-use crate::scanner;
+use crate::{cas, metadata, scanner};
 use crate::{csv_writer, tree};
 use sqlx::SqlitePool;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Instant;
 
 /// Compile a regex pattern, optionally case-insensitive. Exits on invalid pattern.
 pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> regex::Regex {
@@ -415,4 +416,196 @@ mod tests {
     fn is_excluded_path_empty_exclude() {
         assert!(!is_excluded_path("/data/@eaDir", &[]));
     }
+}
+
+/// Stats returned by a metadata scan.
+pub struct MetadataScanStats {
+    pub files_scanned: usize,
+    pub files_skipped: usize,
+    pub errors: usize,
+    pub elapsed_ms: u128,
+}
+
+/// Scan audio files in the database and extract metadata using lofty.
+/// Files are processed in directory order for sequential I/O on spinning disks.
+/// Errors on individual files are logged and skipped.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "run_metadata_scan", skip_all)
+)]
+pub async fn run_metadata_scan(
+    pool: &SqlitePool,
+    scan_id: i64,
+    _force: bool,
+    verbose: bool,
+) -> MetadataScanStats {
+    let start = Instant::now();
+    let mut stats = MetadataScanStats {
+        files_scanned: 0,
+        files_skipped: 0,
+        errors: 0,
+        elapsed_ms: 0,
+    };
+
+    let files =
+        match dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("error: failed to query files for metadata scan: {e}");
+                return stats;
+            }
+        };
+
+    if verbose {
+        eprintln!("metadata scan: {} file(s) to process", files.len());
+    }
+
+    for record in &files {
+        let full_path = if record.dir_path.is_empty() {
+            PathBuf::from(&record.root_path).join(&record.filename)
+        } else {
+            PathBuf::from(&record.root_path)
+                .join(&record.dir_path)
+                .join(&record.filename)
+        };
+
+        if verbose {
+            eprintln!("  reading: {}", full_path.display());
+        }
+
+        let file_meta = match metadata::read_metadata(&full_path) {
+            Ok(m) => m,
+            Err(e) => {
+                if verbose {
+                    eprintln!("  warning: {}: {e}", full_path.display());
+                }
+                stats.errors += 1;
+                continue;
+            }
+        };
+
+        // Combine properties and tags into one metadata set
+        let mut all_tags: Vec<(String, String)> = Vec::new();
+        for (key, val) in &file_meta.properties {
+            all_tags.push((key.clone(), val.to_string()));
+        }
+        for (key, val) in &file_meta.tags {
+            all_tags.push((key.clone(), val.to_string()));
+        }
+
+        if let Err(e) = dao::replace_file_metadata(pool, record.file_id, &all_tags).await {
+            if verbose {
+                eprintln!(
+                    "  warning: failed to store metadata for {}: {e}",
+                    record.filename
+                );
+            }
+            stats.errors += 1;
+            continue;
+        }
+
+        // Store embedded images in CAS + DB
+        if !file_meta.images.is_empty() {
+            let mut image_inputs = Vec::new();
+            for img in &file_meta.images {
+                match cas::store_blob(&img.data) {
+                    Ok((hash, _size)) => {
+                        image_inputs.push(dao::EmbeddedImageInput {
+                            image_type: img.image_type.clone(),
+                            mime_type: img.mime_type.clone(),
+                            blob_hash: hash,
+                            width: img.width.map(|w| w as i64),
+                            height: img.height.map(|h| h as i64),
+                        });
+                    }
+                    Err(e) => {
+                        if verbose {
+                            eprintln!("  warning: failed to store image blob: {e}");
+                        }
+                    }
+                }
+            }
+            match dao::replace_embedded_images(pool, record.file_id, &image_inputs).await {
+                Ok(orphan_hashes) => {
+                    for hash in &orphan_hashes {
+                        let _ = cas::remove_blob(hash);
+                    }
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!(
+                            "  warning: failed to store images for {}: {e}",
+                            record.filename
+                        );
+                    }
+                }
+            }
+        }
+
+        // Store cue sheet if present
+        if let Some(cue) = &file_meta.cue_sheet
+            && let Err(e) = dao::upsert_cue_sheet(pool, record.file_id, "embedded", cue).await
+            && verbose
+        {
+            eprintln!(
+                "  warning: failed to store cue sheet for {}: {e}",
+                record.filename
+            );
+        }
+
+        if let Err(e) = dao::mark_metadata_scanned(pool, record.file_id).await
+            && verbose
+        {
+            eprintln!(
+                "  warning: failed to mark {} as scanned: {e}",
+                record.filename
+            );
+        }
+
+        stats.files_scanned += 1;
+    }
+
+    stats.elapsed_ms = start.elapsed().as_millis();
+    stats
+}
+
+/// Read metadata from a single audio file (no database). Returns JSON.
+pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
+    let meta = metadata::read_metadata(path).map_err(|e| format!("{e}"))?;
+
+    let mut tags = serde_json::Map::new();
+    for (key, val) in &meta.tags {
+        tags.insert(key.clone(), val.clone());
+    }
+
+    let mut properties = serde_json::Map::new();
+    for (key, val) in &meta.properties {
+        properties.insert(key.clone(), val.clone());
+    }
+
+    let images: Vec<serde_json::Value> = meta
+        .images
+        .iter()
+        .map(|img| {
+            serde_json::json!({
+                "type": img.image_type,
+                "mime_type": img.mime_type,
+                "size": img.data.len(),
+            })
+        })
+        .collect();
+
+    let mut result = serde_json::Map::new();
+    result.insert(
+        "file".into(),
+        serde_json::Value::String(path.display().to_string()),
+    );
+    result.insert("properties".into(), serde_json::Value::Object(properties));
+    result.insert("tags".into(), serde_json::Value::Object(tags));
+    result.insert("images".into(), serde_json::Value::Array(images));
+    if let Some(cue) = &meta.cue_sheet {
+        result.insert("cue_sheet".into(), serde_json::Value::String(cue.clone()));
+    }
+
+    Ok(serde_json::Value::Object(result))
 }

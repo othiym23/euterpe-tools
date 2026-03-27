@@ -73,10 +73,7 @@ fn extract_properties(file: &lofty::file::TaggedFile) -> Vec<(String, serde_json
         ));
     }
     if let Some(b) = props.audio_bitrate() {
-        out.push((
-            "audio_bitrate".into(),
-            serde_json::Value::Number(b.into()),
-        ));
+        out.push(("audio_bitrate".into(), serde_json::Value::Number(b.into())));
     }
     if let Some(s) = props.sample_rate() {
         out.push((
@@ -91,10 +88,7 @@ fn extract_properties(file: &lofty::file::TaggedFile) -> Vec<(String, serde_json
         ));
     }
     if let Some(c) = props.channels() {
-        out.push((
-            "audio_channels".into(),
-            serde_json::Value::Number(c.into()),
-        ));
+        out.push(("audio_channels".into(), serde_json::Value::Number(c.into())));
     }
     out
 }
@@ -115,10 +109,7 @@ fn extract_tags(tag: &lofty::tag::Tag) -> Vec<(String, serde_json::Value)> {
                 serde_json::Value::String(values.into_iter().next().unwrap())
             } else {
                 serde_json::Value::Array(
-                    values
-                        .into_iter()
-                        .map(serde_json::Value::String)
-                        .collect(),
+                    values.into_iter().map(serde_json::Value::String).collect(),
                 )
             };
             (key, json_val)
@@ -270,8 +261,14 @@ mod tests {
     #[test]
     fn test_normalize_picture_type() {
         use lofty::picture::PictureType;
-        assert_eq!(normalize_picture_type(&PictureType::CoverFront), "front_cover");
-        assert_eq!(normalize_picture_type(&PictureType::CoverBack), "back_cover");
+        assert_eq!(
+            normalize_picture_type(&PictureType::CoverFront),
+            "front_cover"
+        );
+        assert_eq!(
+            normalize_picture_type(&PictureType::CoverBack),
+            "back_cover"
+        );
         assert_eq!(normalize_picture_type(&PictureType::Other), "other");
         assert_eq!(normalize_picture_type(&PictureType::BandLogo), "band_logo");
     }

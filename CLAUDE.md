@@ -5,12 +5,13 @@ representations of filesystem trees. Designed for NAS use (spinning disks, RAID
 6 with two parity disks) at 200K-500K file scale. For performance, intended to
 be run on a Synology DiskStation running DSM 7.3.
 
-Cargo workspace with four crates:
+Cargo workspace with five crates:
 
 - `etp-lib` — library crate (all shared logic)
 - `etp-csv` — CSV output binary
 - `etp-tree` — tree output binary
 - `etp-find` — regex-based file search binary
+- `etp-meta` — audio metadata reading binary
 
 Installable Python package in `etp/` (uses `uv tool install .`):
 
@@ -38,6 +39,8 @@ just deploy           # check + test + build + mount NAS + copy everything
 etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [--find <pattern> [-i]] [--no-scan] [-v]
 etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--find <pattern> [-i]] [--no-scan] [--du [--du-subs]] [-N] [-I <pattern>...] [-a] [-v]
 etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [--exclude <name>...] [--no-scan] [-v]
+etp-meta scan [-R <directory>] [--db <path>] [-e <name>...] [--force] [-v]
+etp-meta read <file> [--images]
 
 # Via dispatcher
 etp tree <directory> [args...]
@@ -66,7 +69,11 @@ Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
 - `csv_writer.rs` — sorted CSV (`path,size,ctime,mtime`)
 - `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
 - `finder.rs` — regex matching against file records
-- `db/` — SQLite database layer (`dao.rs` for queries, `mod.rs` for connection)
+- `db/` — SQLite database layer (`dao.rs` for queries, `mod.rs` for connection);
+  new databases use clean `schema.sql`, existing databases use incremental
+  migrations
+- `metadata.rs` — audio metadata reading via lofty, tag normalization
+- `cas.rs` — content-addressable blob storage (BLAKE3, filesystem)
 - `config.rs` — KDL configuration parsing
 - `paths.rs` — XDG-based path resolution
 - `profiling.rs` — self-instrumentation (feature-gated, see below)

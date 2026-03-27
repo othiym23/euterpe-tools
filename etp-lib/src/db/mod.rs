@@ -210,12 +210,11 @@ mod tests {
     /// Query PRAGMA table_info for a table and return a sorted, normalized
     /// representation: Vec of (column_name, type, notnull, default, pk).
     async fn table_columns(pool: &SqlitePool, table: &str) -> Vec<String> {
-        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
-            &format!("PRAGMA table_info('{table}')"),
-        )
-        .fetch_all(pool)
-        .await
-        .unwrap();
+        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as(&format!("PRAGMA table_info('{table}')"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
         rows.into_iter()
             .map(|(_, name, typ, notnull, dflt, pk)| {
                 format!(
@@ -249,8 +248,10 @@ mod tests {
                            AND name NOT LIKE '_sqlx%' \
                            AND name NOT LIKE 'sqlite_%' \
                            ORDER BY name";
-        let migrated_tables: Vec<(String,)> =
-            sqlx::query_as(table_query).fetch_all(&migrated).await.unwrap();
+        let migrated_tables: Vec<(String,)> = sqlx::query_as(table_query)
+            .fetch_all(&migrated)
+            .await
+            .unwrap();
         let clean_tables: Vec<(String,)> =
             sqlx::query_as(table_query).fetch_all(&clean).await.unwrap();
         assert_eq!(
@@ -275,8 +276,10 @@ mod tests {
                            AND name NOT LIKE 'sqlite_%' \
                            AND sql IS NOT NULL \
                            ORDER BY name";
-        let migrated_indexes: Vec<(String, String, String)> =
-            sqlx::query_as(index_query).fetch_all(&migrated).await.unwrap();
+        let migrated_indexes: Vec<(String, String, String)> = sqlx::query_as(index_query)
+            .fetch_all(&migrated)
+            .await
+            .unwrap();
         let clean_indexes: Vec<(String, String, String)> =
             sqlx::query_as(index_query).fetch_all(&clean).await.unwrap();
         assert_eq!(
@@ -285,11 +288,10 @@ mod tests {
         );
 
         // Verify migrations are recorded in the clean-schema DB
-        let migration_count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM _sqlx_migrations")
-                .fetch_one(&clean)
-                .await
-                .unwrap();
+        let migration_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&clean)
+            .await
+            .unwrap();
         let migrator = sqlx::migrate!();
         assert_eq!(migration_count.0, migrator.iter().count() as i64);
     }

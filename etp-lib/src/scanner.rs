@@ -188,7 +188,7 @@ async fn flush_pending(
             sqlx::Row::get::<i64, _>(&result, 0)
         };
 
-        dao::replace_files_on(&mut *tx, dir_id, &update.files).await?;
+        dao::replace_files_on(&mut tx, dir_id, &update.files).await?;
     }
 
     tx.commit().await?;
