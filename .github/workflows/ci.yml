@@ -13,20 +13,24 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo nextest run --workspace
 
   python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - name: Install Python and sync deps
+      - name: Install Python
+        run: uv python install 3.14
+
+      # scripts/
+      - name: Sync scripts deps
         working-directory: scripts
-        run: |
-          uv python install 3.14
-          uv sync
+        run: uv sync
       - uses: astral-sh/ruff-action@v3
         with:
           src: ./scripts
@@ -34,9 +38,43 @@ jobs:
         with:
           args: "format --check"
           src: ./scripts
-      - name: Pyright
+      - name: Pyright (scripts)
         working-directory: scripts
         run: uv run pyright
-      - name: Pytest
+      - name: ty check (scripts)
         working-directory: scripts
-        run: uv run pytest test_catalog.py -v
+        run: uv run ty check
+      - name: Pytest (scripts)
+        working-directory: scripts
+        run: uv run pytest test_catalog.py -q
+
+      # etp/
+      - name: Sync etp deps
+        working-directory: etp
+        run: uv sync
+      - uses: astral-sh/ruff-action@v3
+        with:
+          src: ./etp
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check"
+          src: ./etp
+      - name: Pyright (etp)
+        working-directory: etp
+        run: uv run pyright
+      - name: ty check (etp)
+        working-directory: etp
+        run: uv run ty check
+      - name: Pytest (etp)
+        working-directory: etp
+        run: uv run pytest tests/ -q
+
+  markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      - run: npm install -g prettier
+      - run: prettier --check "**/*.md"
