@@ -177,6 +177,10 @@ just test             # cargo nextest + pytest (scripts + etp)
 Always run `just format` before finishing work. This runs `cargo fmt` (Rust),
 `ruff format` (Python), and `prettier` (Markdown).
 
+Python targets `>=3.14`, so PEP 758 applies: use the unparenthesized
+`except X, Y:` style for multi-exception clauses (not `except (X, Y):`). This is
+what `ruff format` enforces.
+
 ## Git workflow
 
 Branch protection is enabled on `main`. All changes must go through a feature
