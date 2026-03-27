@@ -276,7 +276,7 @@ def scan_dest_ids(dest: Path) -> dict[tuple[str, int], Path]:
                     raw = id_file.read_text(encoding="utf-8").strip()
                     if raw:
                         result[(provider, int(raw))] = entry
-                except (ValueError, OSError):
+                except ValueError, OSError:
                     pass
     return result
 
@@ -412,7 +412,7 @@ def _load_triage_manifest() -> set[str]:
     if path.exists():
         try:
             return set(json.loads(path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return set()
     return set()
 

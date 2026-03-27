@@ -123,7 +123,7 @@ def check_destination_conflict(
         if analyze_file_fn is not None:
             existing_media = analyze_file_fn(dest_path)
             existing_sf.media = existing_media
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         pass
 
     src_meta = _extract_key_metadata(source)

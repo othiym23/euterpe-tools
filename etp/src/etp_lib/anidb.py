@@ -175,13 +175,15 @@ def fetch_anidb_anime(
     # Fetch from API
     _anidb_rate_limit()
 
-    params = urllib.parse.urlencode({
-        "request": "anime",
-        "client": client,
-        "clientver": clientver,
-        "protover": 1,
-        "aid": aid,
-    })
+    params = urllib.parse.urlencode(
+        {
+            "request": "anime",
+            "client": client,
+            "clientver": clientver,
+            "protover": 1,
+            "aid": aid,
+        }
+    )
     url = f"{_ANIDB_API_URL}?{params}"
 
     req = urllib.request.Request(url)
