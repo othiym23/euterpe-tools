@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS scans (
 
 CREATE TABLE IF NOT EXISTS directories (
     id       INTEGER PRIMARY KEY,
-    scan_id  INTEGER NOT NULL REFERENCES scans(id),
+    scan_id  INTEGER NOT NULL REFERENCES scans(id) ON DELETE RESTRICT,
     path     TEXT NOT NULL,
     mtime    INTEGER NOT NULL,
     size     INTEGER NOT NULL DEFAULT 0,

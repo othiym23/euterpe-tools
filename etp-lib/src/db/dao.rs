@@ -125,18 +125,19 @@ pub async fn replace_files(
     pool: &SqlitePool,
     dir_id: i64,
     files: &[FileInput],
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<String>, sqlx::Error> {
     let mut conn = pool.acquire().await?;
     replace_files_on(&mut conn, dir_id, files).await
 }
 
 /// Inner implementation that works on a mutable connection reference, so it
 /// can be called within an existing transaction (e.g., `flush_pending`).
+/// Returns hashes of any orphaned CAS blobs that should be removed from disk.
 pub async fn replace_files_on(
     conn: &mut sqlx::SqliteConnection,
     dir_id: i64,
     files: &[FileInput],
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<String>, sqlx::Error> {
     let new_filenames: HashSet<&str> = files.iter().map(|f| f.filename.as_str()).collect();
 
     // Upsert each file. Clear metadata_scanned_at when mtime changes so
@@ -182,11 +183,13 @@ pub async fn replace_files_on(
             had_removals = true;
         }
     }
-    if had_removals {
-        cleanup_orphan_blobs(&mut *conn).await?;
-    }
+    let orphan_hashes = if had_removals {
+        cleanup_orphan_blobs(&mut *conn).await?
+    } else {
+        Vec::new()
+    };
 
-    Ok(())
+    Ok(orphan_hashes)
 }
 
 /// Delete all rows that reference a file (metadata, cue_sheets, embedded_images).
@@ -249,18 +252,24 @@ pub async fn delete_directory_dependents(
     Ok(())
 }
 
-/// Remove blobs with zero or negative ref_count. Call after a batch
-/// of `delete_file_dependents` or `delete_directory_dependents`.
+/// Remove blobs with zero or negative ref_count and return their hashes.
+/// The caller is responsible for removing the corresponding CAS files
+/// (the DAO layer has no filesystem dependency).
 pub async fn cleanup_orphan_blobs(
     conn: &mut sqlx::SqliteConnection,
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<String>, sqlx::Error> {
+    let orphans: Vec<(String,)> =
+        sqlx::query_as("SELECT hash FROM blobs WHERE ref_count <= 0")
+            .fetch_all(&mut *conn)
+            .await?;
     sqlx::query("DELETE FROM blobs WHERE ref_count <= 0")
         .execute(&mut *conn)
         .await?;
-    Ok(())
+    Ok(orphans.into_iter().map(|(h,)| h).collect())
 }
 
-/// Remove directories that are no longer present on disk. Returns the count removed.
+/// Remove directories that are no longer present on disk. Returns `(count_removed, orphan_blob_hashes)`.
+/// The caller is responsible for removing orphaned CAS files.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(name = "remove_stale_directories", skip_all)
@@ -269,7 +278,7 @@ pub async fn remove_stale_directories(
     pool: &SqlitePool,
     scan_id: i64,
     seen_paths: &HashSet<String>,
-) -> Result<usize, sqlx::Error> {
+) -> Result<(usize, Vec<String>), sqlx::Error> {
     let all_dirs: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, path FROM directories WHERE scan_id = ?")
             .bind(scan_id)
@@ -292,8 +301,8 @@ pub async fn remove_stale_directories(
             removed += 1;
         }
     }
-    cleanup_orphan_blobs(&mut *conn).await?;
-    Ok(removed)
+    let orphan_hashes = cleanup_orphan_blobs(&mut *conn).await?;
+    Ok((removed, orphan_hashes))
 }
 
 /// List all files for a scan, with full paths reconstructed by joining
@@ -740,6 +749,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replace_files_preserves_ids_on_rescan() {
+        let pool = open_memory().await.unwrap();
+        let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
+        let dir_id = upsert_directory(&pool, scan_id, "", 1000, 0).await.unwrap();
+
+        let files = vec![
+            FileInput {
+                filename: "a.mp3".into(),
+                size: 100,
+                ctime: 1000,
+                mtime: 2000,
+            },
+            FileInput {
+                filename: "b.flac".into(),
+                size: 200,
+                ctime: 3000,
+                mtime: 4000,
+            },
+        ];
+        replace_files(&pool, dir_id, &files).await.unwrap();
+
+        // Record file IDs
+        let ids: Vec<(i64, String)> =
+            sqlx::query_as("SELECT id, filename FROM files WHERE dir_id = ? ORDER BY filename")
+                .bind(dir_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ids.len(), 2);
+        let (id_a, _) = &ids[0];
+        let (id_b, _) = &ids[1];
+
+        // Rescan with same files but updated mtime for one
+        let files2 = vec![
+            FileInput {
+                filename: "a.mp3".into(),
+                size: 100,
+                ctime: 1000,
+                mtime: 2000, // unchanged
+            },
+            FileInput {
+                filename: "b.flac".into(),
+                size: 250,
+                ctime: 3000,
+                mtime: 5000, // changed
+            },
+        ];
+        replace_files(&pool, dir_id, &files2).await.unwrap();
+
+        let ids2: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, filename, metadata_scanned_at FROM files WHERE dir_id = ? ORDER BY filename",
+        )
+        .bind(dir_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(ids2.len(), 2);
+
+        // IDs preserved
+        assert_eq!(ids2[0].0, *id_a, "file ID for a.mp3 should be stable");
+        assert_eq!(ids2[1].0, *id_b, "file ID for b.flac should be stable");
+
+        // metadata_scanned_at cleared for changed file (b.flac)
+        // (both are None since no metadata scan has run, but the CASE logic is exercised)
+    }
+
+    #[tokio::test]
     async fn remove_stale_directories_deletes_unseen() {
         let pool = open_memory().await.unwrap();
         let scan_id = upsert_scan(&pool, "test", "/tmp").await.unwrap();
@@ -763,7 +839,7 @@ mod tests {
         let mut seen = HashSet::new();
         seen.insert("keep".to_string());
 
-        let removed = remove_stale_directories(&pool, scan_id, &seen)
+        let (removed, _orphan_hashes) = remove_stale_directories(&pool, scan_id, &seen)
             .await
             .unwrap();
         assert_eq!(removed, 1);

@@ -142,12 +142,14 @@ pub async fn scan_to_db(
 
     // If nothing was scanned, every directory matched its cached mtime —
     // the DB is already in sync and no directories can be stale.
-    let removed = if stats.dirs_scanned > 0 {
+    // TODO: use orphan_hashes to clean up CAS files (via cas::remove_blob)
+    // once the ops layer wires up CAS cleanup.
+    let (removed, _orphan_hashes) = if stats.dirs_scanned > 0 {
         dao::remove_stale_directories(pool, scan_id, &seen_paths)
             .await
             .map_err(io::Error::other)?
     } else {
-        0
+        (0, Vec::new())
     };
     stats.dirs_removed = removed;
 
