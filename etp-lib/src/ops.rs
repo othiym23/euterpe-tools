@@ -463,113 +463,94 @@ pub async fn run_metadata_scan(
     }
 
     for record in &files {
-        let full_path = if record.dir_path.is_empty() {
-            PathBuf::from(&record.root_path).join(&record.filename)
-        } else {
-            PathBuf::from(&record.root_path)
-                .join(&record.dir_path)
-                .join(&record.filename)
-        };
-
-        if verbose {
-            eprintln!("  reading: {}", full_path.display());
-        }
-
-        let file_meta = match metadata::read_metadata(&full_path) {
-            Ok(m) => m,
+        match process_audio_file(pool, record, verbose).await {
+            Ok(()) => stats.files_scanned += 1,
             Err(e) => {
                 if verbose {
-                    eprintln!("  warning: {}: {e}", full_path.display());
+                    eprintln!("  warning: {}: {e}", record.filename);
                 }
                 stats.errors += 1;
-                continue;
-            }
-        };
-
-        // Combine properties and tags into one metadata set
-        let mut all_tags: Vec<(String, String)> = Vec::new();
-        for (key, val) in &file_meta.properties {
-            all_tags.push((key.clone(), val.to_string()));
-        }
-        for (key, val) in &file_meta.tags {
-            all_tags.push((key.clone(), val.to_string()));
-        }
-
-        if let Err(e) = dao::replace_file_metadata(pool, record.file_id, &all_tags).await {
-            if verbose {
-                eprintln!(
-                    "  warning: failed to store metadata for {}: {e}",
-                    record.filename
-                );
-            }
-            stats.errors += 1;
-            continue;
-        }
-
-        // Store embedded images in CAS + DB
-        if !file_meta.images.is_empty() {
-            let mut image_inputs = Vec::new();
-            for img in &file_meta.images {
-                match cas::store_blob(&img.data) {
-                    Ok((hash, size)) => {
-                        image_inputs.push(dao::EmbeddedImageInput {
-                            image_type: img.image_type.clone(),
-                            mime_type: img.mime_type.clone(),
-                            blob_hash: hash,
-                            blob_size: size,
-                            width: img.width.map(|w| w as i64),
-                            height: img.height.map(|h| h as i64),
-                        });
-                    }
-                    Err(e) => {
-                        if verbose {
-                            eprintln!("  warning: failed to store image blob: {e}");
-                        }
-                    }
-                }
-            }
-            match dao::replace_embedded_images(pool, record.file_id, &image_inputs).await {
-                Ok(orphan_hashes) => {
-                    for hash in &orphan_hashes {
-                        let _ = cas::remove_blob(hash);
-                    }
-                }
-                Err(e) => {
-                    if verbose {
-                        eprintln!(
-                            "  warning: failed to store images for {}: {e}",
-                            record.filename
-                        );
-                    }
-                }
             }
         }
-
-        // Store cue sheet if present
-        if let Some(cue) = &file_meta.cue_sheet
-            && let Err(e) = dao::upsert_cue_sheet(pool, record.file_id, "embedded", cue).await
-            && verbose
-        {
-            eprintln!(
-                "  warning: failed to store cue sheet for {}: {e}",
-                record.filename
-            );
-        }
-
-        if let Err(e) = dao::mark_metadata_scanned(pool, record.file_id).await
-            && verbose
-        {
-            eprintln!(
-                "  warning: failed to mark {} as scanned: {e}",
-                record.filename
-            );
-        }
-
-        stats.files_scanned += 1;
     }
 
     stats.elapsed_ms = start.elapsed().as_millis();
     stats
+}
+
+/// Extract and persist metadata for a single audio file.
+async fn process_audio_file(
+    pool: &SqlitePool,
+    record: &dao::AudioFileRecord,
+    verbose: bool,
+) -> Result<(), String> {
+    let full_path = if record.dir_path.is_empty() {
+        PathBuf::from(&record.root_path).join(&record.filename)
+    } else {
+        PathBuf::from(&record.root_path)
+            .join(&record.dir_path)
+            .join(&record.filename)
+    };
+
+    if verbose {
+        eprintln!("  reading: {}", full_path.display());
+    }
+
+    let file_meta = metadata::read_metadata(&full_path).map_err(|e| format!("{e}"))?;
+
+    // Store tags + audio properties as metadata
+    let all_tags: Vec<(String, String)> = file_meta
+        .properties
+        .iter()
+        .chain(file_meta.tags.iter())
+        .map(|(key, val)| (key.clone(), val.to_string()))
+        .collect();
+
+    dao::replace_file_metadata(pool, record.file_id, &all_tags)
+        .await
+        .map_err(|e| format!("metadata: {e}"))?;
+
+    // Store embedded images in CAS + DB
+    if !file_meta.images.is_empty() {
+        let mut image_inputs = Vec::new();
+        for img in &file_meta.images {
+            match cas::store_blob(&img.data) {
+                Ok((hash, size)) => {
+                    image_inputs.push(dao::EmbeddedImageInput {
+                        image_type: img.image_type.clone(),
+                        mime_type: img.mime_type.clone(),
+                        blob_hash: hash,
+                        blob_size: size,
+                        width: img.width.map(|w| w as i64),
+                        height: img.height.map(|h| h as i64),
+                    });
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!("  warning: failed to store image blob: {e}");
+                    }
+                }
+            }
+        }
+        if let Ok(orphan_hashes) =
+            dao::replace_embedded_images(pool, record.file_id, &image_inputs).await
+        {
+            for hash in &orphan_hashes {
+                let _ = cas::remove_blob(hash);
+            }
+        }
+    }
+
+    // Store cue sheet if present
+    if let Some(cue) = &file_meta.cue_sheet {
+        let _ = dao::upsert_cue_sheet(pool, record.file_id, "embedded", cue).await;
+    }
+
+    dao::mark_metadata_scanned(pool, record.file_id)
+        .await
+        .map_err(|e| format!("mark scanned: {e}"))?;
+
+    Ok(())
 }
 
 /// Read metadata from a single audio file (no database). Returns JSON.
@@ -598,4 +579,36 @@ pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
     }
 
     Ok(json)
+}
+
+/// Remove CAS blobs that are not referenced by any database record.
+/// Returns the number of blobs removed.
+pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool) -> usize {
+    let referenced = match dao::referenced_blob_hashes(pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: failed to query referenced blobs: {e}");
+            return 0;
+        }
+    };
+
+    let on_disk = match cas::list_blob_hashes() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("error: failed to list CAS blobs: {e}");
+            return 0;
+        }
+    };
+
+    let mut removed = 0;
+    for hash in &on_disk {
+        if !referenced.contains(hash) {
+            if verbose {
+                eprintln!("  removing orphan blob: {hash}");
+            }
+            let _ = cas::remove_blob(hash);
+            removed += 1;
+        }
+    }
+    removed
 }

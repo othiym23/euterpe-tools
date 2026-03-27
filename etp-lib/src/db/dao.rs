@@ -285,22 +285,23 @@ pub async fn remove_stale_directories(
             .await?;
 
     let mut removed = 0;
-    let mut conn = pool.acquire().await?;
+    let mut tx = pool.begin().await?;
     for (dir_id, path) in &all_dirs {
         if !seen_paths.contains(path) {
-            delete_directory_dependents(&mut conn, *dir_id).await?;
+            delete_directory_dependents(&mut tx, *dir_id).await?;
             sqlx::query("DELETE FROM files WHERE dir_id = ?")
                 .bind(dir_id)
-                .execute(&mut *conn)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query("DELETE FROM directories WHERE id = ?")
                 .bind(dir_id)
-                .execute(&mut *conn)
+                .execute(&mut *tx)
                 .await?;
             removed += 1;
         }
     }
-    let orphan_hashes = cleanup_orphan_blobs(&mut conn).await?;
+    let orphan_hashes = cleanup_orphan_blobs(&mut tx).await?;
+    tx.commit().await?;
     Ok((removed, orphan_hashes))
 }
 
@@ -741,7 +742,7 @@ pub async fn replace_embedded_images(
     file_id: i64,
     images: &[EmbeddedImageInput],
 ) -> Result<Vec<String>, sqlx::Error> {
-    let mut conn = pool.acquire().await?;
+    let mut tx = pool.begin().await?;
 
     // Decrement old blob refs
     sqlx::query(
@@ -749,13 +750,13 @@ pub async fn replace_embedded_images(
          WHERE hash IN (SELECT blob_hash FROM embedded_images WHERE file_id = ?)",
     )
     .bind(file_id)
-    .execute(&mut *conn)
+    .execute(&mut *tx)
     .await?;
 
     // Delete old image rows
     sqlx::query("DELETE FROM embedded_images WHERE file_id = ?")
         .bind(file_id)
-        .execute(&mut *conn)
+        .execute(&mut *tx)
         .await?;
 
     // Insert new images and upsert blobs
@@ -766,7 +767,7 @@ pub async fn replace_embedded_images(
         )
         .bind(&img.blob_hash)
         .bind(img.blob_size as i64)
-        .execute(&mut *conn)
+        .execute(&mut *tx)
         .await?;
 
         sqlx::query(
@@ -779,11 +780,12 @@ pub async fn replace_embedded_images(
         .bind(&img.blob_hash)
         .bind(img.width)
         .bind(img.height)
-        .execute(&mut *conn)
+        .execute(&mut *tx)
         .await?;
     }
 
-    let orphans = cleanup_orphan_blobs(&mut conn).await?;
+    let orphans = cleanup_orphan_blobs(&mut tx).await?;
+    tx.commit().await?;
     Ok(orphans)
 }
 
@@ -851,6 +853,14 @@ pub async fn get_file_id_by_path(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(id,)| id))
+}
+
+/// Return the set of all blob hashes referenced by the database.
+pub async fn referenced_blob_hashes(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT hash FROM blobs")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(h,)| h).collect())
 }
 
 #[cfg(test)]

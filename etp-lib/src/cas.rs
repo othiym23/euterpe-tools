@@ -40,6 +40,31 @@ pub fn remove_blob(hash: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// List all blob hashes present on disk in the CAS directory.
+pub fn list_blob_hashes() -> io::Result<Vec<String>> {
+    let cas = paths::cas_dir().map_err(io::Error::other)?;
+    let mut hashes = Vec::new();
+    if !cas.exists() {
+        return Ok(hashes);
+    }
+    for prefix_entry in fs::read_dir(&cas)? {
+        let prefix_entry = prefix_entry?;
+        if !prefix_entry.file_type()?.is_dir() {
+            continue;
+        }
+        for blob_entry in fs::read_dir(prefix_entry.path())? {
+            let blob_entry = blob_entry?;
+            if blob_entry.file_type()?.is_file()
+                && let Some(name) = blob_entry.file_name().to_str()
+                && !name.starts_with(".tmp.")
+            {
+                hashes.push(name.to_string());
+            }
+        }
+    }
+    Ok(hashes)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

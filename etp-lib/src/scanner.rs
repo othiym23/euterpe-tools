@@ -1,3 +1,4 @@
+use crate::cas;
 use crate::db::dao::{self, FileInput};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
@@ -44,6 +45,8 @@ pub async fn scan_to_db(
         elapsed_ms: 0,
     };
     let mut seen_paths = HashSet::new();
+
+    let mut orphan_hashes: Vec<String> = Vec::new();
 
     // Bulk-load all cached mtimes in one query instead of per-directory SELECTs.
     let cached_mtimes: HashMap<String, i64> = dao::all_directory_mtimes(pool, scan_id)
@@ -127,24 +130,24 @@ pub async fn scan_to_db(
         });
 
         if pending.len() >= BATCH_SIZE {
-            flush_pending(pool, scan_id, &mut pending)
+            let hashes = flush_pending(pool, scan_id, &mut pending)
                 .await
                 .map_err(io::Error::other)?;
+            orphan_hashes.extend(hashes);
         }
     }
 
     // Flush any remaining directories
     if !pending.is_empty() {
-        flush_pending(pool, scan_id, &mut pending)
+        let hashes = flush_pending(pool, scan_id, &mut pending)
             .await
             .map_err(io::Error::other)?;
+        orphan_hashes.extend(hashes);
     }
 
     // If nothing was scanned, every directory matched its cached mtime —
     // the DB is already in sync and no directories can be stale.
-    // TODO: use orphan_hashes to clean up CAS files (via cas::remove_blob)
-    // once the ops layer wires up CAS cleanup.
-    let (removed, _orphan_hashes) = if stats.dirs_scanned > 0 {
+    let (removed, stale_orphans) = if stats.dirs_scanned > 0 {
         dao::remove_stale_directories(pool, scan_id, &seen_paths)
             .await
             .map_err(io::Error::other)?
@@ -152,6 +155,12 @@ pub async fn scan_to_db(
         (0, Vec::new())
     };
     stats.dirs_removed = removed;
+    orphan_hashes.extend(stale_orphans);
+
+    // Clean up any CAS blobs orphaned by file removals
+    for hash in &orphan_hashes {
+        let _ = cas::remove_blob(hash);
+    }
 
     dao::finish_scan(pool, scan_id)
         .await
@@ -164,12 +173,14 @@ pub async fn scan_to_db(
 
 /// Flush a batch of pending directory updates in a single transaction.
 #[cfg_attr(feature = "profiling", tracing::instrument(name = "flush_pending", skip_all, fields(batch_size = pending.len())))]
+/// Returns hashes of any orphaned CAS blobs from file removals.
 async fn flush_pending(
     pool: &SqlitePool,
     scan_id: i64,
     pending: &mut Vec<DirUpdate>,
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<String>, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let mut orphan_hashes = Vec::new();
 
     for update in pending.drain(..) {
         let dir_id = {
@@ -188,11 +199,12 @@ async fn flush_pending(
             sqlx::Row::get::<i64, _>(&result, 0)
         };
 
-        dao::replace_files_on(&mut tx, dir_id, &update.files).await?;
+        let mut hashes = dao::replace_files_on(&mut tx, dir_id, &update.files).await?;
+        orphan_hashes.append(&mut hashes);
     }
 
     tx.commit().await?;
-    Ok(())
+    Ok(orphan_hashes)
 }
 
 /// Local struct for batching directory updates in scan_to_db.

@@ -1,183 +1,43 @@
 # euterpe-tools
 
-Incremental CLI filesystem scanner that produces CSV metadata indexes and text
-representations of filesystem trees. Designed for NAS use (spinning disks, RAID
-6 with two parity disks) at 200K-500K file scale. For performance, intended to
-be run on a Synology DiskStation running DSM 7.3.
+Incremental CLI filesystem scanner and audio metadata manager for a Synology
+NAS. See [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) for architecture details.
 
-Cargo workspace with five crates:
-
-- `etp-lib` — library crate (all shared logic)
-- `etp-csv` — CSV output binary
-- `etp-tree` — tree output binary
-- `etp-find` — regex-based file search binary
-- `etp-meta` — audio metadata reading binary
-
-Installable Python package in `etp/` (uses `uv tool install .`):
-
-- `etp_commands/dispatcher.py` — git-style dispatcher (`etp <cmd>` →
-  `etp-<cmd>`)
-- `etp_commands/anime.py` — interactive anime collection manager
-  (triage/series/episode subcommands)
-- `etp_commands/catalog.py` — KDL-configured catalog orchestrator
-- `etp_lib/paths.py` — XDG-based path resolution and binary search
-- `etp_lib/media_parser.py` — tokenizer/parser for anime/media file paths
-- `kdl-py` — KDL 1 parser (PyPI dependency)
+Cargo workspace: `etp-lib`, `etp-csv`, `etp-tree`, `etp-find`, `etp-meta`.
+Installable Python package in `etp/` (uses `uv tool install .`).
 
 ## Build & run
 
 ```bash
-just build-smoketest  # native (aarch64-apple-darwin), verify all crates compile
-just build            # native (aarch64-apple-darwin)
-just build-nas        # NAS (static binary)
-just build-nas-cross  # alternative via cross tool
-just build-profile    # native with profiling instrumentation
-just build-nas-profile # NAS with profiling instrumentation
+just build-smoketest  # verify all crates compile
+just build            # native release (aarch64-apple-darwin)
+just build-nas        # NAS release (x86_64-unknown-linux-musl, static)
 just deploy           # check + test + build + mount NAS + copy everything
 
-# Usage
-etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [--find <pattern> [-i]] [--no-scan] [-v]
-etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--find <pattern> [-i]] [--no-scan] [--du [--du-subs]] [-N] [-I <pattern>...] [-a] [-v]
-etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [--exclude <name>...] [--no-scan] [-v]
+# Rust plumbing
+etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [-v]
+etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--du [--du-subs]] [-v]
+etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [-v]
 etp-meta scan [-R <directory>] [--db <path>] [-e <name>...] [--force] [-v]
 etp-meta read <file> [--images]
 
-# Via dispatcher
+# Python porcelain
 etp tree <directory> [args...]
 etp find <pattern> [-R <directory>] [args...]
 etp catalog [--dry-run] [config.kdl]
-etp anime triage [pattern] [--source DIR] [--dest DIR] [--force] [--dry-run]
-etp anime series [pattern] [--source DIR] [--dest DIR] [--force] [--dry-run]
-etp anime episode <file> --anidb ID | --tvdb ID [--dest DIR] [--dry-run]
+etp anime triage|series|episode [args...]
 ```
-
-Defaults: output is `<dir>/index.csv`, database is `<dir>/.etp.db`, exclude is
-`@eaDir` (Synology metadata directories, filtered at scan time so walkdir never
-descends into them). `etp-tree` hides dotfiles by default (`-a` to show).
-Database and CSV output are written into the scanned directory by default (they
-become part of the scan).
-
-## Architecture
-
-Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
-
-- `ops.rs` — shared operations: `validate_directory`, `parse_ignore_patterns`,
-  `run_scan_to_db`, `write_csv_from_db`, `render_tree_from_db`, `render_du`,
-  `stream_find_matches`, `collect_find_matches`, `write_find_csv`,
-  `render_find_tree`
-- `scanner.rs` — walkdir-based scanning; skips unchanged directories by mtime
-- `csv_writer.rs` — sorted CSV (`path,size,ctime,mtime`)
-- `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
-- `finder.rs` — regex matching against file records
-- `db/` — SQLite database layer (`dao.rs` for queries, `mod.rs` for connection);
-  new databases use clean `schema.sql`, existing databases use incremental
-  migrations
-- `metadata.rs` — audio metadata reading via lofty, tag normalization
-- `cas.rs` — content-addressable blob storage (BLAKE3, filesystem)
-- `config.rs` — KDL configuration parsing
-- `paths.rs` — XDG-based path resolution
-- `profiling.rs` — self-instrumentation (feature-gated, see below)
-
-Each binary crate has a `build.rs` that embeds the short git hash in
-`--version`.
-
-### Key design decisions
-
-Architectural decisions are recorded in `docs/adrs/` using the naming convention
-`YYYY-MM-DD-NN-decision-name.md`. Key decisions affecting implementation:
-
-- **Incremental scanning**: directory mtime is the cache key. Unchanged
-  directories cost one stat call instead of N.
-- **Unix-only**: uses `std::os::unix::fs::MetadataExt` for ctime/mtime.
-- **SQLite database** for scan state persistence — see
-  `docs/adrs/2026-02-22-01-sqlx-sqlite-database.md`. Uses sqlx with WAL mode and
-  foreign keys enabled.
-- **ICU4X collation** for all output sorting (CSV and tree) — see
-  `docs/adrs/2026-02-15-02-icu4x-collation.md`.
-- **Explicit deletion** — all foreign keys use `ON DELETE RESTRICT`. Application
-  code must delete child rows before parent rows. Never use `ON DELETE CASCADE`.
-  See `docs/adrs/2026-02-22-10-explicit-deletion-no-cascade.md`.
-- **Python dependencies welcome** — `uv` is available on the NAS, so PyPI
-  packages can be used freely in the Python plumbing. Prefer the standard
-  library when sufficient, but don't reimplement what a well-maintained package
-  already does. Declare all dependencies in `pyproject.toml`. See
-  `docs/adrs/2026-03-27-01-python-dependencies-welcome.md`.
 
 ## Testing
 
-Unit tests in each module. CLI snapshot tests use trycmd — see
-`docs/adrs/2026-02-14-02-trycmd-snapshot-tests.md`. Tests run via
-`cargo-nextest` (`cargo nextest run`) for parallel execution and concise output.
-Install with `cargo install --locked cargo-nextest`.
-
-- `etp-csv/tests/cmd/` — CSV snapshot tests (4 tests)
-- `etp-tree/tests/cmd/` — tree snapshot tests (3 tests)
-- `etp-find/tests/cmd/` — find snapshot tests (5 tests)
-- `etp/tests/test_anime.py` — anime manager tests (pytest)
-- `etp/tests/test_catalog.py` — catalog orchestrator tests (pytest)
-- `etp/tests/test_media_parser.py` — media path parser tests (pytest)
-- `etp/tests/test_paths.py` — path resolution tests (pytest)
-
-### trycmd tests
-
-Each `tests/cmd/<name>.toml` defines one CLI invocation. Optional `<name>.in/`
-directory provides fixture files when `fs.sandbox = true`. Use
-`fs.sandbox = true` and pass `.` as the directory for deterministic output
-paths.
-
-```toml
-bin.name = "etp-csv"
-args = [".", "--some-flag"]
-status = "success"
-stdout = ""
-fs.sandbox = true
-```
-
-## Profiling
-
-Self-instrumented profiling via `tracing` + `tracing-chrome`, gated behind the
-`profiling` Cargo feature. See
-`docs/adrs/2026-03-25-01-self-instrumented-profiling.md`.
-
 ```bash
-just build-profile      # native with profiling
-just build-nas-profile  # NAS with profiling
-
-# Run with profiling enabled (writes trace file to cwd)
-etp-csv /path/to/dir --profile
-etp-tree /path/to/dir --profile
-etp-find pattern -R /path/to/dir --profile
-etp catalog --profile
-
-# Open trace in Perfetto: https://ui.perfetto.dev
+just check  # clippy + ruff + pyright + ty + prettier
+just test   # cargo nextest + pytest (scripts + etp)
 ```
 
-Trace files are named `etp-trace-<binary>-<timestamp>.json` and written to the
-current working directory. On Linux, `/proc/self/io` and `/proc/self/status`
-metrics are sampled at phase boundaries. The `profiling` feature adds no runtime
-cost when `--profile` is not passed (tracing macros are no-ops without a
-subscriber).
-
-## Scripts
-
-`scripts/` contains the legacy Python orchestrator (`catalog-nas.py`) driven by
-`catalog.toml`. This is superseded by `etp/etp-catalog` with KDL config.
-
-`etp/` is an installable Python package (`uv tool install .`):
-
-- `src/etp_commands/` — CLI entry points (dispatcher, anime, catalog)
-- `src/etp_lib/` — shared library (paths, media_parser)
-- `tests/` — pytest test suite
-
-`conf/` contains KDL configuration files:
-
-- `catalog.kdl` — catalog scan configuration
-
-```bash
-cd etp && uv sync     # creates .venv, installs package + dev tools
-just check            # clippy + ruff + pyright
-just test             # cargo nextest + pytest (scripts + etp)
-```
+Tests run via `cargo-nextest`. CLI snapshot tests use trycmd — each
+`tests/cmd/<name>.toml` defines one CLI invocation. Use `fs.sandbox = true` and
+pass `.` as the directory for deterministic output paths.
 
 ## Formatting
 
@@ -185,43 +45,31 @@ Always run `just format` before finishing work. This runs `cargo fmt` (Rust),
 `ruff format` (Python), and `prettier` (Markdown).
 
 Python targets `>=3.14`, so PEP 758 applies: use the unparenthesized
-`except X, Y:` style for multi-exception clauses (not `except (X, Y):`). This is
-what `ruff format` enforces.
+`except X, Y:` style for multi-exception clauses. This is what `ruff format`
+enforces.
+
+## Conventions
+
+- **Unix-only**: uses `std::os::unix::fs::MetadataExt` for ctime/mtime.
+- **Explicit deletion**: all foreign keys use `ON DELETE RESTRICT`. Application
+  code must delete child rows before parent rows. Never use `ON DELETE CASCADE`.
+- **Python dependencies welcome**: `uv` is available on the NAS. Prefer stdlib
+  when sufficient, but don't reimplement what a well-maintained package does.
 
 ## Git workflow
 
-Branch protection is enabled on `main`. All changes must go through a feature
-branch and pull request — never commit directly to `main`.
+Branch protection is enabled on `main`. All changes go through feature branches
+and pull requests.
 
-Large multi-subproject efforts (e.g., SP1.1–SP1.4) use a long-lived feature
-branch. Individual subproject branches merge into the feature branch via PR.
-Only merge the feature branch to `main` once the entire effort is complete and
-production-ready — never merge partial subprojects to `main`.
+Large multi-subproject efforts use a long-lived feature branch. Individual
+subproject branches merge into the feature branch via PR. Only merge the feature
+branch to `main` once the entire effort is complete.
 
 ## Documentation
 
 - Implementation plans: `docs/plans/YYYY-MM-DD-plan-name.md`
 - Architecture decision records: `docs/adrs/YYYY-MM-DD-NN-decision-name.md`
+- Architecture and implementation: `docs/DESIGN_NOTES.md`
 
-Record new architectural decisions as ADRs. Use the Nygard template (Status,
-Context, Decision, Consequences). Keep each ADR concise. When a decision
-supersedes an earlier one, update the status of both ADRs with cross-references.
-
-After an implementation plan is decided upon, but before beginning
-implementation work, save it in the implementation plan directory. Before
-committing, check whether there significant enough changes to the plan to
-justify updating or correcting it. Implementation plans should be considered
-immutable after the branch related to the subproject has been merged or the PR
-related to the implementation plan has been closed.
-
-## Cross-compilation
-
-`.cargo/config.toml` sets the linker for `x86_64-unknown-linux-musl` to
-`x86_64-linux-musl-gcc`. Two options:
-
-1. **musl toolchain**: `brew install filosottile/musl-cross/musl-cross`, then
-   `rustup target add x86_64-unknown-linux-musl`
-2. **cross (Docker-based)**: Must use the git version
-   (`cargo install cross --git https://github.com/cross-rs/cross`) — the
-   crates.io release (0.2.5) lacks ARM64 Docker image support and fails on Apple
-   Silicon.
+Record new architectural decisions as ADRs (Nygard template). When a decision
+supersedes an earlier one, update both with cross-references.
