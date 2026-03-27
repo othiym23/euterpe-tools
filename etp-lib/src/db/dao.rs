@@ -500,6 +500,16 @@ pub async fn latest_scan_id(pool: &SqlitePool, run_type: &str) -> Result<Option<
     Ok(row.map(|r| r.0))
 }
 
+/// Return the ID of the most recently finished scan, regardless of run_type.
+pub async fn latest_any_scan_id(pool: &SqlitePool) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM scans WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
 /// Sum of all file sizes under a given directory prefix for a scan.
 /// Empty prefix means total for the entire scan.
 #[cfg_attr(
@@ -630,6 +640,7 @@ pub struct EmbeddedImageInput {
     pub image_type: String,
     pub mime_type: String,
     pub blob_hash: String,
+    pub blob_size: u64,
     pub width: Option<i64>,
     pub height: Option<i64>,
 }
@@ -641,22 +652,26 @@ pub async fn files_needing_metadata_scan(
     pool: &SqlitePool,
     scan_id: i64,
     extensions: &[&str],
+    force: bool,
 ) -> Result<Vec<AudioFileRecord>, sqlx::Error> {
-    // Use LIKE patterns for extension matching (e.g., "%.mp3") since SQLite
-    // lacks a built-in way to extract the last dot-delimited extension.
     let like_clauses: Vec<String> = extensions
         .iter()
         .map(|_| "lower(f.filename) LIKE ?".to_string())
         .collect();
     let ext_filter = like_clauses.join(" OR ");
+    let staleness_filter = if force {
+        "1 = 1".to_string()
+    } else {
+        "(f.metadata_scanned_at IS NULL OR f.metadata_scanned_at < datetime(f.mtime, 'unixepoch'))"
+            .to_string()
+    };
     let query = format!(
         "SELECT f.id, s.root_path, d.path, f.filename, f.mtime
          FROM files f
          JOIN directories d ON f.dir_id = d.id
          JOIN scans s ON d.scan_id = s.id
          WHERE d.scan_id = ?
-           AND (f.metadata_scanned_at IS NULL
-                OR f.metadata_scanned_at < datetime(f.mtime, 'unixepoch'))
+           AND {staleness_filter}
            AND ({ext_filter})
          ORDER BY d.path, f.filename"
     );
@@ -688,19 +703,20 @@ pub async fn replace_file_metadata(
     file_id: i64,
     tags: &[(String, String)],
 ) -> Result<(), sqlx::Error> {
-    let mut conn = pool.acquire().await?;
+    let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM metadata WHERE file_id = ?")
         .bind(file_id)
-        .execute(&mut *conn)
+        .execute(&mut *tx)
         .await?;
     for (tag_name, value) in tags {
         sqlx::query("INSERT INTO metadata (file_id, tag_name, value) VALUES (?, ?, ?)")
             .bind(file_id)
             .bind(tag_name)
             .bind(value)
-            .execute(&mut *conn)
+            .execute(&mut *tx)
             .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -745,10 +761,11 @@ pub async fn replace_embedded_images(
     // Insert new images and upsert blobs
     for img in images {
         sqlx::query(
-            "INSERT INTO blobs (hash, size, ref_count) VALUES (?, 0, 1)
+            "INSERT INTO blobs (hash, size, ref_count) VALUES (?, ?, 1)
              ON CONFLICT(hash) DO UPDATE SET ref_count = ref_count + 1",
         )
         .bind(&img.blob_hash)
+        .bind(img.blob_size as i64)
         .execute(&mut *conn)
         .await?;
 
@@ -1721,7 +1738,7 @@ mod tests {
         .await
         .unwrap();
 
-        let results = files_needing_metadata_scan(&pool, scan_id, &["mp3", "flac"])
+        let results = files_needing_metadata_scan(&pool, scan_id, &["mp3", "flac"], false)
             .await
             .unwrap();
         let names: Vec<&str> = results.iter().map(|r| r.filename.as_str()).collect();
@@ -1756,7 +1773,7 @@ mod tests {
         // Mark as scanned
         mark_metadata_scanned(&pool, file_id).await.unwrap();
 
-        let results = files_needing_metadata_scan(&pool, scan_id, &["mp3"])
+        let results = files_needing_metadata_scan(&pool, scan_id, &["mp3"], false)
             .await
             .unwrap();
         assert!(results.is_empty(), "scanned file should be skipped");

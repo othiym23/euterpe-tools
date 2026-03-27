@@ -89,6 +89,8 @@ async fn main() {
                 }
             };
 
+            let is_new = !db_path.exists();
+
             let pool = etp_lib::db::open_db(&db_path, cli.verbose)
                 .await
                 .unwrap_or_else(|e| {
@@ -96,19 +98,17 @@ async fn main() {
                     std::process::exit(1);
                 });
 
-            // Find the latest scan for this directory
+            // Find or create a scan for this directory
             let scan_id = if let Some(ref dir) = directory {
                 let canon = dir.canonicalize().unwrap_or(dir.clone());
                 let run_type = canon.to_string_lossy();
 
-                // Run filesystem scan first if needed
-                if !db_path.exists() || force {
+                if is_new || force {
                     ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose).await
                 } else {
                     match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
                         Ok(Some(id)) => id,
                         Ok(None) => {
-                            // No scan yet — run one
                             ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose).await
                         }
                         Err(e) => {
@@ -118,8 +118,7 @@ async fn main() {
                     }
                 }
             } else {
-                // No directory — find any scan in the DB
-                match etp_lib::db::dao::latest_scan_id(&pool, "").await {
+                match etp_lib::db::dao::latest_any_scan_id(&pool).await {
                     Ok(Some(id)) => id,
                     _ => {
                         eprintln!("error: no scans found in database");

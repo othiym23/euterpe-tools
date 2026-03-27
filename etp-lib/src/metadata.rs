@@ -96,7 +96,7 @@ fn extract_properties(file: &lofty::file::TaggedFile) -> Vec<(String, serde_json
 fn extract_tags(tag: &lofty::tag::Tag) -> Vec<(String, serde_json::Value)> {
     let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
     for item in tag.items() {
-        let key = normalize_item_key(&item.key());
+        let key = normalize_item_key(&item.key()).into_owned();
         if let Some(val) = item.value().text() {
             grouped.entry(key).or_default().push(val.to_string());
         }
@@ -128,7 +128,7 @@ fn extract_images(tag: &lofty::tag::Tag) -> Vec<ImageMetadata> {
                 None => "application/octet-stream".into(),
             };
             ImageMetadata {
-                image_type: normalize_picture_type(&pic.pic_type()),
+                image_type: normalize_picture_type(&pic.pic_type()).into_owned(),
                 mime_type: mime_str,
                 data: pic.data().to_vec(),
                 width: None,
@@ -148,7 +148,8 @@ fn extract_cue_sheet(tag: &lofty::tag::Tag) -> Option<String> {
 }
 
 /// Normalize a lofty `ItemKey` to `lowercase_snake_case`.
-pub fn normalize_item_key(key: &ItemKey) -> String {
+/// Returns a static string for known keys to avoid allocations.
+pub fn normalize_item_key(key: &ItemKey) -> std::borrow::Cow<'static, str> {
     match key {
         ItemKey::TrackTitle => "track_title".into(),
         ItemKey::TrackArtist => "track_artist".into(),
@@ -186,12 +187,12 @@ pub fn normalize_item_key(key: &ItemKey) -> String {
         ItemKey::MusicBrainzReleaseArtistId => "musicbrainz_release_artist_id".into(),
         ItemKey::MusicBrainzTrackId => "musicbrainz_track_id".into(),
         ItemKey::MusicBrainzWorkId => "musicbrainz_work_id".into(),
-        _ => format!("unknown_{:?}", key).to_ascii_lowercase(),
+        _ => format!("unknown_{:?}", key).to_ascii_lowercase().into(),
     }
 }
 
 /// Normalize a lofty `PictureType` to a snake_case string.
-pub fn normalize_picture_type(pt: &lofty::picture::PictureType) -> String {
+pub fn normalize_picture_type(pt: &lofty::picture::PictureType) -> std::borrow::Cow<'static, str> {
     use lofty::picture::PictureType;
     match pt {
         PictureType::Other => "other".into(),
@@ -215,7 +216,7 @@ pub fn normalize_picture_type(pt: &lofty::picture::PictureType) -> String {
         PictureType::Illustration => "illustration".into(),
         PictureType::BandLogo => "band_logo".into(),
         PictureType::PublisherLogo => "publisher_logo".into(),
-        _ => format!("unknown_{:?}", pt).to_ascii_lowercase(),
+        _ => format!("unknown_{:?}", pt).to_ascii_lowercase().into(),
     }
 }
 

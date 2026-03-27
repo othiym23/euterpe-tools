@@ -436,7 +436,7 @@ pub struct MetadataScanStats {
 pub async fn run_metadata_scan(
     pool: &SqlitePool,
     scan_id: i64,
-    _force: bool,
+    force: bool,
     verbose: bool,
 ) -> MetadataScanStats {
     let start = Instant::now();
@@ -448,7 +448,9 @@ pub async fn run_metadata_scan(
     };
 
     let files =
-        match dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS).await {
+        match dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS, force)
+            .await
+        {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("error: failed to query files for metadata scan: {e}");
@@ -509,11 +511,12 @@ pub async fn run_metadata_scan(
             let mut image_inputs = Vec::new();
             for img in &file_meta.images {
                 match cas::store_blob(&img.data) {
-                    Ok((hash, _size)) => {
+                    Ok((hash, size)) => {
                         image_inputs.push(dao::EmbeddedImageInput {
                             image_type: img.image_type.clone(),
                             mime_type: img.mime_type.clone(),
                             blob_hash: hash,
+                            blob_size: size,
                             width: img.width.map(|w| w as i64),
                             height: img.height.map(|h| h as i64),
                         });
@@ -572,40 +575,27 @@ pub async fn run_metadata_scan(
 /// Read metadata from a single audio file (no database). Returns JSON.
 pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
     let meta = metadata::read_metadata(path).map_err(|e| format!("{e}"))?;
+    let mut json = serde_json::to_value(&meta).map_err(|e| format!("{e}"))?;
 
-    let mut tags = serde_json::Map::new();
-    for (key, val) in &meta.tags {
-        tags.insert(key.clone(), val.clone());
+    // Add file path and replace image data with sizes
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert(
+            "file".into(),
+            serde_json::Value::String(path.display().to_string()),
+        );
+        // Images: strip raw data (not serialized due to #[serde(skip)]),
+        // add byte sizes instead
+        if let Some(serde_json::Value::Array(images)) = obj.get_mut("images") {
+            for (i, img_val) in images.iter_mut().enumerate() {
+                if let Some(img_obj) = img_val.as_object_mut() {
+                    img_obj.insert(
+                        "size".into(),
+                        serde_json::Value::Number(meta.images[i].data.len().into()),
+                    );
+                }
+            }
+        }
     }
 
-    let mut properties = serde_json::Map::new();
-    for (key, val) in &meta.properties {
-        properties.insert(key.clone(), val.clone());
-    }
-
-    let images: Vec<serde_json::Value> = meta
-        .images
-        .iter()
-        .map(|img| {
-            serde_json::json!({
-                "type": img.image_type,
-                "mime_type": img.mime_type,
-                "size": img.data.len(),
-            })
-        })
-        .collect();
-
-    let mut result = serde_json::Map::new();
-    result.insert(
-        "file".into(),
-        serde_json::Value::String(path.display().to_string()),
-    );
-    result.insert("properties".into(), serde_json::Value::Object(properties));
-    result.insert("tags".into(), serde_json::Value::Object(tags));
-    result.insert("images".into(), serde_json::Value::Array(images));
-    if let Some(cue) = &meta.cue_sheet {
-        result.insert("cue_sheet".into(), serde_json::Value::String(cue.clone()));
-    }
-
-    Ok(serde_json::Value::Object(result))
+    Ok(json)
 }
