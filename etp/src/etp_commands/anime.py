@@ -1133,6 +1133,14 @@ def _match_files_to_season(
     return matched_with_extras, remaining
 
 
+_RE_TRAILING_YEAR = re.compile(r"\s*\(\d{4}\)\s*$")
+
+
+def _strip_year(name: str) -> str:
+    """Strip a trailing ``(YYYY)`` from a series name."""
+    return _RE_TRAILING_YEAR.sub("", name)
+
+
 def _process_group_batch(
     files: list[Path],
     info: AnimeInfo,
@@ -1144,6 +1152,7 @@ def _process_group_batch(
     pre_parsed: list[SourceFile] | None = None,
     season_override: int | None = None,
     extras: list[Path] | None = None,
+    config: AnimeConfig | None = None,
 ) -> tuple[int, int, list[Path]]:
     """Batch-process a group of files via an editable manifest.
 
@@ -1161,8 +1170,15 @@ def _process_group_batch(
         for sf in parsed:
             sf.parsed_season = season_override
 
-    if not default_concise_name:
+    # Resolve concise name default: saved config > extracted > directory name
+    saved_concise = ""
+    if config is not None and default_concise_name:
+        saved_concise = config.concise_names.get(default_concise_name, "")
+    if saved_concise:
+        default_concise_name = saved_concise
+    elif not default_concise_name:
         default_concise_name = _extract_concise_name(parsed)
+    default_concise_name = _strip_year(default_concise_name)
     concise_name = prompt_value(
         "Concise series name for filenames", default_concise_name
     )
@@ -1527,6 +1543,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
                     default_concise_name=series_path.name,
                     pre_parsed=matched,
                     season_override=1,
+                    config=config,
                 )
             else:
                 # TVDB: process all remaining files
@@ -1539,6 +1556,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
                     args.verbose,
                     default_concise_name=series_path.name,
                     pre_parsed=pool,
+                    config=config,
                 )
                 pool = []
 
@@ -1797,6 +1815,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
                     pre_parsed=matched,
                     season_override=1,
                     extras=group_extras,
+                    config=config,
                 )
             else:
                 # TVDB: process all remaining files at once (multi-season)
@@ -1810,6 +1829,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
                     default_concise_name=name,
                     pre_parsed=pool,
                     extras=group_extras,  # TVDB gets all remaining extras
+                    config=config,
                 )
                 group_extras = []
                 pool = []  # TVDB consumes entire pool
