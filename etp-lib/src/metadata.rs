@@ -313,50 +313,46 @@ fn extract_mediainfo_tags(general: Option<&serde_json::Value>) -> Vec<(String, s
         return Vec::new();
     };
 
-    // Mediainfo General track contains both metadata and format info.
-    // Skip format-level fields, keep tag-like fields.
-    let skip_fields = [
-        "@type",
-        "AudioCount",
-        "FileExtension",
-        "Format",
-        "Format_Version",
-        "FileSize",
-        "Duration",
-        "OverallBitRate",
-        "OverallBitRate_Mode",
-        "StreamSize",
-        "File_Modified_Date",
-        "File_Modified_Date_Local",
-        "Encoded_Application",
-        "Encoded_Library",
-        "Cover",
-        "Cover_Mime",
-        "Cover_Type",
-        "Count",
-        "StreamCount",
-        "StreamKind",
-        "StreamKindID",
-        "StreamOrder",
-        "IsStreamDisplay",
-        "OtherCount",
-        "VideoCount",
-        "TextCount",
-        "MenuCount",
-        "Codec",
-        "CodecID",
-        "CodecID/Hint",
-        "HeaderSize",
-        "DataSize",
-        "FooterSize",
-        "CompleteName",
-        "FolderName",
-        "FileName",
+    // Mediainfo's General track mixes format/technical fields with user-facing
+    // tags. Use an allowlist of known tag fields rather than a blocklist of
+    // format fields, since mediainfo can output many undocumented technical
+    // fields that would leak through a blocklist.
+    let tag_fields = [
+        "Title",
+        "Track",
+        "Performer",
+        "Album",
+        "Album/Performer",
+        "Track/Position",
+        "Track name/Position",
+        "Track/Position_Total",
+        "Part/Position",
+        "Part/Position_Total",
+        "Recorded_Date",
+        "Recorded date",
+        "Genre",
+        "Comment",
+        "Composer",
+        "Conductor",
+        "Lyricist",
+        "Lyrics",
+        "Publisher",
+        "Label",
+        "ISRC",
+        "Barcode",
+        "UPC",
+        "CatalogNumber",
+        "BPM",
+        "Copyright",
+        "ContentType",
+        "Mood",
+        "Language",
+        "Description",
     ];
 
     let mut out: Vec<(String, serde_json::Value)> = Vec::new();
     for (key, val) in obj {
-        if skip_fields.contains(&key.as_str()) {
+        if !tag_fields.contains(&key.as_str()) {
             continue;
         }
         if let Some(s) = val.as_str()
