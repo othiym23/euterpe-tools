@@ -90,6 +90,11 @@ Architectural decisions are recorded in `docs/adrs/` using the naming convention
 - **Explicit deletion** — all foreign keys use `ON DELETE RESTRICT`. Application
   code must delete child rows before parent rows. Never use `ON DELETE CASCADE`.
   See `docs/adrs/2026-02-22-10-explicit-deletion-no-cascade.md`.
+- **Python dependencies welcome** — `uv` is available on the NAS, so PyPI
+  packages can be used freely in the Python plumbing. Prefer the standard
+  library when sufficient, but don't reimplement what a well-maintained package
+  already does. Declare all dependencies in `pyproject.toml`. See
+  `docs/adrs/2026-03-27-01-python-dependencies-welcome.md`.
 
 ## Testing
 

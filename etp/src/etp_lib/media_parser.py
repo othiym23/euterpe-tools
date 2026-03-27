@@ -832,9 +832,7 @@ def _is_metadata_word(word: str) -> bool:
         return True
     if "-" in word:
         return any(
-            _classify_text_content(sp) is not None
-            for sp in word.split("-")
-            if sp
+            _classify_text_content(sp) is not None for sp in word.split("-") if sp
         )
     return False
 
