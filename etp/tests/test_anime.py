@@ -1006,6 +1006,268 @@ class TestMatchToDownloads:
         assert len(enriched) == 1
 
 
+class TestSubSeriesTitleFiltering:
+    """Regression: sub-series title filtering must use exact match."""
+
+    def test_exact_match_includes_base_title(self, monkeypatch):
+        """S1 files match when AniDB title matches the file's series name."""
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] 探偵オペラミルキィホームズ(第1期) 第01話「Test」.mkv"
+                ),
+                parsed_season=1,
+                parsed_episode=1,
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=7627,
+            tvdb_id=None,
+            title_ja="探偵オペラ ミルキィホームズ",
+            title_en="Detective Opera Milky Holmes",
+            year=2010,
+            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        assert len(matched) == 1
+
+    def test_subseries_with_suffix_excluded(self, monkeypatch):
+        """Files from 探偵オペラミルキィホームズ 第2幕 must not match base title."""
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] 探偵オペラミルキィホームズ(第1期) 第01話「S1」.mkv"
+                ),
+                parsed_season=1,
+                parsed_episode=1,
+            ),
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] 探偵オペラミルキィホームズ 第2幕(第2期) 第01話「S2」.mkv"
+                ),
+                parsed_season=2,
+                parsed_episode=1,
+            ),
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] 探偵オペラミルキィホームズ Alternative(OVA) 第01話「OVA」.mkv"
+                ),
+                parsed_season=None,
+                parsed_episode=1,
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=7627,
+            tvdb_id=None,
+            title_ja="探偵オペラ ミルキィホームズ",
+            title_en="Detective Opera Milky Holmes",
+            year=2010,
+            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        # Only the S1 file should match; S2 and Alternative stay in pool
+        assert len(matched) == 1
+        assert matched[0].parsed_season == 1
+        assert len(remaining) == 2
+
+    def test_different_series_title_excluded(self, monkeypatch):
+        """Files from ふたりは and 探偵歌劇TD must not match 探偵オペラ."""
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] 探偵オペラミルキィホームズ(第1期) 第01話「S1」.mkv"
+                ),
+                parsed_season=1,
+                parsed_episode=1,
+            ),
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] ふたりはミルキィホームズ(第3期) 第01話「S3」.mkv"
+                ),
+                parsed_season=3,
+                parsed_episode=1,
+            ),
+            anime.SourceFile(
+                path=Path(
+                    "[アニメ BD] 探偵歌劇ミルキィホームズTD(第4期) 第01話「S4」.mkv"
+                ),
+                parsed_season=4,
+                parsed_episode=1,
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=7627,
+            tvdb_id=None,
+            title_ja="探偵オペラ ミルキィホームズ",
+            title_en="Detective Opera Milky Holmes",
+            year=2010,
+            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        assert len(matched) == 1
+        assert len(remaining) == 2
+
+    def test_title_filter_bypass_when_no_match(self, monkeypatch):
+        """When title filter excludes everything, user can bypass it."""
+        # First input: "y" to bypass filter, second: "1" to pick season
+        inputs = iter(["y", "1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path("[G] 完全に違うタイトル(第1期) 第01話「Ep」.mkv"),
+                parsed_season=1,
+                parsed_episode=1,
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="全然マッチしない",
+            title_en="No Match",
+            year=2020,
+            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        assert len(matched) == 1
+
+    def test_unseasoned_files_promoted_when_all_unseasoned(self, monkeypatch):
+        """OVA files with no season/episode should still be processable."""
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = [
+            anime.SourceFile(
+                path=Path("[G] テスト(OVA) 映像特典「PV」.mkv"),
+                parsed_season=None,
+                parsed_episode=None,
+            ),
+            anime.SourceFile(
+                path=Path("[G] テスト(OVA)「さようなら」.mkv"),
+                parsed_season=None,
+                parsed_episode=None,
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        # Both unseasoned files should be included (promoted to season 1)
+        assert len(matched) == 2
+        assert len(remaining) == 0
+
+
+class TestBonusFilesNotCountedAgainstEpisodeLimit:
+    """Regression: bonus files must not consume regular episode slots."""
+
+    def test_bonus_files_included_with_all_episodes(self, monkeypatch):
+        """12 episodes + 7 bonus files = 19 files for a 12-ep AniDB entry.
+
+        All 19 should match — bonuses don't count against the limit.
+        """
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = []
+        # 12 regular episodes
+        for i in range(1, 13):
+            pool.append(
+                anime.SourceFile(
+                    path=Path(f"[アニメ BD] テスト(第1期) 第{i:02d}話「Title」.mkv"),
+                    parsed_season=1,
+                    parsed_episode=i,
+                )
+            )
+        # 7 bonus files (no episode number)
+        for label in ["PV1", "PV2", "PV3", "NCOP", "NCED", "CM1", "CM2"]:
+            pool.append(
+                anime.SourceFile(
+                    path=Path(f"[アニメ BD] テスト(第1期) 映像特典「{label}」.mkv"),
+                    parsed_season=1,
+                    parsed_episode=None,
+                )
+            )
+
+        info = anime.AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[
+                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+            ],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        eps = [sf for sf in matched if sf.parsed_episode is not None]
+        bonus = [sf for sf in matched if sf.parsed_episode is None]
+        assert len(eps) == 12
+        assert len(bonus) == 7
+        assert len(matched) == 19
+        assert len(remaining) == 0
+
+    def test_multi_cour_with_bonus_splits_correctly(self, monkeypatch):
+        """24 episodes + 3 bonus for a 12-ep AniDB entry.
+
+        Should take first 12 episodes + all 3 bonus; leave 12 episodes.
+        """
+        inputs = iter(["1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        pool = []
+        for i in range(1, 25):
+            pool.append(
+                anime.SourceFile(
+                    path=Path(f"ep{i}.mkv"),
+                    parsed_season=1,
+                    parsed_episode=i,
+                )
+            )
+        for j in range(3):
+            pool.append(
+                anime.SourceFile(
+                    path=Path(f"[G] テスト(第1期) 映像特典「PV{j + 1}」.mkv"),
+                    parsed_season=1,
+                    parsed_episode=None,
+                )
+            )
+
+        info = anime.AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+            episodes=[
+                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+            ],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        eps = [sf for sf in matched if sf.parsed_episode is not None]
+        bonus = [sf for sf in matched if sf.parsed_episode is None]
+        assert len(eps) == 12
+        assert len(bonus) == 3
+        # Remaining should be ep 13-24 (no bonus)
+        remaining_eps = sorted(
+            sf.parsed_episode for sf in remaining if sf.parsed_episode is not None
+        )
+        assert remaining_eps == list(range(13, 25))
+
+
 class TestMatchFilesToSeason:
     """Tests for AniDB per-season file matching."""
 

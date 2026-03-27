@@ -13,6 +13,7 @@ handling both English and Japanese naming conventions.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -1252,6 +1253,12 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
                 pm.bonus_type = bt
             elif not pm.bonus_type:
                 pm.bonus_type = bt or "Bonus"
+            # Extract nested song/content title from 「title」 within bonus text
+            if not pm.episode_title and "\u300c" in token.text:
+                inner_start = token.text.index("\u300c") + 1
+                inner_end = token.text.find("\u300d", inner_start)
+                if inner_end > inner_start:
+                    pm.episode_title = token.text[inner_start:inner_end]
         elif token.kind == TokenKind.EPISODE_TITLE:
             # Episode title content may contain a specific bonus type
             # (e.g., 「PV1」or 「ノンテロップED「Title」」) that is more
@@ -1262,8 +1269,11 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
         elif token.kind == TokenKind.EXTENSION:
             pm.extension = token.text
 
-    # Extract title
+    # Extract title (preserve bonus-extracted episode_title if already set)
+    saved_ep_title = pm.episode_title
     pm.series_name, pm.episode_title = _extract_title_from_tokens(tokens)
+    if saved_ep_title and not pm.episode_title:
+        pm.episode_title = saved_ep_title
 
     return pm
 
@@ -1346,10 +1356,14 @@ _RE_NON_ALNUM_CJK = re.compile(r"[^a-z0-9\u3000-\u9fff\uff00-\uffef]")
 
 
 def normalize_for_matching(name: str) -> str:
-    """Normalize a series name for matching: lowercase, strip non-alnum,
-    but preserve CJK characters (hiragana, katakana, kanji, fullwidth).
+    """Normalize a series name for matching: NFC unicode normalization,
+    lowercase, strip non-alnum, but preserve CJK characters (hiragana,
+    katakana, kanji, fullwidth).
+
+    NFC normalization collapses decomposed characters like
+    ヘ+゚ (U+30D8 + U+309A) into the precomposed ペ (U+30DA).
     """
-    return _RE_NON_ALNUM_CJK.sub("", name.lower())
+    return _RE_NON_ALNUM_CJK.sub("", unicodedata.normalize("NFC", name).lower())
 
 
 # ---------------------------------------------------------------------------

@@ -525,6 +525,75 @@ class TestBonusToAnidbMatching:
         assert ep is not None
 
 
+class TestNcopNcedManifestOutput:
+    """Regression: NCOP/NCED should use bonus type as tag and file's song title."""
+
+    # Other BD rip creators may use different naming conventions for
+    # creditless OP/ED. These tests cover the [アニメ BD] pattern; add
+    # cases here as new conventions are encountered.
+
+    def test_ncop_uses_bonus_tag_and_song_title(self, tmp_path, monkeypatch):
+        sf = SourceFile(
+            path=tmp_path
+            / "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「Song Title」(specs).mkv",
+            parsed_season=1,
+            parsed_episode=None,
+        )
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[
+                Episode(1, "regular", "Ep 1", "", ""),
+                Episode(1, "credit", "Opening 1", "", "C1"),
+                Episode(1, "credit", "Ending 1", "", "C2"),
+            ],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        dest = str(entries[0].dest_path)
+        # Should use numbered NCOP tag, not C1
+        assert "NCOP1" in dest
+        assert "C1" not in dest
+        # Should use the song title from the file, not "Opening 1"
+        assert "Song Title" in dest
+
+    def test_nced_uses_bonus_tag_and_song_title(self, tmp_path, monkeypatch):
+        sf = SourceFile(
+            path=tmp_path
+            / "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「Song」(specs).mkv",
+            parsed_season=1,
+            parsed_episode=None,
+        )
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[
+                Episode(1, "credit", "Opening 1", "", "C1"),
+                Episode(1, "credit", "Ending 1", "", "C2"),
+            ],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        dest = str(entries[0].dest_path)
+        assert "NCED1" in dest
+        assert "C2" not in dest
+        assert "Song" in dest
+
+
 class TestHamatvNumbering:
     """Tests for HamaTV-compatible special episode numbering."""
 
@@ -551,3 +620,56 @@ class TestHamatvNumbering:
         # Should be in Specials dir with s0e numbering
         assert "Specials" in str(entries[0].dest_path)
         assert entries[0].is_todo  # tagged as todo
+        # Episode number should be written back to SourceFile
+        assert entries[0].source.parsed_episode == 321  # PV range start
+        assert entries[0].source.parsed_season == 0
+
+    def test_hamatv_numbers_written_to_sourcefile(self, tmp_path):
+        """Regression: HamaTV numbers must be written back to sf.parsed_episode
+        so write_manifest produces 'episode 321' instead of 'episode 0'."""
+        files = []
+        for label in ["PV1", "PV2"]:
+            sf = SourceFile(
+                path=tmp_path / f"[G] Show(第1期) 映像特典「{label}」(specs).mkv",
+            )
+            sf.parsed_season = 1
+            files.append(sf)
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[Episode(1, "regular", "Ep 1", "", "")],
+        )
+        entries = build_manifest_entries(
+            files, info, "Show", tmp_path / "dest", verbose=False
+        )
+        ep_nums = sorted(e.source.parsed_episode or 0 for e in entries)
+        assert ep_nums == [321, 322]  # sequential HamaTV PV numbers
+        assert all(e.source.parsed_season == 0 for e in entries)
+
+    def test_anidb_matched_special_writes_episode_number(self, tmp_path, monkeypatch):
+        """AniDB-matched specials should also write ep number back."""
+        sf = SourceFile(
+            path=tmp_path
+            / "[G] Show(第1期) 映像特典「ノンテロップOP「Song」(specs).mkv",
+            parsed_season=1,
+            parsed_episode=None,
+        )
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[Episode(1, "credit", "Opening 1", "", "C1")],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "Show", tmp_path / "dest", verbose=False
+        )
+        assert entries[0].source.parsed_episode == 1
+        assert entries[0].source.parsed_season == 0

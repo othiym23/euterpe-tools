@@ -756,6 +756,35 @@ class TestBonusType:
         assert mp.classify_bonus_type("メニュー画面集") == "Menu"
         assert mp.classify_bonus_type("random text") == ""
 
+    # The following tests use the [アニメ BD] naming convention for NCOP/NCED.
+    # Other BD rip creators may use different patterns (e.g. "Creditless OP",
+    # "Clean ED", "NCOP", "NCED", or romaji equivalents). Add test cases
+    # here as new naming conventions are encountered.
+
+    def test_ncop_extracts_song_title(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「正解はひとつ！じゃない!!」"
+            "(1920x1080 HEVC 10bit FLAC).mkv"
+        )
+        assert pm.bonus_type == "NCOP"
+        assert pm.episode_title == "正解はひとつ！じゃない!!"
+
+    def test_nced_extracts_song_title(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「本能のDOUBT」"
+            "(1920x1080 HEVC 10bit FLAC).mkv"
+        )
+        assert pm.bonus_type == "NCED"
+        assert pm.episode_title == "本能のDOUBT"
+
+    def test_regular_episode_title_not_affected(self):
+        pm = mp.parse_component(
+            "[アニメ BD] Show(第1期) 第01話「屋根裏の入居者」"
+            "(1920x1080 HEVC 10bit FLAC softSub(chi+eng) chap).mkv"
+        )
+        assert pm.bonus_type == ""
+        assert pm.episode_title == "屋根裏の入居者"
+
 
 class TestCleanSeriesTitle:
     def test_space_separated(self):

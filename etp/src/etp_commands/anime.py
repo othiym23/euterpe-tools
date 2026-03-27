@@ -1011,26 +1011,47 @@ def _match_files_to_season(
             if not sf_title_norm:
                 # Can't determine series name — include by default
                 title_matched.append(sf)
-            elif sf_title_norm in anidb_title_norm or anidb_title_norm in sf_title_norm:
+            elif sf_title_norm == anidb_title_norm:
                 title_matched.append(sf)
             else:
                 title_unmatched.append(sf)
     else:
         title_matched = list(pool)
 
-    # Group by parsed season (only title-matched files)
-    by_season: dict[int, list[SourceFile]] = {}
-    no_season: list[SourceFile] = []
-    for sf in title_matched:
-        if sf.parsed_season is not None:
-            by_season.setdefault(sf.parsed_season, []).append(sf)
-        elif sf.parsed_episode is not None:
-            by_season.setdefault(1, []).append(sf)
-        else:
-            no_season.append(sf)
+    def _group_by_season(
+        files: list[SourceFile],
+    ) -> tuple[dict[int, list[SourceFile]], list[SourceFile]]:
+        by: dict[int, list[SourceFile]] = {}
+        unseasoned: list[SourceFile] = []
+        for sf in files:
+            if sf.parsed_season is not None:
+                by.setdefault(sf.parsed_season, []).append(sf)
+            elif sf.parsed_episode is not None:
+                by.setdefault(1, []).append(sf)
+            else:
+                unseasoned.append(sf)
+        return by, unseasoned
+
+    by_season, no_season = _group_by_season(title_matched)
 
     if not by_season:
-        return [], pool
+        if title_unmatched:
+            print(
+                f"\n  No files matched title '{info.title_ja}'."
+                f" ({len(title_unmatched)} files excluded by title filter)"
+            )
+            if prompt_confirm("  Include all files anyway?", default=False):
+                title_matched = list(pool)
+                title_unmatched = []
+                by_season, no_season = _group_by_season(title_matched)
+        if not by_season and no_season:
+            # All matched files are unseasoned (e.g. OVA specials with no
+            # episode numbers) — treat them as season 1 so the user can
+            # proceed
+            by_season[1] = no_season
+            no_season = []
+        if not by_season:
+            return [], pool
 
     # Show candidates
     dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
@@ -1058,21 +1079,28 @@ def _match_files_to_season(
         print(f"  No files found for season {chosen}.")
         return [], pool
 
-    season_files = sorted(by_season[chosen], key=lambda sf: sf.parsed_episode or 0)
+    # Separate regular episodes from bonus files (映像特典 etc.)
+    # Bonus files always stay with the matched set; only regular episodes
+    # are counted against the AniDB episode limit.
+    episode_files = sorted(
+        [sf for sf in by_season[chosen] if sf.parsed_episode is not None],
+        key=lambda sf: sf.parsed_episode or 0,
+    )
+    bonus_files = [sf for sf in by_season[chosen] if sf.parsed_episode is None]
 
-    # If there are more files than the AniDB entry has episodes, take
-    # only the first N and leave the rest for the next AniDB ID
-    if len(season_files) > regular_count > 0:
-        matched = season_files[:regular_count]
-        leftover = season_files[regular_count:]
+    if len(episode_files) > regular_count > 0:
+        matched_eps = episode_files[:regular_count]
+        leftover = episode_files[regular_count:]
         print(
             f"  AniDB entry has {regular_count} episodes but season has"
-            f" {len(season_files)} files — taking first {regular_count},"
+            f" {len(episode_files)} episode files — taking first {regular_count},"
             f" {len(leftover)} remaining for next ID."
         )
     else:
-        matched = season_files
+        matched_eps = episode_files
         leftover = []
+
+    matched = matched_eps + bonus_files
 
     # Renumber episodes to start at 1 only for multi-cour splits where
     # e.g. S01E13 needs to become ep 1 of the second AniDB entry.
@@ -1151,16 +1179,20 @@ def _process_group_batch(
     if info.tvdb_id is not None:
         id_map[("tvdb", info.tvdb_id)] = series_dir
 
-    # Prompt for release group if any files are missing one
-    missing_group = [sf for sf in parsed if not sf.release_group]
-    if missing_group:
-        have_group = next((sf.release_group for sf in parsed if sf.release_group), "")
-        group = prompt_value(
-            f"Release group ({len(missing_group)}/{len(parsed)} files missing)",
-            have_group,
-        )
-        if group:
-            for sf in missing_group:
+    # Always prompt for release group so the user can override
+    # auto-detected values (e.g. "アニメ BD" is a content description,
+    # not a release group name)
+    detected = next((sf.release_group for sf in parsed if sf.release_group), "")
+    group = prompt_value("Release group", detected)
+    if group != detected:
+        for sf in parsed:
+            sf.release_group = group
+    elif not detected:
+        pass  # no group detected, user left it empty
+    else:
+        # Fill in any files that were missing a group
+        for sf in parsed:
+            if not sf.release_group:
                 sf.release_group = group
 
     # Build manifest entries (mediainfo + CRC32 verification)
@@ -1761,7 +1793,6 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
                     season_override=1,
                     extras=group_extras,
                 )
-                group_extras = []  # only include extras in the first batch
             else:
                 # TVDB: process all remaining files at once (multi-season)
                 success, failed, copied_paths = _process_group_batch(
@@ -1773,7 +1804,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
                     args.verbose,
                     default_concise_name=name,
                     pre_parsed=pool,
-                    extras=group_extras,
+                    extras=group_extras,  # TVDB gets all remaining extras
                 )
                 group_extras = []
                 pool = []  # TVDB consumes entire pool

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -138,10 +139,21 @@ def build_manifest_entries(
             )
             if matched_ep is not None:
                 is_special = True
-                special_tag = matched_ep.special_tag
+                if bonus_type in ("NCOP", "NCED"):
+                    # Build tag like NCOP1, NCED1a from AniDB title.
+                    # AniDB titles: "Opening", "Opening 1", "Ending 1a"
+                    m = re.search(r"(\d+)([a-z]*)\s*$", matched_ep.title_en)
+                    suffix = (
+                        f"{m.group(1)}{m.group(2)}" if m else str(matched_ep.number)
+                    )
+                    special_tag = f"{bonus_type}{suffix}"
+                else:
+                    special_tag = matched_ep.special_tag
                 ep_number = matched_ep.number
-                episode_name = matched_ep.title_en
+                episode_name = file_pm.episode_title or matched_ep.title_en
                 matched_special_tags.add(matched_ep.special_tag)
+                sf.parsed_episode = ep_number
+                sf.parsed_season = 0
             else:
                 # Assign HamaTV-compatible s0e number, tagged (todo)
                 is_special = True
@@ -153,6 +165,8 @@ def build_manifest_entries(
                     episode_name = f"{bonus_type} - {file_pm.episode_title}"
                 season = 0
                 is_unmatched_special = True
+                sf.parsed_episode = ep_number
+                sf.parsed_season = 0
 
         # Build destination path
         if ep_number is None:
