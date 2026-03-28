@@ -43,9 +43,20 @@ async fn main() {
         None
     };
 
-    ops::validate_directory(&cli.directory);
+    let config = etp_lib::config::load_runtime_config().unwrap_or_else(|e| {
+        eprintln!("warning: failed to load config: {e}");
+        etp_lib::config::RuntimeConfig::defaults()
+    });
 
-    let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
+    let (directory, db_path) = match ops::resolve_nickname(&cli.directory, &config) {
+        Some((root, db)) => (root, db),
+        None => {
+            let db = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
+            (cli.directory.clone(), db)
+        }
+    };
+
+    ops::validate_directory(&directory);
 
     let pool = etp_lib::db::open_db(&db_path, cli.verbose)
         .await
@@ -54,7 +65,7 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let canon = cli.directory.canonicalize().unwrap_or(cli.directory);
+    let canon = directory.canonicalize().unwrap_or(directory);
     let run_type = canon.to_string_lossy();
 
     let scan_id = ops::run_scan_to_db(&canon, &pool, &run_type, &cli.exclude, cli.verbose).await;
