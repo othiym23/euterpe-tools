@@ -191,3 +191,39 @@ async fn no_moves_all_deleted() {
 
     db::close_db(pool).await;
 }
+
+#[tokio::test]
+async fn move_with_stored_hash_skips_file_io() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    fs::write(root.join("song.flac"), "audio content for hashing").unwrap();
+
+    let (_db_dir, pool) = open_test_db().await;
+
+    let scan_id = scan(root, &pool).await;
+    let original_id = file_id(&pool, scan_id, "song.flac").await;
+
+    // Simulate a metadata scan by storing a content hash
+    let hash = blake3::hash(b"audio content for hashing")
+        .to_hex()
+        .to_string();
+    db::dao::mark_metadata_scanned(&pool, original_id, Some(&hash))
+        .await
+        .unwrap();
+
+    // Move the file to a subdirectory
+    fs::create_dir_all(root.join("subdir")).unwrap();
+    fs::rename(root.join("song.flac"), root.join("subdir/song.flac")).unwrap();
+
+    // Rescan — should detect move using stored hash (old file is gone)
+    let scan_id = scan(root, &pool).await;
+    let new_id = file_id(&pool, scan_id, "song.flac").await;
+
+    assert_eq!(
+        original_id, new_id,
+        "file ID should be preserved using stored hash"
+    );
+
+    db::close_db(pool).await;
+}

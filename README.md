@@ -57,6 +57,7 @@ etp anime episode <file> --anidb ID     # single episode import
 ### Plumbing (Rust)
 
 ```bash
+etp-scan <dir> [--db path]              # scan directory → update database
 etp-csv <dir> [--output file.csv]       # scan → CSV index
 etp-tree <dir> [--du]                   # scan → tree display
 etp-find <pattern> [-R <dir>]           # regex search with tree/CSV output
@@ -81,6 +82,7 @@ cmd/             all commands (Rust + Python)
   etp-tree/      tree output
   etp-find/      regex file search
   etp-meta/      metadata scan/read/cue
+  etp-scan/      standalone directory scanner
   etp-cas/       CAS blob operations
   etp-query/     database queries
   etp/           Python porcelain (dispatcher, anime, catalog)

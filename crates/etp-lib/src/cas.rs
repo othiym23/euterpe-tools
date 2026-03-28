@@ -84,4 +84,20 @@ mod tests {
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, blake3::hash(b"other data").to_hex().to_string());
     }
+
+    #[test]
+    fn test_hash_file_matches_in_memory() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = b"streaming hash test content";
+        std::fs::write(tmp.path(), data).unwrap();
+
+        let file_hash = super::hash_file(tmp.path()).unwrap();
+        let mem_hash = blake3::hash(data).to_hex().to_string();
+        assert_eq!(file_hash, mem_hash);
+    }
+
+    #[test]
+    fn test_hash_file_nonexistent_returns_none() {
+        assert!(super::hash_file(std::path::Path::new("/nonexistent/file")).is_none());
+    }
 }

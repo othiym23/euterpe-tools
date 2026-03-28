@@ -171,6 +171,10 @@ pub async fn replace_files_on(
                  metadata_scanned_at = CASE
                      WHEN files.mtime != excluded.mtime THEN NULL
                      ELSE files.metadata_scanned_at
+                 END,
+                 content_hash = CASE
+                     WHEN files.mtime != excluded.mtime THEN NULL
+                     ELSE files.content_hash
                  END",
         )
         .bind(dir_id)
@@ -1900,6 +1904,15 @@ mod tests {
                 .await
                 .unwrap();
         assert!(row.0.is_some());
+
+        // Verify content_hash was stored
+        let hash_row: (Option<String>,) =
+            sqlx::query_as("SELECT content_hash FROM files WHERE id = ?")
+                .bind(file_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(hash_row.0.as_deref(), Some("abc123hash"));
     }
 
     #[tokio::test]

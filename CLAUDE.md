@@ -12,6 +12,7 @@ cmd/             All plumbing commands, any language
   etp-tree/      Rust — tree output
   etp-find/      Rust — regex file search
   etp-meta/      Rust — metadata scan/read/cue
+  etp-scan/      Rust — standalone directory scanner
   etp-cas/       Rust — CAS blob operations
   etp-query/     Rust — database queries
   etp/           Python — porcelain dispatcher + anime + catalog
@@ -29,6 +30,7 @@ just build-nas        # NAS release (x86_64-unknown-linux-musl, static)
 just deploy           # check + test + build + copy to NAS
 
 # Rust plumbing (in cmd/)
+etp-scan <directory> [--db <path>] [-e <name>...] [-v]
 etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [-v]
 etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--du [--du-subs]] [-v]
 etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [-v]
