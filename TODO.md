@@ -36,6 +36,8 @@ implemented.
           workstation)
     - [ ] `etp-init` plumbing command to generate commented config template
     - [ ] database nickname resolution in all Rust commands
+    - [ ] wire up `default-database` from config.kdl — used as fallback when no
+          `--db` is specified and no `.etp.db` exists in the target directory
   - [ ] Phase 4: smart porcelain dispatch
     - [ ] replace os.execv with subprocess.run for orchestrated commands
     - [ ] auto-scan on exit code 2 for `etp tree` and `etp csv`
