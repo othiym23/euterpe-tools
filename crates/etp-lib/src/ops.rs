@@ -31,6 +31,28 @@ pub const DEFAULT_USER_EXCLUDES: &[&str] = &[
     ".*", // dotfiles
 ];
 
+/// Resolve a `--flag` / `--no-flag` boolean pair. If both are passed, prints a
+/// warning and returns the default value.
+pub fn resolve_bool_pair(flag: bool, no_flag: bool, flag_name: &str, default: bool) -> bool {
+    if flag && no_flag {
+        eprintln!(
+            "warning: both --{flag_name} and --no-{flag_name} passed; using default ({})",
+            if default {
+                flag_name.to_string()
+            } else {
+                format!("no-{flag_name}")
+            }
+        );
+        default
+    } else if flag {
+        true
+    } else if no_flag {
+        false
+    } else {
+        default
+    }
+}
+
 /// Compile a regex pattern, optionally case-insensitive. Exits on invalid pattern.
 pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> regex::Regex {
     regex::RegexBuilder::new(pattern)

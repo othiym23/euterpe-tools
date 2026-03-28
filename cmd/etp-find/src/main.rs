@@ -48,6 +48,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     include_system_files: bool,
 
+    /// Hide NAS/OS system files from output (default)
+    #[arg(long, default_value_t = false)]
+    no_include_system_files: bool,
+
     /// Print diagnostic info on stderr
     #[arg(short, long)]
     verbose: bool,
@@ -140,7 +144,13 @@ async fn main() {
         None
     };
 
-    let filter = ops::FilterConfig::new(cli.include_system_files);
+    let include_system = ops::resolve_bool_pair(
+        cli.include_system_files,
+        cli.no_include_system_files,
+        "include-system-files",
+        false,
+    );
+    let filter = ops::FilterConfig::new(include_system);
 
     // Determine if any output goes to stdout via "-"
     let stdout_tree = cli.tree.as_deref() == Some("-");

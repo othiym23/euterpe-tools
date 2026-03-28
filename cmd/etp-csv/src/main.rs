@@ -44,6 +44,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     include_system_files: bool,
 
+    /// Hide NAS/OS system files from output (default)
+    #[arg(long, default_value_t = false)]
+    no_include_system_files: bool,
+
     /// Print diagnostic info on stderr
     #[arg(short, long)]
     verbose: bool,
@@ -101,7 +105,13 @@ async fn main() {
         ops::resolve_latest_scan_id(&pool, &run_type, cli.verbose).await
     };
 
-    let filter = ops::FilterConfig::new(cli.include_system_files);
+    let include_system = ops::resolve_bool_pair(
+        cli.include_system_files,
+        cli.no_include_system_files,
+        "include-system-files",
+        false,
+    );
+    let filter = ops::FilterConfig::new(include_system);
 
     if let Some(ref find_pattern) = cli.find {
         let pattern = ops::compile_pattern(find_pattern, cli.insensitive);
