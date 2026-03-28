@@ -111,28 +111,6 @@ pub fn is_user_excluded_name(name: &str, patterns: &[glob::Pattern]) -> bool {
     patterns.iter().any(|p| p.matches(name))
 }
 
-/// Check whether a directory path or filename matches any user exclude glob pattern.
-pub fn is_user_excluded(
-    dir_path: &str,
-    filename: Option<&str>,
-    patterns: &[glob::Pattern],
-) -> bool {
-    if patterns.is_empty() {
-        return false;
-    }
-    if std::path::Path::new(dir_path).components().any(|c| {
-        let name = c.as_os_str().to_string_lossy();
-        patterns.iter().any(|p| p.matches(&name))
-    }) {
-        return true;
-    }
-    if let Some(name) = filename {
-        return is_user_excluded_name(name, patterns);
-    }
-    false
-}
-
-/// Build system pattern list from string slices.
 pub fn default_system_patterns() -> Vec<String> {
     DEFAULT_SYSTEM_PATTERNS
         .iter()
@@ -165,6 +143,14 @@ impl FilterConfig {
         }
     }
 
+    /// Create from CLI `--include-system-files` / `--no-include-system-files` flags,
+    /// resolving conflicts with a warning.
+    pub fn from_flags(include_flag: bool, no_include_flag: bool) -> Self {
+        let include =
+            resolve_bool_pair(include_flag, no_include_flag, "include-system-files", false);
+        Self::new(include)
+    }
+
     /// Check whether a name (file or directory) should be shown.
     pub fn should_show_name(&self, name: &str) -> bool {
         let is_system = is_system_name(name, &self.system_patterns);
@@ -178,24 +164,16 @@ impl FilterConfig {
         true
     }
 
-    /// Check whether a file record should be shown (checks filename and dir name only,
-    /// not the full absolute path which may contain system directories like `.tmp*`).
+    /// Check whether a file record should be shown. System patterns are checked
+    /// against all dir_path components and the filename. User excludes are only
+    /// checked against the filename (not dir_path components, which include the
+    /// absolute root and may contain unrelated dot-dirs like macOS tempdir paths).
     pub fn should_show(&self, dir_path: &str, filename: &str) -> bool {
-        let is_system_file = is_system_name(filename, &self.system_patterns);
-        // Check if any path component is a system directory
-        let in_system_dir = std::path::Path::new(dir_path).components().any(|c| {
-            self.system_patterns
-                .iter()
-                .any(|p| c.as_os_str() == p.as_str())
-        });
-        let is_system = is_system_file || in_system_dir;
-
+        let is_system = is_system_path(dir_path, Some(filename), &self.system_patterns);
         if !self.include_system_files && is_system {
             return false;
         }
-        // System files are exempt from user excludes (they're managed separately).
-        // Only check the filename against user excludes, not the full dir_path
-        // (which includes the absolute root and may contain unrelated dot-dirs).
+        // System files are exempt from user excludes (they're managed separately)
         if !is_system && is_user_excluded_name(filename, &self.user_excludes) {
             return false;
         }

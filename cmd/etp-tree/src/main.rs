@@ -121,13 +121,8 @@ async fn main() {
         ops::resolve_latest_scan_id(&pool, &run_type, cli.verbose).await
     };
 
-    let include_system = ops::resolve_bool_pair(
-        cli.include_system_files,
-        cli.no_include_system_files,
-        "include-system-files",
-        false,
-    );
-    let filter = ops::FilterConfig::new(include_system);
+    let filter =
+        ops::FilterConfig::from_flags(cli.include_system_files, cli.no_include_system_files);
 
     if let Some(ref find_pattern) = cli.find {
         let pattern = ops::compile_pattern(find_pattern, cli.insensitive);

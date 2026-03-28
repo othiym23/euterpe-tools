@@ -144,13 +144,8 @@ async fn main() {
         None
     };
 
-    let include_system = ops::resolve_bool_pair(
-        cli.include_system_files,
-        cli.no_include_system_files,
-        "include-system-files",
-        false,
-    );
-    let filter = ops::FilterConfig::new(include_system);
+    let filter =
+        ops::FilterConfig::from_flags(cli.include_system_files, cli.no_include_system_files);
 
     // Determine if any output goes to stdout via "-"
     let stdout_tree = cli.tree.as_deref() == Some("-");
