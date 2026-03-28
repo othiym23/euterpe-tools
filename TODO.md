@@ -61,6 +61,14 @@ implemented.
       simplify move tracking (eliminates I/O-heavy hashing during reconciliation
       and enables content-based deduplication detection)
 
+## Incremental Background Metadata Scanning
+
+- [ ] `etp meta scan --limit N` to process only N unscanned files per invocation
+      (default ~1000), enabling batched background ingestion
+- [ ] Run niced (`nice -n 19 ionice -c3`) via cron/systemd timer on NAS
+- [ ] Porcelain support: `etp catalog --meta-scan` runs batched metadata scans
+      across all configured databases
+
 ## SP 3.1: Metadata Write Path
 
 - [ ] safe writes via lofty: read → write to temp → rename → re-read → update DB
