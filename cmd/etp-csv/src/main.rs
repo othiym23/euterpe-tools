@@ -33,7 +33,7 @@ struct Cli {
     insensitive: bool,
 
     /// Show hidden files (names starting with '.')
-    #[arg(short = 'A', long)]
+    #[arg(short, long)]
     all: bool,
 
     /// Scan the directory before generating CSV (default: read existing DB)

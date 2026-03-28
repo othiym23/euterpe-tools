@@ -45,7 +45,7 @@ struct Cli {
     no_scan: bool,
 
     /// Show hidden files (names starting with '.')
-    #[arg(short = 'A', long)]
+    #[arg(short, long)]
     all: bool,
 
     /// Include NAS/OS system files in output (e.g. @eaDir, .etp.db)
