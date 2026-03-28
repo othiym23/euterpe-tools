@@ -43,6 +43,10 @@ implemented.
   - [ ] Phase 5: catalog.py update
     - [ ] run etp-scan first, then tree + CSV in parallel
     - [ ] remove @eaDir from scan excludes
+- [ ] `etp-completions` plumbing command for shell completions (fish, bash, zsh)
+      via `eval (etp completions --fish)` etc. Use clap's built-in
+      `clap_complete` for the plumbing commands and generate porcelain
+      completions (with database nicknames from config.kdl) for the dispatcher.
 - [x] create README with description of all porcelain commands and with
       installation instructions
 - [ ] write a utility to truncate media files for various formats to just
