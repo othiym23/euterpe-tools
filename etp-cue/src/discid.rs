@@ -42,6 +42,8 @@ pub fn compute_disc_id(sheet: &CueSheet, file_durations: &[u64]) -> String {
     hasher.update(hash_input.as_bytes());
     let digest = hasher.finalize();
 
+    // MusicBrainz uses a URL-safe Base64 variant that replaces +, /, and =
+    // with ., _, and - respectively.
     STANDARD
         .encode(digest)
         .chars()
