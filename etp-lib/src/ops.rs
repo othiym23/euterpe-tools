@@ -541,9 +541,24 @@ async fn process_audio_file(
         }
     }
 
-    // Store cue sheet if present
+    // Store embedded cue sheet if present
     if let Some(cue) = &file_meta.cue_sheet {
         let _ = dao::upsert_cue_sheet(pool, record.file_id, "embedded", cue).await;
+    }
+
+    // Check for standalone .cue file alongside the audio file
+    let cue_path = full_path.with_extension("cue");
+    if cue_path.is_file() {
+        match std::fs::read_to_string(&cue_path) {
+            Ok(content) => {
+                let _ = dao::upsert_cue_sheet(pool, record.file_id, "standalone", &content).await;
+            }
+            Err(e) => {
+                if verbose {
+                    eprintln!("  warning: failed to read {}: {e}", cue_path.display());
+                }
+            }
+        }
     }
 
     dao::mark_metadata_scanned(pool, record.file_id)
@@ -564,8 +579,7 @@ pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
             "file".into(),
             serde_json::Value::String(path.display().to_string()),
         );
-        // Images: strip raw data (not serialized due to #[serde(skip)]),
-        // add byte sizes instead
+        // Images: add byte sizes (raw data not serialized due to #[serde(skip)])
         if let Some(serde_json::Value::Array(images)) = obj.get_mut("images") {
             for (i, img_val) in images.iter_mut().enumerate() {
                 if let Some(img_obj) = img_val.as_object_mut() {
@@ -575,6 +589,17 @@ pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
                     );
                 }
             }
+        }
+
+        // Check for standalone .cue file
+        let cue_path = path.with_extension("cue");
+        if cue_path.is_file()
+            && let Ok(content) = std::fs::read_to_string(&cue_path)
+        {
+            obj.insert(
+                "standalone_cue_sheet".into(),
+                serde_json::Value::String(content),
+            );
         }
     }
 
