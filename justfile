@@ -88,7 +88,7 @@ deploy: check test build-nas
     fi
     # Rust plumbing → libexec
     mkdir -p "{{ nas_home }}/.local/libexec/etp"
-    for bin in etp-csv etp-tree etp-find etp-meta etp-cas etp-query etp-scan; do
+    for bin in etp-cas etp-csv etp-find etp-init etp-meta etp-query etp-scan etp-tree; do
         cp "target/x86_64-unknown-linux-musl/release/$bin" "{{ nas_home }}/.local/libexec/etp/"
     done
     # Python package → mirror repo structure so pyproject.toml paths work
