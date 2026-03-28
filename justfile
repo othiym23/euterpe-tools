@@ -69,7 +69,33 @@ test:
     cd etp && uv run pytest tests/ -q
 
 nas_home := "/Volumes/home"
+nas_data := "/Volumes/data"
 nas_host := "euterpe.local"
+local_test_db := "test-data/db"
+
+# Copy catalog databases from NAS for local smoke testing.
+# SQLite over SMB is unreliable — always work with local copies.
+fetch-test-dbs: mount-data
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{ nas_data }}/downloads/(music)/catalogs/trees/db"
+    dest="{{ local_test_db }}"
+    mkdir -p "$dest"
+    echo "Copying databases from $src..."
+    rsync -av --include='*.db' --exclude='*-wal' --exclude='*-shm' "$src/" "$dest/"
+    echo "Databases copied to $dest/"
+
+# Mount NAS data volume via SMB if not already mounted
+mount-data:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if mount | grep -q "{{ nas_data }}"; then
+        echo "{{ nas_data }} already mounted"
+    else
+        sudo mkdir -p "{{ nas_data }}"
+        sudo mount_smbfs "//ogd@{{ nas_host }}/data" "{{ nas_data }}"
+        echo "Mounted {{ nas_data }}"
+    fi
 
 # Mount NAS home directory via SMB if not already mounted
 mount-home:
