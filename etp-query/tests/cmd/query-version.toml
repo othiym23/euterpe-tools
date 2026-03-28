@@ -1,0 +1,5 @@
+bin.name = "etp-query"
+args = ["--version"]
+status = "success"
+stdout = "etp-query 0.2.0 ([..])\n"
+stderr = ""

@@ -1,3 +1,3 @@
 [workspace]
-members = ["etp-lib", "etp-cas", "etp-cue", "etp-csv", "etp-tree", "etp-find", "etp-meta"]
+members = ["etp-lib", "etp-cas", "etp-cue", "etp-csv", "etp-tree", "etp-find", "etp-meta", "etp-query"]
 resolver = "3"
