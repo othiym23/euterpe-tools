@@ -75,9 +75,14 @@ local_test_db := "test-data/db"
 
 # Copy catalog databases from NAS for local smoke testing.
 # SQLite over SMB is unreliable — always work with local copies.
-fetch-test-dbs: mount-data
+# Mount the NAS shares in Finder before running this.
+fetch-test-dbs:
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ ! -d "{{ nas_data }}" ]; then
+        echo "error: {{ nas_data }} is not mounted. Mount it in Finder first." >&2
+        exit 1
+    fi
     src="{{ nas_data }}/downloads/(music)/catalogs/trees/db"
     dest="{{ local_test_db }}"
     mkdir -p "$dest"
@@ -85,34 +90,15 @@ fetch-test-dbs: mount-data
     rsync -av --include='*.db' --exclude='*-wal' --exclude='*-shm' "$src/" "$dest/"
     echo "Databases copied to $dest/"
 
-# Mount NAS data volume via SMB if not already mounted
-mount-data:
+# Build for NAS and deploy binaries + Python package to NAS.
+# Mount the NAS home share in Finder before running this.
+deploy: check test build-nas
     #!/usr/bin/env bash
     set -euo pipefail
-    if mount | grep -q "{{ nas_data }}"; then
-        echo "{{ nas_data }} already mounted"
-    else
-        sudo mkdir -p "{{ nas_data }}"
-        sudo mount_smbfs "//ogd@{{ nas_host }}/data" "{{ nas_data }}"
-        echo "Mounted {{ nas_data }}"
+    if [ ! -d "{{ nas_home }}" ]; then
+        echo "error: {{ nas_home }} is not mounted. Mount it in Finder first." >&2
+        exit 1
     fi
-
-# Mount NAS home directory via SMB if not already mounted
-mount-home:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if mount | grep -q "{{ nas_home }}"; then
-        echo "{{ nas_home }} already mounted"
-    else
-        sudo mkdir -p "{{ nas_home }}"
-        sudo mount_smbfs "//ogd@{{ nas_host }}/home" "{{ nas_home }}"
-        echo "Mounted {{ nas_home }}"
-    fi
-
-# Build for NAS and deploy binaries + Python package to NAS
-deploy: check test build-nas mount-home
-    #!/usr/bin/env bash
-    set -euo pipefail
     # Rust plumbing → libexec
     mkdir -p "{{ nas_home }}/.local/libexec/etp"
     cp target/x86_64-unknown-linux-musl/release/etp-csv "{{ nas_home }}/.local/libexec/etp"
