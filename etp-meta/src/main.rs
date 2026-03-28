@@ -51,6 +51,19 @@ enum Commands {
         #[arg(long)]
         images: bool,
     },
+    /// Display CUE sheet info with MusicBrainz disc ID
+    Cue {
+        /// Path to .cue file
+        file: PathBuf,
+
+        /// Audio file for total duration (needed for disc ID and last track length)
+        #[arg(long)]
+        audio_file: Option<PathBuf>,
+
+        /// Output format
+        #[arg(long, default_value = "summary", value_parser = ["summary", "cuetools", "eac"])]
+        format: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -153,6 +166,51 @@ async fn main() {
                     eprintln!("error reading {}: {e}", file.display());
                     std::process::exit(1);
                 }
+            }
+        }
+        Commands::Cue {
+            file,
+            audio_file,
+            format,
+        } => {
+            let content = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                eprintln!("error: {}: {e}", file.display());
+                std::process::exit(1);
+            });
+            let sheet = etp_cue::parse_cue_sheet(&content).unwrap_or_else(|e| {
+                eprintln!("error parsing {}: {e}", file.display());
+                std::process::exit(1);
+            });
+
+            // Get total sectors from audio file duration if provided
+            let total_sectors = audio_file.as_ref().and_then(|path| {
+                etp_lib::metadata::read_metadata(path)
+                    .ok()
+                    .and_then(|meta| {
+                        meta.properties
+                            .iter()
+                            .find(|(k, _)| k == "audio_duration_ms")
+                            .and_then(|(_, v)| v.as_u64())
+                            .map(|ms| ms * 75 / 1000) // ms → sectors (75 sectors/sec)
+                    })
+            });
+
+            let disc_id = total_sectors.map(|s| etp_cue::compute_disc_id(&sheet, s));
+
+            match format.as_str() {
+                "summary" => {
+                    print!(
+                        "{}",
+                        etp_cue::format_album_summary(&sheet, total_sectors, disc_id.as_deref(),)
+                    );
+                }
+                "cuetools" => {
+                    print!("{}", etp_cue::format_cuetools_toc(&sheet, total_sectors));
+                }
+                "eac" => {
+                    print!("{}", etp_cue::format_eac_toc(&sheet, total_sectors));
+                }
+                _ => unreachable!(),
             }
         }
     }
