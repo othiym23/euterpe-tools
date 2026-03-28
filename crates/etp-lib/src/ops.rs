@@ -785,6 +785,67 @@ mod tests {
         assert!(filter.should_show("/data/sub", ".etp.db"));
         assert!(filter.should_show("/data/sub", ".SynologyWorkingDirectory"));
     }
+    #[test]
+    fn resolve_nickname_returns_none_for_real_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = crate::config::RuntimeConfig::defaults();
+        assert!(resolve_nickname(tmp.path(), &config).is_none());
+    }
+
+    #[test]
+    fn resolve_nickname_finds_configured_database() {
+        let config = crate::config::parse_runtime_config(
+            r#"
+database "music" {
+    root "/volume1/music"
+    db "/data/music.db"
+}
+"#,
+        )
+        .unwrap();
+
+        let result = resolve_nickname(std::path::Path::new("music"), &config);
+        assert!(result.is_some());
+        let (root, db) = result.unwrap();
+        assert_eq!(root, std::path::Path::new("/volume1/music"));
+        assert_eq!(db, std::path::Path::new("/data/music.db"));
+    }
+
+    #[test]
+    fn resolve_nickname_returns_none_for_unknown_name() {
+        let config = crate::config::parse_runtime_config(
+            r#"
+database "music" {
+    root "/volume1/music"
+    db "/data/music.db"
+}
+"#,
+        )
+        .unwrap();
+        assert!(resolve_nickname(std::path::Path::new("videos"), &config).is_none());
+    }
+
+    #[test]
+    fn filter_config_from_config_uses_config_patterns() {
+        let config = crate::config::parse_runtime_config(
+            r#"
+system-files {
+    pattern "@custom"
+}
+user-excludes {
+    pattern "*.tmp"
+}
+"#,
+        )
+        .unwrap();
+
+        let filter = FilterConfig::from_config(&config, false, false, false, false);
+        assert!(filter.should_show("/data/sub", "song.mp3"));
+        assert!(!filter.should_show("/data/@custom", "file.txt"));
+        assert!(!filter.should_show("/data/sub", "file.tmp"));
+        // @eaDir is NOT filtered because config overrides defaults
+        assert!(filter.should_show("/data/@eaDir", "thumb.jpg"));
+    }
 }
 
 /// Stats returned by a metadata scan.
