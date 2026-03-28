@@ -13,21 +13,33 @@ Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
 - `csv_writer.rs` — sorted CSV output (`path,size,ctime,mtime`)
 - `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
 - `finder.rs` — regex matching against file records
-- `metadata.rs` — audio metadata reading via lofty, tag normalization to
-  `lowercase_snake_case`, embedded image and cue sheet extraction
+- `metadata.rs` — audio metadata reading with dual backend: lofty for most
+  formats, mediainfo subprocess for WMA/MKA. Extension-based dispatch. Tag names
+  normalized to `lowercase_snake_case`. See
+  `docs/adrs/2026-03-28-01-mediainfo-over-taglib.md`.
 - `cas.rs` — content-addressable blob storage using BLAKE3 hashing with atomic
-  filesystem writes
+  filesystem writes (safe on Btrfs)
 - `db/mod.rs` — SQLite connection factory (WAL mode, foreign keys, cache
   pragmas); dual-path init: new databases use clean `schema.sql`, existing
-  databases use incremental `migrations/`
+  databases use incremental `migrations/`. FK enforcement disabled during
+  migrations for table recreation compatibility.
 - `db/dao.rs` — all database queries (scan CRUD, file UPSERT, metadata, blobs,
-  images, cue sheets)
+  images, cue sheets, move tracking). `FULL_PATH_SQL` constant for path
+  reconstruction used across query functions.
 - `config.rs` — KDL configuration parsing
 - `paths.rs` — XDG/native path resolution (etcetera crate)
 - `profiling.rs` — self-instrumentation (feature-gated behind `profiling`)
 
+Standalone library crate (`etp-cue/`):
+
+- CUE sheet parser, MusicBrainz disc ID computation (SHA-1 + custom Base64), and
+  three display formatters (album summary, CUEtools TOC, EAC TOC)
+- Supports multi-file CUE sheets via per-file duration accumulation
+- No database dependency — pure data transformation
+
 Each binary crate has a `build.rs` that embeds the short git hash in
-`--version`.
+`--version`. Binary crates: `etp-csv`, `etp-tree`, `etp-find`, `etp-meta`,
+`etp-cas`, `etp-query`.
 
 ## Python Package
 
@@ -49,7 +61,9 @@ Each binary crate has a `build.rs` that embeds the short git hash in
 ## Database
 
 SQLite with sqlx, WAL mode, single-threaded tokio (`current_thread`). The
-canonical schema is `etp-lib/schema.sql`.
+canonical schema is `etp-lib/schema.sql`. Pool is `max_connections(1)` — all
+queries are sequential. FK enforcement is disabled during migration execution
+(some migrations recreate tables referenced by foreign keys).
 
 Defaults: database is `<dir>/.etp.db`, exclude is `@eaDir` (Synology metadata
 directories, filtered at scan time so walkdir never descends into them).
@@ -57,6 +71,12 @@ directories, filtered at scan time so walkdir never descends into them).
 File sync uses UPSERT to preserve file IDs across rescans. When a file's mtime
 changes, `metadata_scanned_at` is cleared so the metadata scanner re-reads it.
 See `docs/adrs/2026-03-27-03-upsert-file-sync.md`.
+
+File-move tracking: after all directories are flushed, a reconciliation pass
+matches removed files against newly appeared files by size, then verifies with
+streaming BLAKE3 hash. Matched files get an UPDATE to `dir_id` + `filename`,
+preserving their ID and all dependent metadata. Unmatched files are deleted with
+dependent cleanup.
 
 ## Profiling
 
