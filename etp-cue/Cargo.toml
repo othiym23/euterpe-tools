@@ -1,0 +1,8 @@
+[package]
+name = "etp-cue"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.22"
+sha1 = "0.10"

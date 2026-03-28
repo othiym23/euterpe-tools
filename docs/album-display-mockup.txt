@@ -1,0 +1,47 @@
+  [1998] Various Artists: Rebirth of Cool, Volume 4 (Electronic)
+
+      1: Kruder & Dorfmeister - Bug Powder Dust (4:35)
+      2: DJ Cam - Innervisions (3:14)
+      3: Thievery Corporation - Lebanese Blonde (6:03)
+
+  discid: XXXX-XX-XXXXXXXX
+
+  [YEAR] ALBUM ARTIST: ALBUM TITLE (GENRE)
+
+      1: TRACK 1 ARTIST - TRACK 1 TITLE (TRACK 1 DURATION)
+      2: TRACK 2 ARTIST - TRACK 2 TITLE (TRACK 2 DURATION)
+      3: TRACK 3 ARTIST - TRACK 3 TITLE (TRACK 3 DURATION)
+
+  discid: XXXX-XX-XXXXXXXX
+
+  [2005] Portishead: Third: Deluxe Edition (mixed by Adrian Utley) (Trip-Hop)
+
+      1: Silence (5:00)
+      2: Hunter [Amon Tobin Remix] (3:58)
+      3: Nylon Smile (feat. Beth Gibbons & Adrian Utley) (3:19)
+      4: The Rip (4:30)
+      5: Plastic (3:30)
+      6: We Carry On (6:27)
+      7: Deep Water (1:33)
+      8: Machine Gun (4:46)
+      9: Small (6:47)
+     10: Magic Doors (3:31)
+     11: Threads (5:47)
+
+  discid: XXXX-XX-XXXXXXXX
+
+  [YEAR] ALBUM ARTIST: ALBUM TITLE (GENRE)
+
+      1: TRACK 1 TITLE (TRACK 1 DURATION)
+      2: TRACK 2 TITLE (TRACK 2 DURATION)
+      3: TRACK 3 TITLE (TRACK 3 DURATION)
+      4: TRACK 4 TITLE (TRACK 4 DURATION)
+      5: TRACK 5 TITLE (TRACK 5 DURATION)
+      6: TRACK 6 TITLE (TRACK 6 DURATION)
+      7: TRACK 7 TITLE (TRACK 7 DURATION)
+      8: TRACK 8 TITLE (TRACK 8 DURATION)
+      9: TRACK 9 TITLE (TRACK 9 DURATION)
+     10: TRACK 10 TITLE (TRACK 10 DURATION)
+     11: TRACK 11 TITLE (TRACK 11 DURATION)
+
+  discid: XXXX-XX-XXXXXXXX

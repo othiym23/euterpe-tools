@@ -509,6 +509,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "etp-cue"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "sha1",
+]
+
+[[package]]
 name = "etp-find"
 version = "0.2.0"
 dependencies = [
@@ -548,6 +556,7 @@ name = "etp-meta"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "etp-cue",
  "etp-lib",
  "serde_json",
  "tokio",

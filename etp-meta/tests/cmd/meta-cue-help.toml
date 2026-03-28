@@ -1,0 +1,18 @@
+bin.name = "etp-meta"
+args = ["cue", "--help"]
+status = "success"
+stdout = """
+Display CUE sheet info with MusicBrainz disc ID
+
+Usage: etp-meta cue [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to .cue file
+
+Options:
+      --audio-file <AUDIO_FILES>  Audio file(s) — one per FILE block in the CUE sheet (needed for disc ID and track durations). For single-image CUE sheets, pass one file
+      --format <FORMAT>           Output format [default: summary] [possible values: summary, cuetools, eac]
+  -v, --verbose                   Print diagnostic info on stderr
+  -h, --help                      Print help
+"""
+stderr = ""
