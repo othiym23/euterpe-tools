@@ -16,7 +16,6 @@ cmd/             All plumbing commands, any language
   etp-query/     Rust — database queries
   etp/           Python — porcelain dispatcher + anime + catalog
 pylib/           Python shared library (etp_lib)
-scripts/         Legacy Python orchestrator
 conf/            KDL configuration files
 docs/            Plans, ADRs, design notes
 ```

@@ -9,7 +9,6 @@ commands, see [CLAUDE.md](../CLAUDE.md). For architectural decisions, see
 - `crates/` — Rust libraries (etp-lib, etp-cue)
 - `cmd/` — all plumbing commands (Rust binaries and Python entry points)
 - `pylib/` — Python shared library (`etp_lib`)
-- `scripts/` — legacy Python orchestrator
 - `conf/` — KDL configuration files
 
 ## Rust Crates
@@ -63,8 +62,7 @@ Python shared library lives in `pylib/etp_lib/`:
 - `media_parser.py` — tokenizer/parser for anime/media file paths
 - `anidb.py`, `tvdb.py` — API clients with local caching
 
-`scripts/` contains the legacy Python orchestrator (`catalog-nas.py`),
-superseded by `etp catalog`. `conf/` contains KDL configuration files.
+`conf/` contains KDL configuration files.
 
 ## Database
 

@@ -32,9 +32,7 @@ run dir:
 format:
     # Rust
     cargo fmt --all
-    # Python (scripts — legacy)
-    cd scripts && uv run ruff format
-    # Python (main package)
+    # Python
     uv run ruff format
     # Markdown
     prettier --write "**/*.md"
@@ -44,13 +42,7 @@ check:
     # Rust
     cargo fmt --all --check
     cargo clippy --workspace -- -D warnings
-    # Python (scripts — legacy)
-    cd scripts && \
-      uv run ruff check && \
-      uv run ruff format --check
-    cd scripts && \
-      uv run pyright
-    # Python (main package)
+    # Python
     uv run ruff check && \
       uv run ruff format --check
     uv run pyright
@@ -61,7 +53,6 @@ check:
 # Run all tests (Rust + Python)
 test:
     cargo nextest run --workspace
-    cd scripts && uv run pytest test_catalog.py -q
     uv run pytest pylib/tests/ -q
 
 nas_home := "/Volumes/home"

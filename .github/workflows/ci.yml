@@ -26,29 +26,6 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Install Python
         run: uv python install 3.14
-
-      # scripts/ (legacy)
-      - name: Sync scripts deps
-        working-directory: scripts
-        run: uv sync
-      - uses: astral-sh/ruff-action@v3
-        with:
-          src: ./scripts
-      - uses: astral-sh/ruff-action@v3
-        with:
-          args: "format --check"
-          src: ./scripts
-      - name: Pyright (scripts)
-        working-directory: scripts
-        run: uv run pyright
-      - name: ty check (scripts)
-        working-directory: scripts
-        run: uv run ty check
-      - name: Pytest (scripts)
-        working-directory: scripts
-        run: uv run pytest test_catalog.py -q
-
-      # Main Python package (pylib/ + cmd/etp/)
       - name: Sync deps
         run: uv sync
       - uses: astral-sh/ruff-action@v3
@@ -58,7 +35,7 @@ jobs:
       - name: Pyright
         run: uv run pyright
       - name: ty check
-        run: uv run ty check
+        run: uv run ty check pylib/ cmd/etp/
       - name: Pytest
         run: uv run pytest pylib/tests/ -q
 
