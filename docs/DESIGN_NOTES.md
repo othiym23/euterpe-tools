@@ -71,8 +71,9 @@ canonical schema is `etp-lib/schema.sql`. Pool is `max_connections(1)` — all
 queries are sequential. FK enforcement is disabled during migration execution
 (some migrations recreate tables referenced by foreign keys).
 
-Defaults: database is `<dir>/.etp.db`, exclude is `@eaDir` (Synology metadata
-directories, filtered at scan time so walkdir never descends into them).
+Defaults: database is `<dir>/.etp.db`. The scanner indexes everything on disk
+(no default excludes). Display-time filtering hides system files and user
+excludes — see "Display Filtering" below.
 
 File sync uses UPSERT to preserve file IDs across rescans. When a file's mtime
 changes, `metadata_scanned_at` is cleared so the metadata scanner re-reads it.
@@ -83,6 +84,47 @@ matches removed files against newly appeared files by size, then verifies with
 streaming BLAKE3 hash. Matched files get an UPDATE to `dir_id` + `filename`,
 preserving their ID and all dependent metadata. Unmatched files are deleted with
 dependent cleanup.
+
+## Display Filtering
+
+The scanner indexes everything on disk. Filtering happens at display time via
+two independent layers:
+
+1. **System files** (`@eaDir`, `@eaStream`, `.etp.db*`, etc.) — NAS/OS
+   byproducts. Hidden from listings by default, but included in `--du` size
+   calculations. Shown with `--include-system-files`. Patterns are exact name
+   matches against file/directory names.
+
+2. **User excludes** (`.*` by default) — glob patterns matched against filenames
+   only (not the full path, since absolute paths may contain unrelated
+   dot-directories like macOS tempdir components). Hidden from both listings and
+   size calculations.
+
+System files are exempt from user exclude matching. Without this, `.etp.db`
+would be caught by the `.*` dotfile pattern and hidden even when
+`--include-system-files` is passed. The two filter layers are independent:
+system file visibility is controlled by `--[no-]include-system-files`, while
+user excludes are controlled by `--exclude` and `--ignore`.
+
+`FilterConfig` in `ops.rs` bundles both pattern lists and the include flag,
+providing `should_show()` (for full path + filename checks) and
+`should_show_name()` (for individual name checks in tree rendering).
+
+## CLI Boolean Flag Pairs
+
+For flags where both the positive and negative form are meaningful (e.g.,
+`--scan` / `--no-scan`, `--include-system-files` / `--no-include-system-files`),
+both forms are defined as separate clap args with `default_value_t = false`.
+Resolution uses `ops::resolve_bool_pair()`:
+
+- Only `--flag` passed → true
+- Only `--no-flag` passed → false
+- Neither passed → default
+- Both passed → prints a warning to stderr and uses the default
+
+This avoids clap's `overrides_with` (which silently picks the last one) in favor
+of explicit conflict detection. The warning helps users who may be combining
+flags from shell aliases or scripts without realizing the conflict.
 
 ## Profiling
 
