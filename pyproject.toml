@@ -31,7 +31,7 @@ src = ["pylib", "cmd/etp", "pylib/tests"]
 
 [tool.pyright]
 pythonPlatform = "All"
-exclude = [".venv/", "scripts/"]
+exclude = [".venv/"]
 reportPrivateImportUsage = "warning"
 
 [tool.ty.src]
