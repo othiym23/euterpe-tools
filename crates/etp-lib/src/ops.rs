@@ -54,6 +54,27 @@ pub fn parse_ignore_patterns(patterns: &[String]) -> Vec<glob::Pattern> {
         .collect()
 }
 
+/// Look up the latest scan_id for a directory. Exits with `EXIT_NO_SCAN` if
+/// no scan exists, allowing the porcelain to auto-scan and retry.
+pub async fn resolve_latest_scan_id(pool: &SqlitePool, run_type: &str, verbose: bool) -> i64 {
+    if verbose {
+        eprintln!("using existing database (pass --scan to rescan)");
+    }
+    match dao::latest_scan_id(pool, run_type).await {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!(
+                "error: no previous scan exists for this directory; run etp-scan first, or pass --scan"
+            );
+            process::exit(EXIT_NO_SCAN);
+        }
+        Err(e) => {
+            eprintln!("error querying database: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
 /// Run the DB-backed scanner and log stats. Returns scan_id. Exits on error.
 #[cfg_attr(
     feature = "profiling",

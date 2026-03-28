@@ -36,7 +36,7 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     scan: bool,
 
-    /// Skip scanning, use existing DB data (default behavior, kept for backward compat)
+    /// Hidden backward-compat alias (no-scan is already the default)
     #[arg(long, hide = true, default_value_t = false)]
     no_scan: bool,
 
@@ -70,6 +70,14 @@ async fn main() {
         .unwrap_or_else(|| cli.directory.join("index.csv"));
     let db_path = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
 
+    // When not scanning, bail early if no DB exists to avoid creating an empty one.
+    if !cli.scan && !db_path.exists() {
+        eprintln!(
+            "error: no previous scan exists for this directory; run etp-scan first, or pass --scan"
+        );
+        std::process::exit(ops::EXIT_NO_SCAN);
+    }
+
     let pool = etp_lib::db::open_db(&db_path, cli.verbose)
         .await
         .unwrap_or_else(|e| {
@@ -86,22 +94,7 @@ async fn main() {
     let scan_id = if cli.scan {
         ops::run_scan_to_db(&cli.directory, &pool, &run_type, &cli.exclude, cli.verbose).await
     } else {
-        if cli.verbose && !cli.no_scan {
-            eprintln!("using existing database (pass --scan to rescan)");
-        }
-        match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
-            Ok(Some(id)) => id,
-            Ok(None) => {
-                eprintln!(
-                    "error: no previous scan exists for this directory; run etp-scan first, or pass --scan"
-                );
-                std::process::exit(ops::EXIT_NO_SCAN);
-            }
-            Err(e) => {
-                eprintln!("error querying database: {}", e);
-                std::process::exit(1);
-            }
-        }
+        ops::resolve_latest_scan_id(&pool, &run_type, cli.verbose).await
     };
 
     if let Some(ref find_pattern) = cli.find {
