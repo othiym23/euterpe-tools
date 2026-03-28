@@ -24,6 +24,11 @@ implemented.
     - [ ] `--[no-]include-system-files` flag on etp-tree, etp-csv, etp-find,
           etp-query
     - [ ] configurable default patterns for both lists
+    - [ ] `is_system_path` checks all absolute path components — strip scan root
+          before matching to prevent false positives on generic patterns
+    - [ ] unify or document `should_show_name` vs `should_show` contract — the
+          tree rendering ordering dependency (filter dirs before descending) is
+          implicit
   - [ ] Phase 3: runtime config + etp-init
     - [ ] `config.kdl` with system patterns, user excludes, database nicknames
     - [ ] `etp-init` plumbing command to generate commented config template

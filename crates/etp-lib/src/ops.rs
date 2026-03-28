@@ -89,6 +89,13 @@ pub fn is_system_name(name: &str, system_patterns: &[String]) -> bool {
 
 /// Check whether a directory path or filename matches any system file pattern.
 /// Checks each path component and the filename itself.
+///
+/// FIXME: dir_path is the full absolute path (e.g. `/volume1/music/sub`), so
+/// this checks ALL components including the root. Currently safe because system
+/// patterns use distinctive prefixes (`@`, `#`, `.etp.`), but adding a generic
+/// pattern like `tmp` would false-positive on `/tmp/...` paths. Consider
+/// stripping the scan root prefix before matching, or only checking the
+/// relative portion of the path.
 pub fn is_system_path(dir_path: &str, filename: Option<&str>, system_patterns: &[String]) -> bool {
     if system_patterns.is_empty() {
         return false;
@@ -165,6 +172,14 @@ impl FilterConfig {
     }
 
     /// Check whether a name (file or directory) should be shown.
+    ///
+    /// FIXME: This checks a single name in isolation (used by tree rendering's
+    /// merge_entries for both files and directories). It cannot check dir_path
+    /// context, so a file inside `@eaDir` won't be caught unless the `@eaDir`
+    /// directory itself is filtered first. Currently correct because tree
+    /// rendering filters directories before descending, but the implicit
+    /// ordering dependency isn't enforced by the API. Consider unifying with
+    /// should_show() or documenting the required call ordering.
     pub fn should_show_name(&self, name: &str) -> bool {
         let is_system = is_system_name(name, &self.system_patterns);
         if !self.include_system_files && is_system {
