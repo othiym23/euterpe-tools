@@ -200,37 +200,48 @@ async fn main() {
         Commands::Stats => {
             // Stats uses the filter to exclude system files by default,
             // since their counts and sizes would badly skew the statistics.
-            let all_files = db::dao::list_files(&pool, scan_id)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            // Streams rows to avoid loading all FileRecords into memory.
+            use std::future::poll_fn;
+            use std::pin::Pin;
 
-            let filtered: Vec<_> = all_files
-                .iter()
-                .filter(|f| filter.should_show(&f.dir_path, &f.filename))
-                .collect();
+            let mut stream = db::dao::stream_files(&pool, scan_id);
+            let mut file_count: usize = 0;
+            let mut total: u64 = 0;
+            let mut ext_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
 
-            let file_count = filtered.len();
-            let total: u64 = filtered.iter().map(|f| f.size).sum();
+            while let Some(result) = poll_fn(|cx| {
+                use futures_core::Stream;
+                Pin::new(&mut stream).poll_next(cx)
+            })
+            .await
+            {
+                match result {
+                    Ok(record) => {
+                        if !filter.should_show(&record.dir_path, &record.filename) {
+                            continue;
+                        }
+                        file_count += 1;
+                        total += record.size;
+                        let ext = record
+                            .filename
+                            .rfind('.')
+                            .map(|i| record.filename[i + 1..].to_lowercase())
+                            .unwrap_or_default();
+                        if !ext.is_empty() {
+                            *ext_counts.entry(ext).or_default() += 1;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error reading from database: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
 
             println!("Files: {file_count}");
             println!("Total size: {}", ops::format_size(total));
 
-            // Extension counts from filtered files
-            let mut ext_counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            for f in &filtered {
-                let ext = f
-                    .filename
-                    .rfind('.')
-                    .map(|i| f.filename[i + 1..].to_lowercase())
-                    .unwrap_or_default();
-                if !ext.is_empty() {
-                    *ext_counts.entry(ext).or_default() += 1;
-                }
-            }
             if !ext_counts.is_empty() {
                 let mut sorted: Vec<_> = ext_counts.into_iter().collect();
                 sorted.sort_by(|a, b| b.1.cmp(&a.1));
