@@ -55,6 +55,7 @@ pub fn parse_config(text: &str, filename: &str) -> Result<Config, ConfigError> {
 pub enum ConfigError {
     Io(std::io::Error),
     Parse(knuffel::Error),
+    Validation(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -62,6 +63,7 @@ impl std::fmt::Display for ConfigError {
         match self {
             ConfigError::Io(e) => write!(f, "config I/O error: {e}"),
             ConfigError::Parse(e) => write!(f, "config parse error: {e}"),
+            ConfigError::Validation(msg) => write!(f, "config error: {msg}"),
         }
     }
 }
@@ -167,50 +169,16 @@ pub fn load_runtime_config() -> Result<RuntimeConfig, ConfigError> {
     let text = fs::read_to_string(&path).map_err(ConfigError::Io)?;
     let raw: RawRuntimeConfig =
         knuffel::parse(path.to_string_lossy().as_ref(), &text).map_err(ConfigError::Parse)?;
-
-    let system_patterns = match raw.system_files {
-        Some(block) => block.patterns.into_iter().map(|p| p.value).collect(),
-        None => ops::DEFAULT_SYSTEM_PATTERNS
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    };
-
-    let user_excludes = match raw.user_excludes {
-        Some(block) => block.patterns.into_iter().map(|p| p.value).collect(),
-        None => ops::DEFAULT_USER_EXCLUDES
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    };
-
-    let databases = raw
-        .databases
-        .into_iter()
-        .filter_map(|d| {
-            let root = d.root?;
-            let db = d.db?;
-            Some(DatabaseEntry {
-                name: d.name,
-                root: PathBuf::from(root),
-                db: PathBuf::from(db),
-            })
-        })
-        .collect();
-
-    Ok(RuntimeConfig {
-        default_database: raw.default_database,
-        cas_dir: raw.cas_dir.map(PathBuf::from),
-        system_patterns,
-        user_excludes,
-        databases,
-    })
+    resolve_raw_config(raw)
 }
 
 /// Parse a runtime config from a KDL string (for testing).
 pub fn parse_runtime_config(text: &str) -> Result<RuntimeConfig, ConfigError> {
     let raw: RawRuntimeConfig = knuffel::parse("test.kdl", text).map_err(ConfigError::Parse)?;
+    resolve_raw_config(raw)
+}
 
+fn resolve_raw_config(raw: RawRuntimeConfig) -> Result<RuntimeConfig, ConfigError> {
     let system_patterns = match raw.system_files {
         Some(block) => block.patterns.into_iter().map(|p| p.value).collect(),
         None => ops::DEFAULT_SYSTEM_PATTERNS
@@ -227,7 +195,7 @@ pub fn parse_runtime_config(text: &str) -> Result<RuntimeConfig, ConfigError> {
             .collect(),
     };
 
-    let databases = raw
+    let databases: Vec<DatabaseEntry> = raw
         .databases
         .into_iter()
         .filter_map(|d| {
@@ -240,6 +208,14 @@ pub fn parse_runtime_config(text: &str) -> Result<RuntimeConfig, ConfigError> {
             })
         })
         .collect();
+
+    if let Some(ref name) = raw.default_database
+        && !databases.iter().any(|d| d.name == *name)
+    {
+        return Err(ConfigError::Validation(format!(
+            "default-database \"{name}\" does not match any configured database nickname"
+        )));
+    }
 
     Ok(RuntimeConfig {
         default_database: raw.default_database,
@@ -463,5 +439,38 @@ database "incomplete" {
         assert!(config.system_patterns.contains(&"@eaDir".to_string()));
         assert!(config.system_patterns.contains(&".etp.db".to_string()));
         assert!(config.databases.is_empty());
+    }
+
+    #[test]
+    fn runtime_config_default_database_must_exist() {
+        let kdl = r#"
+default-database "nonexistent"
+
+database "music" {
+    root "/volume1/music"
+    db "/data/music.db"
+}
+"#;
+        let result = parse_runtime_config(kdl);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent"),
+            "error should mention the bad nickname: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_config_default_database_valid() {
+        let kdl = r#"
+default-database "music"
+
+database "music" {
+    root "/volume1/music"
+    db "/data/music.db"
+}
+"#;
+        let config = parse_runtime_config(kdl).unwrap();
+        assert_eq!(config.default_database.as_deref(), Some("music"));
     }
 }
