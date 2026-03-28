@@ -1,5 +1,5 @@
 use crate::cas;
-use crate::db::dao::{self, FileInput};
+use crate::db::dao::{self, FileInput, RemovedFile};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -8,8 +8,6 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::Instant;
 use walkdir::WalkDir;
-
-use crate::db::dao::RemovedFile;
 
 pub struct ScanStats {
     pub dirs_cached: usize,
@@ -47,7 +45,6 @@ pub async fn scan_to_db(
         elapsed_ms: 0,
     };
     let mut seen_paths = HashSet::new();
-
     let mut all_removed: Vec<RemovedFile> = Vec::new();
 
     // Bulk-load all cached mtimes in one query instead of per-directory SELECTs.
@@ -59,70 +56,74 @@ pub async fn scan_to_db(
     // from DB with its own sort). Skipping sort avoids buffering + extra
     // syscalls per directory. filter_entry skips excluded directories so
     // walkdir never descends into them (e.g. Synology @eaDir).
-    let exclude_set: HashSet<&str> = exclude.iter().map(|s| s.as_str()).collect();
-    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-        if e.file_type().is_dir()
-            && let Some(name) = e.file_name().to_str()
-        {
-            return !exclude_set.contains(name);
-        }
-        true
-    });
-
     let mut pending: Vec<DirUpdate> = Vec::new();
-    const BATCH_SIZE: usize = 256;
+    const BATCH_SIZE: usize = 64;
 
-    for entry in walker {
+    for entry in WalkDir::new(root)
+        .sort_by(|_, _| std::cmp::Ordering::Equal)
+        .into_iter()
+        .filter_entry(|e| {
+            !exclude.iter().any(|ex| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|name| name == ex.as_str())
+            })
+        })
+    {
         let entry = entry.map_err(io::Error::other)?;
         if !entry.file_type().is_dir() {
             continue;
         }
-
-        let dir_path = entry.path().to_path_buf();
+        let dir_path = entry.path();
         let relative = dir_path
             .strip_prefix(root)
-            .map_err(|e| io::Error::other(format!("path not under root: {}", e)))?
+            .unwrap_or(dir_path)
             .to_string_lossy()
-            .into_owned();
+            .to_string();
+
         seen_paths.insert(relative.clone());
 
-        let dir_meta = fs::metadata(&dir_path)?;
-        let dir_mtime = dir_meta.mtime();
-        let dir_size = dir_meta.size();
+        let meta = fs::metadata(dir_path)?;
+        let dir_mtime = meta.mtime();
 
-        if cached_mtimes.get(&relative) == Some(&dir_mtime) {
+        if let Some(&cached_mtime) = cached_mtimes.get(&relative)
+            && cached_mtime == dir_mtime
+        {
             stats.dirs_cached += 1;
-            #[cfg(feature = "profiling")]
-            if (stats.dirs_scanned + stats.dirs_cached).is_multiple_of(1000) {
-                tracing::info!(
-                    scanned = stats.dirs_scanned,
-                    cached = stats.dirs_cached,
-                    "scan_progress"
-                );
-                crate::profiling::sample_proc_metrics("scan_progress");
-            }
-            if verbose {
-                eprintln!("directory unchanged, skipping: {}", dir_path.display());
-            }
             continue;
         }
-
         stats.dirs_scanned += 1;
 
         #[cfg(feature = "profiling")]
-        if (stats.dirs_scanned + stats.dirs_cached).is_multiple_of(1000) {
-            tracing::info!(
-                scanned = stats.dirs_scanned,
-                cached = stats.dirs_cached,
-                "scan_progress"
-            );
-            crate::profiling::sample_proc_metrics("scan_progress");
+        let _dir_span = tracing::info_span!("scan_directory", path = %relative).entered();
+
+        if verbose {
+            let file_count = fs::read_dir(dir_path)?.count();
+            eprintln!("scanning: {} ({} files)", relative, file_count);
         }
 
-        let files = scan_directory(&dir_path)?;
-        if verbose {
-            eprintln!("scanning: {} ({} files)", dir_path.display(), files.len());
+        let mut files = Vec::new();
+        let mut dir_size: u64 = 0;
+
+        #[cfg(feature = "profiling")]
+        let _readdir_span = tracing::info_span!("readdir_and_stat").entered();
+
+        for child in fs::read_dir(dir_path)? {
+            let child = child?;
+            if child.file_type()?.is_file() {
+                let child_meta = child.metadata()?;
+                dir_size += child_meta.len();
+                files.push(FileInput {
+                    filename: child.file_name().to_string_lossy().to_string(),
+                    size: child_meta.len(),
+                    ctime: child_meta.ctime(),
+                    mtime: child_meta.mtime(),
+                });
+            }
         }
+
+        #[cfg(feature = "profiling")]
+        drop(_readdir_span);
 
         pending.push(DirUpdate {
             relative,
@@ -217,10 +218,11 @@ async fn flush_pending(
 
 /// Match removed files against newly appeared files to detect moves/renames.
 ///
-/// For each removed file, check if a file with the same size exists in the
-/// current scan that wasn't there before (i.e., has no metadata_scanned_at and
-/// was just inserted). If sizes match, verify with BLAKE3 hash. Matched files
-/// get an UPDATE to their dir_id and filename; unmatched files are deleted.
+/// Uses a two-phase approach: first match by size, then verify with BLAKE3
+/// hash. When the old file is gone (expected for a move), accepts a size-only
+/// match if there's exactly one removed file AND one candidate at that size.
+///
+/// The entire reconciliation runs in a single transaction for atomicity.
 async fn reconcile_moves(
     pool: &SqlitePool,
     root: &Path,
@@ -231,46 +233,83 @@ async fn reconcile_moves(
         return Ok(Vec::new());
     }
 
-    // Build a size → removed-files index for quick lookup
+    // Build a size → removed-files index
     let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, rf) in removed.iter().enumerate() {
         by_size.entry(rf.size).or_default().push(i);
     }
 
-    // Find newly inserted files (metadata_scanned_at IS NULL) that could be
-    // move targets. We only need files whose sizes match a removed file.
     let sizes: Vec<u64> = by_size.keys().copied().collect();
     if sizes.is_empty() {
-        let mut conn = pool.acquire().await?;
-        return dao::delete_unmatched_files(&mut conn, removed).await;
+        let mut tx = pool.begin().await?;
+        let orphans = dao::delete_unmatched_files(&mut tx, removed).await?;
+        tx.commit().await?;
+        return Ok(orphans);
     }
 
-    // Query new files that match sizes of removed files
+    // Collect removed file IDs to exclude from candidates
+    let removed_ids: HashSet<i64> = removed.iter().map(|rf| rf.file_id).collect();
+
+    // Query files that match sizes of removed files. We filter out removed
+    // file IDs to avoid matching a file against itself. We also exclude files
+    // that already have metadata (they existed before this scan).
     let placeholders: String = sizes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let id_excludes: String = removed_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!(
-        "SELECT f.id, d.path, f.filename, f.size, f.dir_id
+        "SELECT f.id, d.path, f.filename, f.size, f.dir_id, f.mtime, f.ctime
          FROM files f
          JOIN directories d ON f.dir_id = d.id
          WHERE f.metadata_scanned_at IS NULL
+           AND f.id NOT IN ({id_excludes})
            AND f.size IN ({placeholders})"
     );
-    let mut q = sqlx::query_as::<_, (i64, String, String, i64, i64)>(&query);
+    let mut q = sqlx::query_as::<_, (i64, String, String, i64, i64, i64, i64)>(&query);
+    for &id in &removed_ids {
+        q = q.bind(id);
+    }
     for &s in &sizes {
         q = q.bind(s as i64);
     }
-    let candidates: Vec<(i64, String, String, i64, i64)> = q.fetch_all(pool).await?;
+    let candidates: Vec<(i64, String, String, i64, i64, i64, i64)> = q.fetch_all(pool).await?;
 
-    // Try to match each candidate against removed files by size, then hash
+    // Pre-fetch directory paths for removed files (must happen before we
+    // start the transaction, since pool has max_connections=1)
+    let mut dir_paths: HashMap<i64, String> = HashMap::new();
+    for rf in removed.iter() {
+        if let std::collections::hash_map::Entry::Vacant(e) = dir_paths.entry(rf.dir_id) {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT path FROM directories WHERE id = ?")
+                    .bind(rf.dir_id)
+                    .fetch_optional(pool)
+                    .await?;
+            if let Some((path,)) = row {
+                e.insert(path);
+            }
+        }
+    }
+
+    // Build a size → candidates index to check uniqueness
+    let mut candidates_by_size: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (i, (_, _, _, size, _, _, _)) in candidates.iter().enumerate() {
+        candidates_by_size.entry(*size as u64).or_default().push(i);
+    }
+
     let mut matched_removed: HashSet<usize> = HashSet::new();
     let mut matched_new: HashSet<i64> = HashSet::new();
-    let mut conn = pool.acquire().await?;
+    let mut tx = pool.begin().await?;
 
-    for (new_id, dir_path, new_filename, new_size, new_dir_id) in &candidates {
+    for (ci, (new_id, dir_path, new_filename, new_size, new_dir_id, new_mtime, new_ctime)) in
+        candidates.iter().enumerate()
+    {
         if matched_new.contains(new_id) {
             continue;
         }
         let size = *new_size as u64;
-        let Some(indices) = by_size.get(&size) else {
+        let Some(removed_indices) = by_size.get(&size) else {
             continue;
         };
 
@@ -285,16 +324,13 @@ async fn reconcile_moves(
             None => continue,
         };
 
-        // Check each removed file with matching size
-        for &idx in indices {
+        for &idx in removed_indices {
             if matched_removed.contains(&idx) {
                 continue;
             }
             let rf = &removed[idx];
 
-            // Build old path for hashing
-            let old_dir_path = get_dir_path(pool, rf.dir_id).await;
-            let old_path = match &old_dir_path {
+            let old_path = match dir_paths.get(&rf.dir_id) {
                 Some(dp) if dp.is_empty() => root.join(&rf.filename),
                 Some(dp) => root.join(dp).join(&rf.filename),
                 None => continue,
@@ -302,21 +338,35 @@ async fn reconcile_moves(
             let old_hash = match hash_file(&old_path) {
                 Some(h) => h,
                 None => {
-                    // Old file is gone (expected for a move) — accept the
-                    // match based on size alone if there's exactly one candidate
-                    if indices.len() == 1 {
+                    // Old file is gone (expected for a move). Accept a size-only
+                    // match only when both sides are unique at this size.
+                    let candidate_count = candidates_by_size.get(&size).map_or(0, |v| {
+                        v.iter()
+                            .filter(|&&ci2| !matched_new.contains(&candidates[ci2].0))
+                            .count()
+                    });
+                    let removed_count = removed_indices
+                        .iter()
+                        .filter(|&&ri| !matched_removed.contains(&ri))
+                        .count();
+
+                    if candidate_count == 1 && removed_count == 1 {
                         if verbose {
                             eprintln!(
                                 "  move detected (size match): {} -> {}",
                                 rf.filename, new_filename
                             );
                         }
-                        dao::move_file(&mut conn, rf.file_id, *new_dir_id, new_filename).await?;
-                        dao::delete_file_dependents(&mut conn, *new_id).await?;
-                        sqlx::query("DELETE FROM files WHERE id = ?")
-                            .bind(new_id)
-                            .execute(&mut *conn)
-                            .await?;
+                        apply_move(
+                            &mut tx,
+                            rf.file_id,
+                            *new_id,
+                            *new_dir_id,
+                            new_filename,
+                            *new_mtime,
+                            *new_ctime,
+                        )
+                        .await?;
                         matched_removed.insert(idx);
                         matched_new.insert(*new_id);
                         break;
@@ -332,17 +382,22 @@ async fn reconcile_moves(
                         rf.filename, new_filename
                     );
                 }
-                dao::move_file(&mut conn, rf.file_id, *new_dir_id, new_filename).await?;
-                dao::delete_file_dependents(&mut conn, *new_id).await?;
-                sqlx::query("DELETE FROM files WHERE id = ?")
-                    .bind(new_id)
-                    .execute(&mut *conn)
-                    .await?;
+                apply_move(
+                    &mut tx,
+                    rf.file_id,
+                    *new_id,
+                    *new_dir_id,
+                    new_filename,
+                    *new_mtime,
+                    *new_ctime,
+                )
+                .await?;
                 matched_removed.insert(idx);
                 matched_new.insert(*new_id);
                 break;
             }
         }
+        let _ = ci;
     }
 
     // Delete unmatched removed files
@@ -353,8 +408,39 @@ async fn reconcile_moves(
         .map(|(_, rf)| rf.clone())
         .collect();
 
-    let orphans = dao::delete_unmatched_files(&mut conn, &unmatched).await?;
+    let orphans = dao::delete_unmatched_files(&mut tx, &unmatched).await?;
+    tx.commit().await?;
     Ok(orphans)
+}
+
+/// Apply a file move: update the old record's location and stat info,
+/// then delete the newly-inserted duplicate.
+#[allow(clippy::explicit_auto_deref)]
+async fn apply_move(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    old_file_id: i64,
+    new_file_id: i64,
+    new_dir_id: i64,
+    new_filename: &str,
+    new_mtime: i64,
+    new_ctime: i64,
+) -> Result<(), sqlx::Error> {
+    // Delete the newly-inserted duplicate first to free the UNIQUE(dir_id, filename)
+    // constraint, then update the old record to the new location.
+    dao::delete_file_dependents(&mut **tx, new_file_id).await?;
+    sqlx::query("DELETE FROM files WHERE id = ?")
+        .bind(new_file_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("UPDATE files SET dir_id = ?, filename = ?, mtime = ?, ctime = ? WHERE id = ?")
+        .bind(new_dir_id)
+        .bind(new_filename)
+        .bind(new_mtime)
+        .bind(new_ctime)
+        .bind(old_file_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// BLAKE3 hash of a file using streaming I/O (constant memory).
@@ -367,40 +453,10 @@ fn hash_file(path: &Path) -> Option<String> {
     Some(hasher.finalize().to_hex().to_string())
 }
 
-/// Look up a directory's relative path by its ID.
-async fn get_dir_path(pool: &SqlitePool, dir_id: i64) -> Option<String> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT path FROM directories WHERE id = ?")
-        .bind(dir_id)
-        .fetch_optional(pool)
-        .await
-        .ok()?;
-    row.map(|(p,)| p)
-}
-
 /// Local struct for batching directory updates in scan_to_db.
 struct DirUpdate {
     relative: String,
     mtime: i64,
     size: u64,
     files: Vec<dao::FileInput>,
-}
-
-fn scan_directory(dir: &Path) -> io::Result<Vec<FileInput>> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        if !ft.is_file() {
-            continue;
-        }
-        let meta = entry.metadata()?;
-        files.push(FileInput {
-            filename: entry.file_name().to_string_lossy().into_owned(),
-            size: meta.size(),
-            ctime: meta.ctime(),
-            mtime: meta.mtime(),
-        });
-    }
-    files.sort_by(|a, b| a.filename.cmp(&b.filename));
-    Ok(files)
 }
