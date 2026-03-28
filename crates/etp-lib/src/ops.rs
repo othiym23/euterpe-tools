@@ -265,9 +265,14 @@ pub fn resolve_nickname(
         return None;
     }
     let name = directory.to_string_lossy();
-    config
-        .resolve_database(&name)
-        .map(|entry| (entry.root.clone(), entry.db.clone()))
+    config.resolve_database(&name).map(|entry| {
+        eprintln!(
+            "using database nickname \"{name}\": root={}, db={}",
+            entry.root.display(),
+            entry.db.display()
+        );
+        (entry.root.clone(), entry.db.clone())
+    })
 }
 
 /// Result of opening a database and resolving a scan for a directory.
