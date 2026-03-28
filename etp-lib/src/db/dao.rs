@@ -117,27 +117,45 @@ pub struct FileInput {
     pub mtime: i64,
 }
 
+/// A file that disappeared from a directory during a scan. Held for
+/// move-tracking reconciliation before being deleted.
+#[derive(Debug, Clone)]
+pub struct RemovedFile {
+    pub file_id: i64,
+    pub dir_id: i64,
+    pub filename: String,
+    pub size: u64,
+    pub mtime: i64,
+}
+
+/// Result of syncing files in a directory.
+pub struct SyncResult {
+    /// CAS blob hashes orphaned by this sync (caller should remove from disk).
+    pub orphan_hashes: Vec<String>,
+    /// Files that disappeared from this directory. Hold these for move-tracking
+    /// reconciliation before deleting.
+    pub removed_files: Vec<RemovedFile>,
+}
+
 /// Sync files for a directory — upserts each file (preserving file IDs for
-/// unchanged filenames) and removes files no longer present. Clears
-/// `metadata_scanned_at` when a file's mtime changes so metadata will be
-/// re-read on the next metadata scan.
+/// unchanged filenames). Returns removed files for move-tracking instead of
+/// deleting them immediately.
 pub async fn replace_files(
     pool: &SqlitePool,
     dir_id: i64,
     files: &[FileInput],
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<SyncResult, sqlx::Error> {
     let mut conn = pool.acquire().await?;
     replace_files_on(&mut conn, dir_id, files).await
 }
 
 /// Inner implementation that works on a mutable connection reference, so it
 /// can be called within an existing transaction (e.g., `flush_pending`).
-/// Returns hashes of any orphaned CAS blobs that should be removed from disk.
 pub async fn replace_files_on(
     conn: &mut sqlx::SqliteConnection,
     dir_id: i64,
     files: &[FileInput],
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<SyncResult, sqlx::Error> {
     let new_filenames: HashSet<&str> = files.iter().map(|f| f.filename.as_str()).collect();
 
     // Upsert each file. Clear metadata_scanned_at when mtime changes so
@@ -164,32 +182,67 @@ pub async fn replace_files_on(
         .await?;
     }
 
-    // Remove files no longer on disk. Clean up metadata rows first
-    // (ON DELETE RESTRICT prevents deleting files that have metadata).
-    let existing: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, filename FROM files WHERE dir_id = ?")
+    // Collect files no longer on disk as candidates for move-tracking.
+    let existing: Vec<(i64, String, i64, i64)> =
+        sqlx::query_as("SELECT id, filename, size, mtime FROM files WHERE dir_id = ?")
             .bind(dir_id)
             .fetch_all(&mut *conn)
             .await?;
 
-    let mut had_removals = false;
-    for (file_id, filename) in &existing {
+    let mut removed_files = Vec::new();
+    for (file_id, filename, size, mtime) in existing {
         if !new_filenames.contains(filename.as_str()) {
-            delete_file_dependents(&mut *conn, *file_id).await?;
-            sqlx::query("DELETE FROM files WHERE id = ?")
-                .bind(file_id)
-                .execute(&mut *conn)
-                .await?;
-            had_removals = true;
+            removed_files.push(RemovedFile {
+                file_id,
+                dir_id,
+                filename,
+                size: size as u64,
+                mtime,
+            });
         }
     }
-    let orphan_hashes = if had_removals {
-        cleanup_orphan_blobs(&mut *conn).await?
-    } else {
-        Vec::new()
-    };
 
-    Ok(orphan_hashes)
+    Ok(SyncResult {
+        orphan_hashes: Vec::new(),
+        removed_files,
+    })
+}
+
+/// Move a file to a new directory and/or filename, preserving its ID and
+/// all dependent metadata.
+pub async fn move_file(
+    conn: &mut sqlx::SqliteConnection,
+    file_id: i64,
+    new_dir_id: i64,
+    new_filename: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE files SET dir_id = ?, filename = ? WHERE id = ?")
+        .bind(new_dir_id)
+        .bind(new_filename)
+        .bind(file_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Delete removed files that were not matched by move-tracking.
+/// Returns orphaned CAS blob hashes.
+pub async fn delete_unmatched_files(
+    conn: &mut sqlx::SqliteConnection,
+    removed: &[RemovedFile],
+) -> Result<Vec<String>, sqlx::Error> {
+    for rf in removed {
+        delete_file_dependents(&mut *conn, rf.file_id).await?;
+        sqlx::query("DELETE FROM files WHERE id = ?")
+            .bind(rf.file_id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    if !removed.is_empty() {
+        cleanup_orphan_blobs(&mut *conn).await
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 /// Delete all rows that reference a file (metadata, cue_sheets, embedded_images).
@@ -1174,21 +1227,38 @@ mod tests {
             .unwrap();
         assert_eq!(count.0, 2);
 
-        // Replace with different files
+        // Replace with different files — removed files are returned, not deleted
         let new_files = vec![FileInput {
             filename: "c.txt".into(),
             size: 300,
             ctime: 5000,
             mtime: 6000,
         }];
-        replace_files(&pool, dir_id, &new_files).await.unwrap();
+        let sync = replace_files(&pool, dir_id, &new_files).await.unwrap();
+        assert_eq!(sync.removed_files.len(), 2); // a.txt and b.txt removed
+
+        // Files still exist until we explicitly delete unmatched ones
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE dir_id = ?")
+            .bind(dir_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 3); // c.txt + a.txt + b.txt still in DB
+
+        // Delete unmatched
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            delete_unmatched_files(&mut conn, &sync.removed_files)
+                .await
+                .unwrap();
+        }
 
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE dir_id = ?")
             .bind(dir_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 1);
+        assert_eq!(count.0, 1); // only c.txt remains
     }
 
     #[tokio::test]

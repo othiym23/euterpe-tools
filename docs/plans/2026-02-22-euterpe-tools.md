@@ -500,6 +500,12 @@ and `filename`; unmatched files are deleted with dependent cleanup.
 all metadata. A file renamed in place (same directory, different name) is also
 tracked.
 
+**Future optimization**: When the metadata scanner reads a file, it should
+compute and store the BLAKE3 content hash in the `files` table (new column).
+Move tracking can then match on stored hashes instead of re-reading files,
+eliminating the I/O-heavy hashing step during reconciliation. This also enables
+content-based deduplication detection.
+
 ---
 
 ## Subproject 3: Large-Scale Metadata Management
