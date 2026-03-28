@@ -55,7 +55,7 @@ pub async fn scan_to_db(
     // Walk without sorting — order doesn't matter for scanning (output reads
     // from DB with its own sort). Skipping sort avoids buffering + extra
     // syscalls per directory. filter_entry skips excluded directories so
-    // walkdir never descends into them (e.g. Synology @eaDir).
+    // walkdir never descends into them.
     let mut pending: Vec<DirUpdate> = Vec::new();
     const BATCH_SIZE: usize = 64;
 

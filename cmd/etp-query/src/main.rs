@@ -77,8 +77,8 @@ async fn main() {
     let scan_id = match db::dao::latest_any_scan_id(&pool).await {
         Ok(Some(id)) => id,
         Ok(None) => {
-            eprintln!("error: no scans found in database");
-            std::process::exit(1);
+            eprintln!("error: no scans found in database; run etp-scan first");
+            std::process::exit(ops::EXIT_NO_SCAN);
         }
         Err(e) => {
             eprintln!("error: {e}");

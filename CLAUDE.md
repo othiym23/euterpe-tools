@@ -31,8 +31,8 @@ just deploy           # check + test + build + copy to NAS
 
 # Rust plumbing (in cmd/)
 etp-scan <directory> [--db <path>] [-e <name>...] [-v]
-etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [-v]
-etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--du [--du-subs]] [-v]
+etp-csv <directory> [--scan] [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [-v]
+etp-tree <directory> [--scan] [--db <file.db>] [--exclude <name>...] [--du [--du-subs]] [-v]
 etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [-v]
 etp-meta scan [-R <directory>] [--db <path>] [-e <name>...] [--force] [-v]
 etp-meta read <file> [--images]

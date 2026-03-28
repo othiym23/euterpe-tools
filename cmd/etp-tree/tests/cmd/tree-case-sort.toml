@@ -1,5 +1,5 @@
 bin.name = "etp-tree"
-args = ["."]
+args = [".", "--scan"]
 status = "success"
 stderr = ""
 fs.sandbox = true

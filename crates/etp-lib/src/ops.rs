@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
+/// Exit code for "no scan exists" — recoverable by running etp-scan first.
+pub const EXIT_NO_SCAN: i32 = 2;
+
 /// Compile a regex pattern, optionally case-insensitive. Exits on invalid pattern.
 pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> regex::Regex {
     regex::RegexBuilder::new(pattern)

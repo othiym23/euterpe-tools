@@ -17,7 +17,7 @@ struct Cli {
     db: Option<PathBuf>,
 
     /// Directory names to exclude from scan
-    #[arg(short, long, default_values_t = [String::from("@eaDir")])]
+    #[arg(short, long)]
     exclude: Vec<String>,
 
     /// Print diagnostic info on stderr

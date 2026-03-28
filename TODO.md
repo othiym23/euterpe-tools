@@ -10,8 +10,31 @@ implemented.
 ## Backlog (not assigned to a subproject)
 
 - [x] etp-scan: extract the scanning portion into its own plumbing command
-- [ ] refactor etp-csv/etp-tree to use `--no-scan` by default with scanning
-      managed by porcelain or a separate etp-scan invocation
+- [ ] scan/display separation and two-tier filtering
+      (docs/plans/2026-03-28-scan-display-separation.md)
+  - [ ] Phase 1: scan everything, default to `--no-scan`
+    - [ ] remove `@eaDir` default exclude from etp-scan, etp-tree, etp-csv,
+          etp-find
+    - [ ] add `--[no-]scan` boolean pair to etp-tree and etp-csv (default: no
+          scan)
+    - [ ] exit code 2 when no scan exists (for porcelain auto-scan)
+  - [ ] Phase 2: two-tier display filtering
+    - [ ] system file patterns (hidden from display, counted in du)
+    - [ ] user exclude patterns (hidden from display AND du)
+    - [ ] `--[no-]include-system-files` flag on etp-tree, etp-csv, etp-find,
+          etp-query
+    - [ ] configurable default patterns for both lists
+  - [ ] Phase 3: runtime config + etp-init
+    - [ ] `config.kdl` with system patterns, user excludes, database nicknames
+    - [ ] `etp-init` plumbing command to generate commented config template
+    - [ ] database nickname resolution in all Rust commands
+  - [ ] Phase 4: smart porcelain dispatch
+    - [ ] replace os.execv with subprocess.run for orchestrated commands
+    - [ ] auto-scan on exit code 2 for `etp tree` and `etp csv`
+    - [ ] argument extraction for directory and --db from argv
+  - [ ] Phase 5: catalog.py update
+    - [ ] run etp-scan first, then tree + CSV in parallel
+    - [ ] remove @eaDir from scan excludes
 - [x] create README with description of all porcelain commands and with
       installation instructions
 - [ ] write a utility to truncate media files for various formats to just

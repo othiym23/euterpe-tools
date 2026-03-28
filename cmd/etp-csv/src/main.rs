@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "etp-csv",
-    about = "Incremental filesystem scanner with CSV output",
+    about = "Generate CSV index from indexed database",
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")")
 )]
 struct Cli {
@@ -21,7 +21,7 @@ struct Cli {
     db: Option<PathBuf>,
 
     /// Directory names to exclude from output
-    #[arg(short, long, default_values_t = [String::from("@eaDir")])]
+    #[arg(short, long)]
     exclude: Vec<String>,
 
     /// Filter output to files matching this regex pattern
@@ -32,8 +32,12 @@ struct Cli {
     #[arg(short = 'i', long = "insensitive")]
     insensitive: bool,
 
-    /// Skip scanning, use existing DB data
-    #[arg(long, hide = true)]
+    /// Scan the directory before generating CSV (default: read existing DB)
+    #[arg(long, default_value_t = false)]
+    scan: bool,
+
+    /// Skip scanning, use existing DB data (default behavior, kept for backward compat)
+    #[arg(long, hide = true, default_value_t = false)]
     no_scan: bool,
 
     /// Print diagnostic info on stderr
@@ -79,25 +83,25 @@ async fn main() {
         .unwrap_or(cli.directory.clone());
     let run_type = canon.to_string_lossy();
 
-    let scan_id = if cli.no_scan {
-        if cli.verbose {
-            eprintln!("--no-scan: skipping scan, using cached data");
+    let scan_id = if cli.scan {
+        ops::run_scan_to_db(&cli.directory, &pool, &run_type, &cli.exclude, cli.verbose).await
+    } else {
+        if cli.verbose && !cli.no_scan {
+            eprintln!("using existing database (pass --scan to rescan)");
         }
         match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
             Ok(Some(id)) => id,
             Ok(None) => {
                 eprintln!(
-                    "error: --no-scan specified but no previous scan exists for this directory"
+                    "error: no previous scan exists for this directory; run etp-scan first, or pass --scan"
                 );
-                std::process::exit(1);
+                std::process::exit(ops::EXIT_NO_SCAN);
             }
             Err(e) => {
                 eprintln!("error querying database: {}", e);
                 std::process::exit(1);
             }
         }
-    } else {
-        ops::run_scan_to_db(&cli.directory, &pool, &run_type, &cli.exclude, cli.verbose).await
     };
 
     if let Some(ref find_pattern) = cli.find {

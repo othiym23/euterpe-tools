@@ -33,7 +33,7 @@ struct Cli {
     db: Option<PathBuf>,
 
     /// Directory names to exclude from scan
-    #[arg(short, long, default_values_t = [String::from("@eaDir")])]
+    #[arg(short, long)]
     exclude: Vec<String>,
 
     /// Case-insensitive pattern matching
@@ -115,10 +115,10 @@ async fn main() {
                 Ok(Some(id)) => id,
                 Ok(None) => {
                     eprintln!(
-                        "error: no previous scan exists for this directory in {}",
+                        "error: no previous scan exists for this directory in {}; run etp-scan first",
                         db_path.display()
                     );
-                    std::process::exit(1);
+                    std::process::exit(ops::EXIT_NO_SCAN);
                 }
                 Err(e) => {
                     eprintln!("error querying database: {}", e);
