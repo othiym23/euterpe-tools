@@ -42,18 +42,7 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
                 }
             }
             "FILE" => {
-                // Flush current track into current file
-                if let Some(ref track) = current_track
-                    && track.track_type == "AUDIO"
-                    && !saw_index01
-                {
-                    return Err(format!("track {} missing INDEX 01", track.number));
-                }
-                if let Some(track) = current_track.take()
-                    && let Some(ref mut file) = current_file
-                {
-                    file.tracks.push(track);
-                }
+                flush_track(&mut current_track, &mut current_file, saw_index01)?;
                 // Flush current file into sheet
                 if let Some(file) = current_file.take() {
                     sheet.files.push(file);
@@ -66,18 +55,7 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
                 });
             }
             "TRACK" => {
-                // Validate and flush current track into current file
-                if let Some(ref track) = current_track
-                    && track.track_type == "AUDIO"
-                    && !saw_index01
-                {
-                    return Err(format!("track {} missing INDEX 01", track.number));
-                }
-                if let Some(track) = current_track.take()
-                    && let Some(ref mut file) = current_file
-                {
-                    file.tracks.push(track);
-                }
+                flush_track(&mut current_track, &mut current_file, saw_index01)?;
                 let (number, track_type) = parse_track_line(line)?;
                 current_track = Some(CueTrack {
                     number,
@@ -118,23 +96,33 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
         }
     }
 
-    // Validate and flush remaining track and file
-    if let Some(ref track) = current_track
-        && track.track_type == "AUDIO"
-        && !saw_index01
-    {
-        return Err(format!("track {} missing INDEX 01", track.number));
-    }
-    if let Some(track) = current_track
-        && let Some(ref mut file) = current_file
-    {
-        file.tracks.push(track);
-    }
+    flush_track(&mut current_track, &mut current_file, saw_index01)?;
     if let Some(file) = current_file {
         sheet.files.push(file);
     }
 
     Ok(sheet)
+}
+
+/// Validate the current track (AUDIO tracks must have INDEX 01) and push
+/// it into the current file. Takes ownership via Option::take().
+fn flush_track(
+    current_track: &mut Option<CueTrack>,
+    current_file: &mut Option<CueFile>,
+    saw_index01: bool,
+) -> Result<(), String> {
+    if let Some(track) = current_track.as_ref()
+        && track.track_type == "AUDIO"
+        && !saw_index01
+    {
+        return Err(format!("track {} missing INDEX 01", track.number));
+    }
+    if let Some(track) = current_track.take()
+        && let Some(file) = current_file.as_mut()
+    {
+        file.tracks.push(track);
+    }
+    Ok(())
 }
 
 fn parse_rem(line: &str, sheet: &mut CueSheet) {

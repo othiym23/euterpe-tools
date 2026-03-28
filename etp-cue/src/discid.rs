@@ -5,9 +5,6 @@ use sha1::{Digest, Sha1};
 /// Standard CD pregap: 2 seconds = 150 sectors.
 const PREGAP_SECTORS: u64 = 150;
 
-/// MusicBrainz custom Base64 alphabet replacements.
-const MB_BASE64_REPLACE: [(char, char); 3] = [('+', '.'), ('/', '_'), ('=', '-')];
-
 /// Compute a MusicBrainz disc ID from a parsed CUE sheet.
 ///
 /// `file_durations` provides per-FILE sector counts. For a single-image CUE
@@ -45,11 +42,16 @@ pub fn compute_disc_id(sheet: &CueSheet, file_durations: &[u64]) -> String {
     hasher.update(hash_input.as_bytes());
     let digest = hasher.finalize();
 
-    let mut result = STANDARD.encode(digest);
-    for (from, to) in &MB_BASE64_REPLACE {
-        result = result.replace(*from, &to.to_string());
-    }
-    result
+    STANDARD
+        .encode(digest)
+        .chars()
+        .map(|c| match c {
+            '+' => '.',
+            '/' => '_',
+            '=' => '-',
+            c => c,
+        })
+        .collect()
 }
 
 #[cfg(test)]

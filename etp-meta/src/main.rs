@@ -194,7 +194,7 @@ async fn main() {
                                 .iter()
                                 .find(|(k, _)| k == "audio_duration_ms")
                                 .and_then(|(_, v)| v.as_u64())
-                                .map(|ms| (ms * 75 + 500) / 1000)
+                                .map(etp_cue::milliseconds_to_sectors)
                         })
                 })
                 .collect();

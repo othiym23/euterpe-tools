@@ -68,6 +68,11 @@ pub struct CueTrack {
     pub postgap: Option<CueTime>,
 }
 
+/// Convert milliseconds to CD sectors (75 sectors/second), with rounding.
+pub fn milliseconds_to_sectors(ms: u64) -> u64 {
+    (ms * 75 + 500) / 1000
+}
+
 /// Time in CUE format: MM:SS:FF where FF = frames at 75 fps.
 /// One frame = one CD sector = 1/75 second.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
