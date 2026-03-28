@@ -1,5 +1,5 @@
 [package]
-name = "etp-find"
+name = "etp-tree"
 version = "0.2.0"
 edition = "2024"
 
@@ -7,7 +7,7 @@ edition = "2024"
 profiling = ["etp-lib/profiling"]
 
 [dependencies]
-etp-lib = { path = "../etp-lib" }
+etp-lib = { path = "../../crates/etp-lib" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 

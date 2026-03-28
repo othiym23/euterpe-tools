@@ -4,9 +4,16 @@ Implementation details and architecture for euterpe-tools. For conventions and
 commands, see [CLAUDE.md](../CLAUDE.md). For architectural decisions, see
 [docs/adrs/](adrs/).
 
+## Repository Structure
+
+- `crates/` — Rust libraries (etp-lib, etp-cue)
+- `cmd/` — all plumbing commands (Rust binaries and Python entry points)
+- `pylib/` — Python shared library (`etp_lib`)
+- `conf/` — KDL configuration files
+
 ## Rust Crates
 
-Library crate (`etp-lib/src/lib.rs`) re-exports shared modules:
+Library crate (`crates/etp-lib/src/lib.rs`) re-exports shared modules:
 
 - `ops.rs` — shared operations used by all binary crates
 - `scanner.rs` — walkdir-based scanning; skips unchanged directories by mtime
@@ -43,20 +50,19 @@ Each binary crate has a `build.rs` that embeds the short git hash in
 
 ## Python Package
 
-`etp/` is an installable Python package (`uv tool install .`):
+Python commands live in `cmd/etp/etp_commands/`:
 
-- `src/etp_commands/dispatcher.py` — git-style dispatcher (`etp <cmd>` →
-  `etp-<cmd>`)
-- `src/etp_commands/anime.py` — interactive anime collection manager
-  (triage/series/episode subcommands)
-- `src/etp_commands/catalog.py` — KDL-configured catalog orchestrator
-- `src/etp_lib/paths.py` — XDG-based path resolution and binary search
-- `src/etp_lib/media_parser.py` — tokenizer/parser for anime/media file paths
+- `dispatcher.py` — git-style dispatcher (`etp <cmd>` → `etp-<cmd>`)
+- `anime.py` — interactive anime collection manager
+- `catalog.py` — KDL-configured catalog orchestrator
 
-`scripts/` contains the legacy Python orchestrator (`catalog-nas.py`) driven by
-`catalog.toml`, superseded by `etp catalog` with KDL config.
+Python shared library lives in `pylib/etp_lib/`:
 
-`conf/` contains KDL configuration files (`catalog.kdl`).
+- `paths.py` — XDG-based path resolution and binary search
+- `media_parser.py` — tokenizer/parser for anime/media file paths
+- `anidb.py`, `tvdb.py` — API clients with local caching
+
+`conf/` contains KDL configuration files.
 
 ## Database
 

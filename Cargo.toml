@@ -1,3 +1,12 @@
 [workspace]
-members = ["etp-lib", "etp-cas", "etp-cue", "etp-csv", "etp-tree", "etp-find", "etp-meta", "etp-query"]
+members = [
+    "crates/etp-lib",
+    "crates/etp-cue",
+    "cmd/etp-cas",
+    "cmd/etp-csv",
+    "cmd/etp-find",
+    "cmd/etp-meta",
+    "cmd/etp-query",
+    "cmd/etp-tree",
+]
 resolver = "3"

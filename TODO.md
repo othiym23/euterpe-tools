@@ -7,47 +7,57 @@ Tasks should be marked as done when they are incorporated into the plan, and
 then removed once it has been verified that they have been completely
 implemented.
 
-## SP 1.5
+## Backlog (not assigned to a subproject)
 
-- [x] add an `etp-find` command that takes a pattern and finds all paths
-      matching that pattern
-  - [x] extend `etp-find` to take `--tree=outfile.tree` and `--csv=outfile.csv`
-        command-line switches to produce output in tree and / or csv formats;
-        support using `-` for the file path to put the output on stdout
-  - [x] extend `etp-find` to take a `--size` parameter to provide a
-        human-readable summary (KiB, MiB, GiB, etc; two significant digit
-        precision) of the sizes of all of the matched paths at the end (if
-        --tree=- and/or --csv=- are invoked) of etp-find output
-- [x] etp-find bug: `--tree` should print the files matched and not just the
-      directories (also the number of files should be included in the count)
-- [x] etp-find feature: don't do a scan unless the database doesn't exist
-- [x] etp-find feature: add '-I' / '--insensitive' for case-insensitive matching
-- [x] etp-find feature: don't require a directory parameter (match against all
-      paths in the db)
-- [x] etp-csv, etp-tree: add a `--find` option to both `etp-tree` and `etp-csv`
-      that uses the same search logic as `etp-find` – just a different way to
-      invoke the same functionality
-
-## SP 1.6
-
-- [ ] why do we need both `etp/` and `scripts/`?
-- [ ] refactor plumbing binaries to go into .local/share/libexec
-- [ ] etp-scan: add a new plumbing command that extracts the scanning portion
-      into its own command, and refactor porcelain to manage scanning before
-      calling etp-tree and etp-csv unless `--no-scan` is passed to the
-      porcelain. Remove `--no-scan` option from `etp-csv` and `etp-tree` and
-      clean up those tools' source.
+- [ ] etp-scan: extract the scanning portion into its own plumbing command and
+      refactor etp-csv/etp-tree to use `--no-scan` by default with scanning
+      managed by porcelain or a separate etp-scan invocation
 - [ ] create README with description of all porcelain commands and with
       installation instructions
-
-## SP 2
-
-- [ ] add change and rename detection to file scanner as part of metadata
-      scanning. use inode changes to trace renames and Btrfs transid to
-      double-check whether file contents have changed before scanning
 - [ ] write a utility to truncate media files for various formats to just
       include the metadata blocks and enough frame data to be a valid media file
-      for that encoding. This will be useful for gathering test cases to for
-      metadata tag reading and updating.
+      for that encoding. Useful for gathering test cases for metadata tag
+      reading and updating.
 - [ ] write a function to fingerprint the metadata blocks without reading the
       whole media file
+- [ ] store BLAKE3 content hash in the files table during metadata scan to
+      simplify move tracking (eliminates I/O-heavy hashing during reconciliation
+      and enables content-based deduplication detection)
+
+## SP 3.1: Metadata Write Path
+
+- [ ] safe writes via lofty: read → write to temp → rename → re-read → update DB
+- [ ] coalesced updates: collect all changes per file, apply in a single write
+- [ ] Plex compatibility: use standard tag field names
+- [ ] `etp meta write <file> --tag artist --value "X"` CLI
+
+## SP 3.1b: MusicBrainz Read-Through Cache
+
+- [ ] local cache with high/infinite TTL, refresh-on-request
+- [ ] batch-first: prefer few large API requests over many small ones
+- [ ] rate limiting (1 req/sec authenticated)
+- [ ] disc ID → release lookup
+- [ ] verify MB metadata is current (for quality checks)
+
+## SP 3.2: Lua Scripting Runtime
+
+- [ ] mlua + LuaJIT embedded in Rust
+- [ ] Lua API: file:tag(), file:set_tag(), file.path, file.format, etp.run()
+- [ ] batch runner with coalesced writes
+- [ ] script errors don't cause partial writes
+
+## SP 3.3: Quality Checking
+
+- [ ] `etp meta check` subcommand
+- [ ] missing required tags, inconsistent album metadata
+- [ ] missing cover art, oversized images
+- [ ] encoding issues (non-UTF-8)
+- [ ] duplicate files by content hash
+- [ ] missing MusicBrainz GUIDs
+- [ ] verify MusicBrainz metadata is current (uses SP3.1b cache)
+
+## SP 3.4: Declarative Transforms
+
+- [ ] CSV/spreadsheet metadata import with diff against DB state
+- [ ] external binary callouts via etp.run() in Lua
+- [ ] everything feeds into the coalesced write pipeline

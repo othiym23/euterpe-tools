@@ -1,8 +1,0 @@
-{
-  "pythonVersion": "3.14",
-  "pythonPlatform": "Linux",
-  "include": ["catalog-nas.py", "test_catalog.py"],
-  "exclude": [".venv"],
-  "typeCheckingMode": "basic",
-  "reportMissingModuleSource": false
-}

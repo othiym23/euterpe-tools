@@ -3,8 +3,22 @@
 Incremental CLI filesystem scanner and audio metadata manager for a Synology
 NAS. See [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) for architecture details.
 
-Cargo workspace: `etp-lib`, `etp-cas`, `etp-csv`, `etp-tree`, `etp-find`,
-`etp-meta`. Installable Python package in `etp/` (uses `uv tool install .`).
+## Repository layout
+
+```
+crates/          Rust libraries (etp-lib, etp-cue)
+cmd/             All plumbing commands, any language
+  etp-csv/       Rust — CSV output
+  etp-tree/      Rust — tree output
+  etp-find/      Rust — regex file search
+  etp-meta/      Rust — metadata scan/read/cue
+  etp-cas/       Rust — CAS blob operations
+  etp-query/     Rust — database queries
+  etp/           Python — porcelain dispatcher + anime + catalog
+pylib/           Python shared library (etp_lib)
+conf/            KDL configuration files
+docs/            Plans, ADRs, design notes
+```
 
 ## Build & run
 
@@ -12,20 +26,22 @@ Cargo workspace: `etp-lib`, `etp-cas`, `etp-csv`, `etp-tree`, `etp-find`,
 just build-smoketest  # verify all crates compile
 just build            # native release (aarch64-apple-darwin)
 just build-nas        # NAS release (x86_64-unknown-linux-musl, static)
-just deploy           # check + test + build + mount NAS + copy everything
+just deploy           # check + test + build + copy to NAS
 
-# Rust plumbing
+# Rust plumbing (in cmd/)
 etp-csv <directory> [--output <file.csv>] [--db <file.db>] [--exclude <name>...] [-v]
 etp-tree <directory> [--db <file.db>] [--exclude <name>...] [--du [--du-subs]] [-v]
 etp-find <pattern> [-R <directory>] [--tree=<file>] [--csv=<file>] [--size] [-i] [--db <path>] [-v]
 etp-meta scan [-R <directory>] [--db <path>] [-e <name>...] [--force] [-v]
 etp-meta read <file> [--images]
+etp-meta cue <file> [--audio-file PATH...] [--format summary|cuetools|eac]
 etp-cas store <file>
 etp-cas get <hash> [-o PATH]
 etp-cas gc --db <path> [-v]
 etp-cas list
+etp-query --db <path> files|tags|find|stats|size|sql [args...]
 
-# Python porcelain
+# Python porcelain (in cmd/etp/)
 etp tree <directory> [args...]
 etp find <pattern> [-R <directory>] [args...]
 etp catalog [--dry-run] [config.kdl]
@@ -36,7 +52,7 @@ etp anime triage|series|episode [args...]
 
 ```bash
 just check  # clippy + ruff + pyright + ty + prettier
-just test   # cargo nextest + pytest (scripts + etp)
+just test   # cargo nextest + pytest
 ```
 
 Tests run via `cargo-nextest`. CLI snapshot tests use trycmd — each
