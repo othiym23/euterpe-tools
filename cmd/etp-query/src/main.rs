@@ -65,29 +65,14 @@ enum Commands {
     },
 }
 
-/// Determine whether system files should be included for a given subcommand.
-/// etp-query defaults to INCLUDING system files (opposite of tree/csv/find),
-/// except for `stats` which defaults to EXCLUDING them because system file
-/// counts and sizes would skew the statistics. `sql` bypasses filtering entirely.
-/// See docs/adrs/2026-03-28-03-query-system-file-defaults.md.
-fn resolve_system_files(command: &Commands, include_flag: bool, no_include_flag: bool) -> bool {
-    let default_include = !matches!(command, Commands::Stats);
-    ops::resolve_bool_pair(
-        include_flag,
-        no_include_flag,
-        "include-system-files",
-        default_include,
-    )
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
-    let include_system = resolve_system_files(
-        &cli.command,
-        cli.include_system_files,
-        cli.no_include_system_files,
-    );
+
+    let config = etp_lib::config::load_runtime_config().unwrap_or_else(|e| {
+        eprintln!("warning: failed to load config: {e}");
+        etp_lib::config::RuntimeConfig::defaults()
+    });
 
     let db_path = cli.db.unwrap_or_else(|| {
         eprintln!("error: --db is required");
@@ -114,10 +99,18 @@ async fn main() {
         }
     };
 
-    // etp-query defaults to showing system files (it's a low-level command).
-    // show_hidden is always true — etp-query doesn't hide dotfiles.
-    let mut filter = ops::FilterConfig::new(include_system);
-    filter.show_hidden = true;
+    // etp-query defaults to including system files (it's a low-level command),
+    // except stats which excludes them (they skew statistics). show_hidden is
+    // always true — etp-query doesn't hide dotfiles.
+    // See docs/adrs/2026-03-28-03-query-system-file-defaults.md.
+    let include_default = !matches!(cli.command, Commands::Stats);
+    let filter = ops::FilterConfig::from_config(
+        &config,
+        cli.include_system_files,
+        cli.no_include_system_files,
+        include_default,
+        true,
+    );
 
     match cli.command {
         Commands::Files { directory } => {

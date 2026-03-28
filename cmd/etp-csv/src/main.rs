@@ -75,13 +75,21 @@ async fn main() {
         None
     };
 
-    let output = cli
-        .output
-        .unwrap_or_else(|| cli.directory.join("index.csv"));
+    let config = etp_lib::config::load_runtime_config().unwrap_or_else(|e| {
+        eprintln!("warning: failed to load config: {e}");
+        etp_lib::config::RuntimeConfig::defaults()
+    });
+
+    let (directory, db) = match ops::resolve_nickname(&cli.directory, &config) {
+        Some((root, db_path)) => (root, Some(db_path)),
+        None => (cli.directory.clone(), cli.db),
+    };
+
+    let output = cli.output.unwrap_or_else(|| directory.join("index.csv"));
 
     let ctx = ops::open_and_resolve_scan(
-        &cli.directory,
-        cli.db,
+        &directory,
+        db,
         cli.scan,
         cli.no_scan,
         &cli.exclude,
@@ -89,9 +97,11 @@ async fn main() {
     )
     .await;
 
-    let filter = ops::FilterConfig::from_flags(
+    let filter = ops::FilterConfig::from_config(
+        &config,
         cli.include_system_files,
         cli.no_include_system_files,
+        false,
         cli.all,
     );
 

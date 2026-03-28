@@ -79,10 +79,25 @@ async fn main() {
         None
     };
 
+    let config = etp_lib::config::load_runtime_config().unwrap_or_else(|e| {
+        eprintln!("warning: failed to load config: {e}");
+        etp_lib::config::RuntimeConfig::defaults()
+    });
+
     let pattern = ops::compile_pattern(&cli.pattern, cli.insensitive);
 
+    // Resolve nickname if directory is given but doesn't exist as a path.
+    let (directory, explicit_db) = if let Some(ref dir) = cli.directory {
+        match ops::resolve_nickname(dir, &config) {
+            Some((root, db_path)) => (Some(root), Some(db_path)),
+            None => (Some(dir.clone()), cli.db.clone()),
+        }
+    } else {
+        (None, cli.db.clone())
+    };
+
     // When no directory is given, --db is required and we search all scans.
-    let db_path = match (&cli.directory, &cli.db) {
+    let db_path = match (&directory, &explicit_db) {
         (Some(dir), Some(db)) => {
             ops::validate_directory(dir);
             db.clone()
@@ -109,7 +124,7 @@ async fn main() {
         });
 
     // Resolve scan_id when a directory is given; None means search all scans.
-    let scan_id: Option<i64> = if let Some(ref dir) = cli.directory {
+    let scan_id: Option<i64> = if let Some(ref dir) = directory {
         let canon = dir.canonicalize().unwrap_or(dir.clone());
         let run_type = canon.to_string_lossy();
 
@@ -148,9 +163,11 @@ async fn main() {
         None
     };
 
-    let filter = ops::FilterConfig::from_flags(
+    let filter = ops::FilterConfig::from_config(
+        &config,
         cli.include_system_files,
         cli.no_include_system_files,
+        false,
         cli.all,
     );
 
@@ -177,7 +194,7 @@ async fn main() {
 
         // Write tree output (requires a root directory for the tree)
         if let Some(ref tree_path) = cli.tree {
-            if let Some(ref dir) = cli.directory {
+            if let Some(ref dir) = directory {
                 ops::render_find_tree(&matches, dir, tree_path).unwrap_or_else(|e| {
                     eprintln!("error rendering tree: {}", e);
                     std::process::exit(1);

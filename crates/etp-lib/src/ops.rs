@@ -152,6 +152,7 @@ impl FilterConfig {
     }
 
     /// Create from CLI flags, resolving conflicts with warnings.
+    /// Uses hardcoded default patterns.
     pub fn from_flags(
         include_system_flag: bool,
         no_include_system_flag: bool,
@@ -166,6 +167,28 @@ impl FilterConfig {
         Self {
             system_patterns: default_system_patterns(),
             user_excludes: default_user_exclude_patterns(),
+            include_system_files: include,
+            show_hidden,
+        }
+    }
+
+    /// Create from CLI flags and RuntimeConfig patterns.
+    pub fn from_config(
+        config: &crate::config::RuntimeConfig,
+        include_system_flag: bool,
+        no_include_system_flag: bool,
+        include_default: bool,
+        show_hidden: bool,
+    ) -> Self {
+        let include = resolve_bool_pair(
+            include_system_flag,
+            no_include_system_flag,
+            "include-system-files",
+            include_default,
+        );
+        Self {
+            system_patterns: config.system_patterns.clone(),
+            user_excludes: parse_ignore_patterns(&config.user_excludes),
             include_system_files: include,
             show_hidden,
         }
@@ -229,6 +252,22 @@ pub fn parse_ignore_patterns(patterns: &[String]) -> Vec<glob::Pattern> {
             }
         })
         .collect()
+}
+
+/// Try to resolve a directory argument as a database nickname. If the path
+/// doesn't exist as a directory, look it up in the config's database entries.
+/// Returns `(directory, db_path)` if found, or `None` if not a nickname.
+pub fn resolve_nickname(
+    directory: &Path,
+    config: &crate::config::RuntimeConfig,
+) -> Option<(PathBuf, PathBuf)> {
+    if directory.is_dir() {
+        return None;
+    }
+    let name = directory.to_string_lossy();
+    config
+        .resolve_database(&name)
+        .map(|entry| (entry.root.clone(), entry.db.clone()))
 }
 
 /// Result of opening a database and resolving a scan for a directory.
