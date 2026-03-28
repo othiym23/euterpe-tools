@@ -863,6 +863,63 @@ pub async fn referenced_blob_hashes(pool: &SqlitePool) -> Result<HashSet<String>
     Ok(rows.into_iter().map(|(h,)| h).collect())
 }
 
+/// SQL expression that reconstructs the full file path from root_path, dir_path,
+/// and filename. Used in multiple query functions.
+const FULL_PATH_SQL: &str =
+    "s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename";
+
+/// Count of files in a scan.
+pub async fn count_files(pool: &SqlitePool, scan_id: i64) -> Result<i64, sqlx::Error> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         WHERE d.scan_id = ?",
+    )
+    .bind(scan_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// List files filtered by a directory path prefix. The prefix is matched
+/// against the full reconstructed path. Pass an empty string to list all files.
+pub async fn list_files_in_directory(
+    pool: &SqlitePool,
+    scan_id: i64,
+    dir_prefix: &str,
+) -> Result<Vec<FileRecord>, sqlx::Error> {
+    let pattern = format!("{dir_prefix}%");
+    let query = format!(
+        "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+         FROM files f
+         JOIN directories d ON f.dir_id = d.id
+         JOIN scans s ON d.scan_id = s.id
+         WHERE d.scan_id = ? AND {FULL_PATH_SQL} LIKE ?"
+    );
+    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(&query)
+        .bind(scan_id)
+        .bind(&pattern)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(root, dir_path, filename, size, ctime, mtime)| {
+            let full_path = if dir_path.is_empty() {
+                root
+            } else {
+                format!("{root}/{dir_path}")
+            };
+            FileRecord {
+                dir_path: full_path,
+                filename,
+                size: size as u64,
+                ctime,
+                mtime,
+            }
+        })
+        .collect())
+}
+
 /// Look up a file's database ID by matching against the full reconstructed path.
 /// The `path_suffix` is matched against `root_path/dir_path/filename` using
 /// a trailing match, so both absolute and relative paths work.
@@ -872,18 +929,19 @@ pub async fn find_file_id_by_path_suffix(
     path_suffix: &str,
 ) -> Result<Option<i64>, sqlx::Error> {
     let pattern = format!("%{path_suffix}");
-    let row: Option<(i64,)> = sqlx::query_as(
+    let query = format!(
         "SELECT f.id FROM files f
          JOIN directories d ON f.dir_id = d.id
          JOIN scans s ON d.scan_id = s.id
          WHERE d.scan_id = ?
-           AND (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) LIKE ?
-         LIMIT 1",
-    )
-    .bind(scan_id)
-    .bind(&pattern)
-    .fetch_optional(pool)
-    .await?;
+           AND ({FULL_PATH_SQL}) LIKE ?
+         LIMIT 1"
+    );
+    let row: Option<(i64,)> = sqlx::query_as(&query)
+        .bind(scan_id)
+        .bind(&pattern)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|(id,)| id))
 }
 
@@ -899,29 +957,33 @@ pub async fn find_files_by_tag(
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
     let (query, needs_scan_id) = if scan_id.is_some() {
         (
-            "SELECT s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename, m.value
-             FROM metadata m
-             JOIN files f ON m.file_id = f.id
-             JOIN directories d ON f.dir_id = d.id
-             JOIN scans s ON d.scan_id = s.id
-             WHERE d.scan_id = ? AND m.tag_name = ? AND m.value LIKE ?
-             ORDER BY d.path, f.filename",
+            format!(
+                "SELECT {FULL_PATH_SQL}, m.value
+                 FROM metadata m
+                 JOIN files f ON m.file_id = f.id
+                 JOIN directories d ON f.dir_id = d.id
+                 JOIN scans s ON d.scan_id = s.id
+                 WHERE d.scan_id = ? AND m.tag_name = ? AND m.value LIKE ?
+                 ORDER BY d.path, f.filename"
+            ),
             true,
         )
     } else {
         (
-            "SELECT s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename, m.value
-             FROM metadata m
-             JOIN files f ON m.file_id = f.id
-             JOIN directories d ON f.dir_id = d.id
-             JOIN scans s ON d.scan_id = s.id
-             WHERE m.tag_name = ? AND m.value LIKE ?
-             ORDER BY d.path, f.filename",
+            format!(
+                "SELECT {FULL_PATH_SQL}, m.value
+                 FROM metadata m
+                 JOIN files f ON m.file_id = f.id
+                 JOIN directories d ON f.dir_id = d.id
+                 JOIN scans s ON d.scan_id = s.id
+                 WHERE m.tag_name = ? AND m.value LIKE ?
+                 ORDER BY d.path, f.filename"
+            ),
             false,
         )
     };
 
-    let mut q = sqlx::query_as::<_, (String, String)>(query);
+    let mut q = sqlx::query_as::<_, (String, String)>(&query);
     if needs_scan_id {
         q = q.bind(scan_id.unwrap());
     }
@@ -969,7 +1031,7 @@ pub async fn query_files_where(
     where_clause: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
     let query = format!(
-        "SELECT DISTINCT s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename
+        "SELECT DISTINCT {FULL_PATH_SQL}
          FROM files f
          JOIN directories d ON f.dir_id = d.id
          JOIN scans s ON d.scan_id = s.id

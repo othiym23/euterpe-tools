@@ -88,20 +88,15 @@ async fn main() {
 
     match cli.command {
         Commands::Files { directory } => {
-            let files = db::dao::list_files(&pool, scan_id)
+            let prefix = directory.as_deref().unwrap_or("");
+            let files = db::dao::list_files_in_directory(&pool, scan_id, prefix)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
             for f in &files {
-                let full = format!("{}/{}", f.dir_path, f.filename);
-                if let Some(ref dir) = directory
-                    && !full.starts_with(dir)
-                {
-                    continue;
-                }
-                println!("{full}");
+                println!("{}/{}", f.dir_path, f.filename);
             }
         }
         Commands::Tags { file } => {
@@ -157,14 +152,12 @@ async fn main() {
         }
         Commands::Stats => {
             let total = db::dao::total_size(&pool, scan_id).await.unwrap_or(0);
-            let files = db::dao::list_files(&pool, scan_id)
-                .await
-                .unwrap_or_default();
+            let file_count = db::dao::count_files(&pool, scan_id).await.unwrap_or(0);
             let extensions = db::dao::count_files_by_extension(&pool, Some(scan_id))
                 .await
                 .unwrap_or_default();
 
-            println!("Files: {}", files.len());
+            println!("Files: {file_count}");
             println!("Total size: {}", ops::format_size(total));
             if !extensions.is_empty() {
                 println!("\nBy extension:");
