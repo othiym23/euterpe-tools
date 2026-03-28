@@ -89,3 +89,11 @@ implemented.
 - [ ] CSV/spreadsheet metadata import with diff against DB state
 - [ ] external binary callouts via etp.run() in Lua
 - [ ] everything feeds into the coalesced write pipeline
+
+## Post-SP3: Memory Profiling
+
+- [ ] Profile peak memory of all commands and subcommands against a large
+      sample: scanning + metadata reading against a real directory (200K+
+      files), querying against the resulting database. Identify any O(n) memory
+      usage that should be streaming. Candidates: `list_files` callers, tree
+      rendering data structures, metadata scan file list, CSV output grouping.
