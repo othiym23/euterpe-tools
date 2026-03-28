@@ -99,7 +99,8 @@ pub async fn scan_to_db(
 
         if verbose {
             let file_count = fs::read_dir(dir_path)?.count();
-            eprintln!("scanning: {} ({} files)", relative, file_count);
+            let display_path = if relative.is_empty() { "." } else { &relative };
+            eprintln!("scanning: {display_path} ({file_count} files)");
         }
 
         let mut files = Vec::new();
