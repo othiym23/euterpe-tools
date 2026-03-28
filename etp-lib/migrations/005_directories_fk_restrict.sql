@@ -1,6 +1,8 @@
 -- Add ON DELETE RESTRICT to directories.scan_id foreign key.
 -- SQLite doesn't support ALTER TABLE to modify constraints, so we must
--- recreate the table. This preserves all existing data.
+-- recreate the table. FK checks are disabled at the connection level
+-- during migration (see db/mod.rs) since files.dir_id references
+-- directories(id).
 
 CREATE TABLE directories_new (
     id       INTEGER PRIMARY KEY,

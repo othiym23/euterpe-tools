@@ -139,7 +139,16 @@ async fn migrate(pool: &SqlitePool, verbose: bool) -> Result<(), sqlx::Error> {
         }
     }
 
+    // Temporarily disable FK enforcement during migrations. Some migrations
+    // (e.g., 005) recreate tables that are referenced by foreign keys, which
+    // requires FK checks to be off. Re-enable after migrations complete.
+    sqlx::raw_sql("PRAGMA foreign_keys = OFF")
+        .execute(pool)
+        .await?;
     migrator.run(pool).await?;
+    sqlx::raw_sql("PRAGMA foreign_keys = ON")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

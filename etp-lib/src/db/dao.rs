@@ -991,33 +991,40 @@ pub async fn find_files_by_tag(
     q.fetch_all(pool).await
 }
 
-/// Count files grouped by extension.
+/// Count files grouped by extension (the part after the last dot).
+/// Extension extraction is done in Rust because SQLite lacks a
+/// "last index of" function for reliable multi-dot filename handling.
 pub async fn count_files_by_extension(
     pool: &SqlitePool,
     scan_id: Option<i64>,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     let query = if scan_id.is_some() {
-        "SELECT lower(substr(f.filename, instr(f.filename, '.') + 1)) AS ext,
-                COUNT(*) AS cnt
-         FROM files f
+        "SELECT f.filename FROM files f
          JOIN directories d ON f.dir_id = d.id
-         WHERE d.scan_id = ? AND instr(f.filename, '.') > 0
-         GROUP BY ext
-         ORDER BY cnt DESC"
+         WHERE d.scan_id = ?"
     } else {
-        "SELECT lower(substr(f.filename, instr(f.filename, '.') + 1)) AS ext,
-                COUNT(*) AS cnt
-         FROM files f
-         WHERE instr(f.filename, '.') > 0
-         GROUP BY ext
-         ORDER BY cnt DESC"
+        "SELECT f.filename FROM files f"
     };
 
-    let mut q = sqlx::query_as::<_, (String, i64)>(query);
+    let mut q = sqlx::query_as::<_, (String,)>(query);
     if let Some(id) = scan_id {
         q = q.bind(id);
     }
-    q.fetch_all(pool).await
+    let rows = q.fetch_all(pool).await?;
+
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for (filename,) in &rows {
+        if let Some(dot_pos) = filename.rfind('.') {
+            let ext = filename[dot_pos + 1..].to_ascii_lowercase();
+            if !ext.is_empty() {
+                *counts.entry(ext).or_default() += 1;
+            }
+        }
+    }
+
+    let mut result: Vec<(String, i64)> = counts.into_iter().collect();
+    result.sort_by(|a, b| b.1.cmp(&a.1));
+    Ok(result)
 }
 
 /// Execute a custom WHERE clause against files+metadata.
