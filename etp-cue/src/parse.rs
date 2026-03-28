@@ -13,6 +13,7 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
 
     let mut current_file: Option<CueFile> = None;
     let mut current_track: Option<CueTrack> = None;
+    let mut saw_index01 = false;
 
     for line in content.lines() {
         let line = line.trim();
@@ -25,7 +26,7 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
             "REM" => parse_rem(line, &mut sheet),
             "CATALOG" => sheet.catalog = extract_value(line, "CATALOG"),
             "PERFORMER" => {
-                let val = extract_quoted_or_value(line, "PERFORMER");
+                let val = extract_value(line, "PERFORMER");
                 if let Some(ref mut track) = current_track {
                     track.performer = val;
                 } else {
@@ -33,7 +34,7 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
                 }
             }
             "TITLE" => {
-                let val = extract_quoted_or_value(line, "TITLE");
+                let val = extract_value(line, "TITLE");
                 if let Some(ref mut track) = current_track {
                     track.title = val;
                 } else {
@@ -42,6 +43,12 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
             }
             "FILE" => {
                 // Flush current track into current file
+                if let Some(ref track) = current_track
+                    && track.track_type == "AUDIO"
+                    && !saw_index01
+                {
+                    return Err(format!("track {} missing INDEX 01", track.number));
+                }
                 if let Some(track) = current_track.take()
                     && let Some(ref mut file) = current_file
                 {
@@ -59,7 +66,13 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
                 });
             }
             "TRACK" => {
-                // Flush current track into current file
+                // Validate and flush current track into current file
+                if let Some(ref track) = current_track
+                    && track.track_type == "AUDIO"
+                    && !saw_index01
+                {
+                    return Err(format!("track {} missing INDEX 01", track.number));
+                }
                 if let Some(track) = current_track.take()
                     && let Some(ref mut file) = current_file
                 {
@@ -77,10 +90,13 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
                     index01: CueTime::ZERO,
                     postgap: None,
                 });
+                saw_index01 = false;
             }
             "INDEX" => {
-                if let Some(ref mut track) = current_track {
-                    parse_index(line, track)?;
+                if let Some(ref mut track) = current_track
+                    && parse_index(line, track)?
+                {
+                    saw_index01 = true;
                 }
             }
             "PREGAP" => {
@@ -102,7 +118,13 @@ pub fn parse_cue_sheet(content: &str) -> Result<CueSheet, String> {
         }
     }
 
-    // Flush remaining track and file
+    // Validate and flush remaining track and file
+    if let Some(ref track) = current_track
+        && track.track_type == "AUDIO"
+        && !saw_index01
+    {
+        return Err(format!("track {} missing INDEX 01", track.number));
+    }
     if let Some(track) = current_track
         && let Some(ref mut file) = current_file
     {
@@ -129,7 +151,8 @@ fn parse_rem(line: &str, sheet: &mut CueSheet) {
 
 fn parse_file_line(line: &str) -> (String, String) {
     // FILE "filename" TYPE  or  FILE filename TYPE
-    let after_cmd = line[4..].trim();
+    // "FILE" is always 4 ASCII bytes; use the keyword length for clarity
+    let after_cmd = line["FILE".len()..].trim();
     if let Some(rest) = after_cmd.strip_prefix('"')
         && let Some(end_quote) = rest.find('"')
     {
@@ -158,7 +181,8 @@ fn parse_track_line(line: &str) -> Result<(u32, String), String> {
     Ok((number, track_type))
 }
 
-fn parse_index(line: &str, track: &mut CueTrack) -> Result<(), String> {
+/// Returns true if INDEX 01 was set.
+fn parse_index(line: &str, track: &mut CueTrack) -> Result<bool, String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 3 {
         return Err(format!("invalid INDEX line: {line}"));
@@ -167,12 +191,13 @@ fn parse_index(line: &str, track: &mut CueTrack) -> Result<(), String> {
         .parse()
         .map_err(|_| format!("invalid index number: {}", parts[1]))?;
     let time = parse_time(parts[2])?;
+    let is_index01 = index_num == 1;
     match index_num {
         0 => track.index00 = Some(time),
         1 => track.index01 = time,
         _ => {} // INDEX 02+ ignored
     }
-    Ok(())
+    Ok(is_index01)
 }
 
 fn parse_time(s: &str) -> Result<CueTime, String> {
@@ -189,6 +214,12 @@ fn parse_time(s: &str) -> Result<CueTime, String> {
     let frames: u32 = parts[2]
         .parse()
         .map_err(|_| format!("invalid frames: {}", parts[2]))?;
+    if seconds > 59 {
+        return Err(format!("seconds out of range (0-59): {seconds}"));
+    }
+    if frames > 74 {
+        return Err(format!("frames out of range (0-74): {frames}"));
+    }
     Ok(CueTime::new(minutes, seconds, frames))
 }
 
@@ -204,10 +235,6 @@ fn extract_value(line: &str, cmd: &str) -> Option<String> {
     } else {
         Some(unquote(after))
     }
-}
-
-fn extract_quoted_or_value(line: &str, cmd: &str) -> Option<String> {
-    extract_value(line, cmd)
 }
 
 fn unquote(s: &str) -> String {
@@ -323,5 +350,32 @@ FILE "test.wav" WAVE
         assert_eq!(sheet.genre.as_deref(), Some("Jazz"));
         assert_eq!(sheet.date.as_deref(), Some("2005"));
         assert_eq!(sheet.track_count(), 1);
+    }
+
+    #[test]
+    fn test_missing_index01_is_error() {
+        let cue = r#"FILE "test.wav" WAVE
+  TRACK 01 AUDIO
+    TITLE "No index"
+"#;
+        assert!(parse_cue_sheet(cue).is_err());
+    }
+
+    #[test]
+    fn test_invalid_seconds_rejected() {
+        let cue = r#"FILE "test.wav" WAVE
+  TRACK 01 AUDIO
+    INDEX 01 00:60:00
+"#;
+        assert!(parse_cue_sheet(cue).is_err());
+    }
+
+    #[test]
+    fn test_invalid_frames_rejected() {
+        let cue = r#"FILE "test.wav" WAVE
+  TRACK 01 AUDIO
+    INDEX 01 00:00:75
+"#;
+        assert!(parse_cue_sheet(cue).is_err());
     }
 }
