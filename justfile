@@ -91,12 +91,17 @@ deploy: check test build-nas
     for bin in etp-csv etp-tree etp-find etp-meta etp-cas etp-query; do
         cp "target/x86_64-unknown-linux-musl/release/$bin" "{{ nas_home }}/.local/libexec/etp/"
     done
-    # Python package → copy source and uv tool install on NAS
-    mkdir -p "{{ nas_home }}/.local/src/etp"
+    # Python package → mirror repo structure so pyproject.toml paths work
+    dest="{{ nas_home }}/.local/src/etp"
+    mkdir -p "$dest/pylib" "$dest/cmd/etp"
     rsync -a --delete \
-        --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
-        --exclude .ruff_cache --exclude '*.pyc' --exclude test-data \
-        pylib/ cmd/etp/ pyproject.toml uv.lock "{{ nas_home }}/.local/src/etp/"
+        --exclude __pycache__ --exclude .pytest_cache \
+        --exclude .ruff_cache --exclude '*.pyc' \
+        pylib/ "$dest/pylib/"
+    rsync -a --delete \
+        --exclude __pycache__ --exclude '*.pyc' \
+        cmd/etp/ "$dest/cmd/etp/"
+    cp pyproject.toml uv.lock "$dest/"
     ssh ogd@{{ nas_host }} "cd ~/.local/src/etp && ~/.local/bin/uv tool install --force --python python3.14 ."
     # Config ($HOME/.config/euterpe-tools/) — don't overwrite existing
     mkdir -p "{{ nas_home }}/.config/euterpe-tools"
