@@ -1,0 +1,15 @@
+[package]
+name = "etp-scan"
+version = "0.2.0"
+edition = "2024"
+
+[features]
+profiling = ["etp-lib/profiling"]
+
+[dependencies]
+etp-lib = { path = "../../crates/etp-lib" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[dev-dependencies]
+trycmd = "1.0"

@@ -9,10 +9,10 @@ implemented.
 
 ## Backlog (not assigned to a subproject)
 
-- [ ] etp-scan: extract the scanning portion into its own plumbing command and
-      refactor etp-csv/etp-tree to use `--no-scan` by default with scanning
+- [x] etp-scan: extract the scanning portion into its own plumbing command
+- [ ] refactor etp-csv/etp-tree to use `--no-scan` by default with scanning
       managed by porcelain or a separate etp-scan invocation
-- [ ] create README with description of all porcelain commands and with
+- [x] create README with description of all porcelain commands and with
       installation instructions
 - [ ] write a utility to truncate media files for various formats to just
       include the metadata blocks and enough frame data to be a valid media file
@@ -20,7 +20,7 @@ implemented.
       reading and updating.
 - [ ] write a function to fingerprint the metadata blocks without reading the
       whole media file
-- [ ] store BLAKE3 content hash in the files table during metadata scan to
+- [x] store BLAKE3 content hash in the files table during metadata scan to
       simplify move tracking (eliminates I/O-heavy hashing during reconciliation
       and enables content-based deduplication detection)
 

@@ -1,0 +1,5 @@
+bin.name = "etp-scan"
+args = ["--version"]
+status = "success"
+stdout = "etp-scan 0.2.0 ([..])\n"
+stderr = ""

@@ -574,6 +574,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "etp-scan"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "etp-lib",
+ "tokio",
+ "trycmd",
+]
+
+[[package]]
 name = "etp-tree"
 version = "0.2.0"
 dependencies = [

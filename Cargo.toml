@@ -7,6 +7,7 @@ members = [
     "cmd/etp-find",
     "cmd/etp-meta",
     "cmd/etp-query",
+    "cmd/etp-scan",
     "cmd/etp-tree",
 ]
 resolver = "3"
