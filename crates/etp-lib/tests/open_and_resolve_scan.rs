@@ -24,7 +24,8 @@ async fn scan_mode_creates_db_and_returns_scan_id() {
         false,
         &defaults,
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(ctx.scan_id > 0, "scan_id should be positive");
     assert_eq!(ctx.directory, root);
@@ -56,7 +57,8 @@ async fn no_scan_mode_reads_existing_db() {
         false,
         &RuntimeConfig::defaults(),
     )
-    .await;
+    .await
+    .unwrap();
     let first_scan_id = ctx1.scan_id;
     db::close_db(ctx1.pool).await;
 
@@ -70,7 +72,8 @@ async fn no_scan_mode_reads_existing_db() {
         false,
         &RuntimeConfig::defaults(),
     )
-    .await;
+    .await
+    .unwrap();
     assert_eq!(
         ctx2.scan_id, first_scan_id,
         "should return the same scan_id from existing DB"
@@ -99,7 +102,8 @@ async fn custom_db_path() {
         false,
         &defaults,
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(custom_db.exists(), "DB should be at custom path");
     assert!(
@@ -131,7 +135,8 @@ async fn scan_respects_exclude() {
         false,
         &RuntimeConfig::defaults(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let files = db::dao::list_files(&ctx.pool, ctx.scan_id).await.unwrap();
     assert_eq!(files.len(), 1, "excluded directory should be skipped");
@@ -157,7 +162,8 @@ async fn directory_is_preserved() {
         false,
         &RuntimeConfig::defaults(),
     )
-    .await;
+    .await
+    .unwrap();
     assert_eq!(ctx.directory, root);
 
     db::close_db(ctx.pool).await;

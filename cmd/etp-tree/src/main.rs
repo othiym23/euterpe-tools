@@ -107,7 +107,15 @@ async fn main() {
         cli.verbose,
         &config,
     )
-    .await;
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(if e.to_string().contains("no previous scan") {
+            ops::EXIT_NO_SCAN
+        } else {
+            1
+        });
+    });
 
     let filter = ops::FilterConfig::from_config(
         &config,
@@ -118,10 +126,17 @@ async fn main() {
     );
 
     if let Some(ref find_pattern) = cli.find {
-        let pattern = ops::compile_pattern(find_pattern, cli.insensitive);
+        let pattern = ops::compile_pattern(find_pattern, cli.insensitive).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
         let matches =
             ops::collect_find_matches(&ctx.pool, ctx.scan_id, &pattern, &cli.exclude, &filter)
-                .await;
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
         ops::render_find_tree(&matches, &ctx.directory, "-").unwrap_or_else(|e| {
             eprintln!("error rendering tree: {}", e);
             std::process::exit(1);
@@ -146,7 +161,12 @@ async fn main() {
     }
 
     if cli.du {
-        ops::render_du(&ctx.pool, ctx.scan_id, cli.du_subs).await;
+        ops::render_du(&ctx.pool, ctx.scan_id, cli.du_subs)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
     }
 
     etp_lib::db::close_db(ctx.pool).await;

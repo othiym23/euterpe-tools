@@ -83,7 +83,10 @@ async fn main() {
 
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
-    let db_path = ops::resolve_db_or_default(cli.db.as_deref(), &config);
+    let db_path = ops::resolve_db_or_default(cli.db.as_deref(), &config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     let pool = db::open_db(&db_path, cli.verbose)
         .await

@@ -1,10 +1,10 @@
 use crate::db::dao;
 use crate::{cas, metadata, scanner};
 use crate::{csv_writer, tree};
+use anyhow::{Context, bail};
 use sqlx::SqlitePool;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process;
 use std::time::Instant;
 
 /// Create an ICU collator for locale-aware Unicode sorting (Quaternary
@@ -63,23 +63,20 @@ pub fn resolve_bool_pair(flag: bool, no_flag: bool, flag_name: &str, default: bo
     }
 }
 
-/// Compile a regex pattern, optionally case-insensitive. Exits on invalid pattern.
-pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> regex::Regex {
+/// Compile a regex pattern, optionally case-insensitive.
+pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> anyhow::Result<regex::Regex> {
     regex::RegexBuilder::new(pattern)
         .case_insensitive(case_insensitive)
         .build()
-        .unwrap_or_else(|e| {
-            eprintln!("error: invalid regex '{}': {}", pattern, e);
-            process::exit(1);
-        })
+        .map_err(|e| anyhow::anyhow!("invalid regex '{}': {}", pattern, e))
 }
 
-/// Verify that a path is a directory, exiting with an error if not.
-pub fn validate_directory(root: &Path) {
+/// Verify that a path is a directory.
+pub fn validate_directory(root: &Path) -> anyhow::Result<()> {
     if !root.is_dir() {
-        eprintln!("error: {} is not a directory", root.display());
-        process::exit(1);
+        bail!("{} is not a directory", root.display());
     }
+    Ok(())
 }
 
 /// Check whether a directory path contains any excluded directory name as a
@@ -269,26 +266,28 @@ pub fn resolve_nickname(
 }
 
 /// Resolve a `--db` argument that could be a file path or a database nickname.
-/// Exits with an error if the path doesn't exist and isn't a configured nickname.
-pub fn resolve_db_path(db_arg: &Path, config: &crate::config::RuntimeConfig) -> PathBuf {
+pub fn resolve_db_path(
+    db_arg: &Path,
+    config: &crate::config::RuntimeConfig,
+) -> anyhow::Result<PathBuf> {
     if db_arg.exists() {
-        return db_arg.to_path_buf();
+        return Ok(db_arg.to_path_buf());
     }
     if let Some((_, db)) = resolve_nickname(db_arg, config) {
-        return db;
+        return Ok(db);
     }
-    eprintln!("error: database not found: {}", db_arg.display());
-    eprintln!("provide a path to an existing database, or a nickname from config.kdl");
-    process::exit(1);
+    bail!(
+        "database not found: {}\nprovide a path to an existing database, or a nickname from config.kdl",
+        db_arg.display()
+    );
 }
 
 /// Resolve `--db` with fallback to `default-database` from config.
 /// Accepts a path, a nickname, or falls back to the configured default.
-/// Exits with an error if nothing resolves.
 pub fn resolve_db_or_default(
     db_arg: Option<&Path>,
     config: &crate::config::RuntimeConfig,
-) -> PathBuf {
+) -> anyhow::Result<PathBuf> {
     if let Some(db) = db_arg {
         return resolve_db_path(db, config);
     }
@@ -298,14 +297,15 @@ pub fn resolve_db_or_default(
                 "using default database \"{default_name}\": db={}",
                 entry.db.display()
             );
-            return entry.db.clone();
+            return Ok(entry.db.clone());
         }
         // Validated at config load time, but guard against it anyway
-        eprintln!("error: --db is required (default-database \"{default_name}\" not found)");
-        process::exit(1);
+        bail!(
+            "--db is required (default-database \"{}\" not found)",
+            default_name
+        );
     }
-    eprintln!("error: --db is required");
-    process::exit(1);
+    bail!("--db is required");
 }
 
 /// Result of opening a database and resolving a scan for a directory.
@@ -323,10 +323,6 @@ pub struct ScanContext {
 /// 3. Guard against creating an empty DB when not scanning
 /// 4. Open the database
 /// 5. Canonicalize the directory and resolve the scan_id
-///
-/// Exits with `EXIT_NO_SCAN` (code 2) if no scan exists and `--scan` was not
-/// passed. Exits with code 1 on database or I/O errors.
-#[allow(clippy::too_many_arguments)]
 pub async fn open_and_resolve_scan(
     directory: &Path,
     db: Option<PathBuf>,
@@ -335,9 +331,9 @@ pub async fn open_and_resolve_scan(
     exclude: &[String],
     verbose: bool,
     config: &crate::config::RuntimeConfig,
-) -> ScanContext {
+) -> anyhow::Result<ScanContext> {
     let cas_dir = config.cas_dir.as_deref();
-    validate_directory(directory);
+    validate_directory(directory)?;
 
     // When a directory is given, the DB is co-located or explicit via --db.
     // default-database doesn't apply here — it's for a different scan root.
@@ -345,57 +341,50 @@ pub async fn open_and_resolve_scan(
     let do_scan = resolve_bool_pair(scan, no_scan, "scan", false);
 
     if !do_scan && !db_path.exists() {
-        eprintln!(
-            "error: no previous scan exists for this directory; run etp-scan first, or pass --scan"
-        );
-        process::exit(EXIT_NO_SCAN);
+        bail!("no previous scan exists for this directory; run etp-scan first, or pass --scan");
     }
 
     let pool = crate::db::open_db(&db_path, verbose)
         .await
-        .unwrap_or_else(|e| {
-            eprintln!("error opening database: {e}");
-            process::exit(1);
-        });
+        .context("opening database")?;
 
     let canon = directory.canonicalize().unwrap_or(directory.to_path_buf());
     let run_type = canon.to_string_lossy();
 
     let scan_id = if do_scan {
-        run_scan_to_db(directory, &pool, &run_type, exclude, verbose, cas_dir).await
+        run_scan_to_db(directory, &pool, &run_type, exclude, verbose, cas_dir).await?
     } else {
-        resolve_latest_scan_id(&pool, &run_type, verbose).await
+        resolve_latest_scan_id(&pool, &run_type, verbose).await?
     };
 
-    ScanContext {
+    Ok(ScanContext {
         pool,
         scan_id,
         directory: directory.to_path_buf(),
-    }
+    })
 }
 
-/// Look up the latest scan_id for a directory. Exits with `EXIT_NO_SCAN` if
-/// no scan exists, allowing the porcelain to auto-scan and retry.
-pub async fn resolve_latest_scan_id(pool: &SqlitePool, run_type: &str, verbose: bool) -> i64 {
+/// Look up the latest scan_id for a directory.
+pub async fn resolve_latest_scan_id(
+    pool: &SqlitePool,
+    run_type: &str,
+    verbose: bool,
+) -> anyhow::Result<i64> {
     if verbose {
         eprintln!("using existing database (pass --scan to rescan)");
     }
-    match dao::latest_scan_id(pool, run_type).await {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            eprintln!(
-                "error: no previous scan exists for this directory; run etp-scan first, or pass --scan"
-            );
-            process::exit(EXIT_NO_SCAN);
-        }
-        Err(e) => {
-            eprintln!("error querying database: {}", e);
-            process::exit(1);
+    match dao::latest_scan_id(pool, run_type)
+        .await
+        .context("querying database")?
+    {
+        Some(id) => Ok(id),
+        None => {
+            bail!("no previous scan exists for this directory; run etp-scan first, or pass --scan");
         }
     }
 }
 
-/// Run the DB-backed scanner and log stats. Returns scan_id. Exits on error.
+/// Run the DB-backed scanner and log stats. Returns scan_id.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(name = "run_scan_to_db", skip_all)
@@ -407,25 +396,20 @@ pub async fn run_scan_to_db(
     exclude: &[String],
     verbose: bool,
     cas_dir: Option<&Path>,
-) -> i64 {
-    match scanner::scan_to_db(root, pool, run_type, exclude, verbose, cas_dir).await {
-        Ok((scan_id, stats)) => {
-            if verbose {
-                eprintln!(
-                    "scan complete in {}ms: {} cached, {} scanned, {} removed",
-                    stats.elapsed_ms, stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
-                );
-            }
-            scan_id
-        }
-        Err(e) => {
-            eprintln!("error scanning: {}", e);
-            process::exit(1);
-        }
+) -> anyhow::Result<i64> {
+    let (scan_id, stats) = scanner::scan_to_db(root, pool, run_type, exclude, verbose, cas_dir)
+        .await
+        .context("scanning failed")?;
+    if verbose {
+        eprintln!(
+            "scan complete in {}ms: {} cached, {} scanned, {} removed",
+            stats.elapsed_ms, stats.dirs_cached, stats.dirs_scanned, stats.dirs_removed
+        );
     }
+    Ok(scan_id)
 }
 
-/// Write CSV output from database. Exits on error.
+/// Write CSV output from database.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(name = "write_csv_from_db", skip_all)
@@ -437,14 +421,14 @@ pub async fn write_csv_from_db(
     exclude: &[String],
     filter: &FilterConfig,
     verbose: bool,
-) {
-    if let Err(e) = csv_writer::write_csv_from_db(pool, scan_id, output, exclude, filter).await {
-        eprintln!("error writing CSV: {}", e);
-        process::exit(1);
-    }
+) -> anyhow::Result<()> {
+    csv_writer::write_csv_from_db(pool, scan_id, output, exclude, filter)
+        .await
+        .context("writing CSV")?;
     if verbose {
         eprintln!("wrote {}", output.display());
     }
+    Ok(())
 }
 
 /// Render tree output from database, printing summary line.
@@ -459,10 +443,12 @@ pub async fn render_tree_from_db(
     ignore: &[String],
     filter: &FilterConfig,
     no_escape: bool,
-) -> std::io::Result<()> {
+) -> anyhow::Result<()> {
     let patterns = parse_ignore_patterns(ignore);
     let (dir_count, file_count) =
-        tree::render_tree_from_db(pool, scan_id, root, &patterns, filter, no_escape).await?;
+        tree::render_tree_from_db(pool, scan_id, root, &patterns, filter, no_escape)
+            .await
+            .context("rendering tree")?;
     println!("\n{} directories, {} files", dir_count, file_count);
     Ok(())
 }
@@ -488,31 +474,26 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Render size summary (du replacement). Exits on error.
+/// Render size summary (du replacement).
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(name = "render_du", skip_all)
 )]
-pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) {
+pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) -> anyhow::Result<()> {
     let total = dao::subtree_size(pool, scan_id, "")
         .await
-        .unwrap_or_else(|e| {
-            eprintln!("error querying size: {}", e);
-            process::exit(1);
-        });
+        .context("querying size")?;
     println!("Size: {} (root)", format_size(total));
 
     if show_subs {
         let subs = dao::immediate_subdirectory_sizes(pool, scan_id)
             .await
-            .unwrap_or_else(|e| {
-                eprintln!("error querying subdirectory sizes: {}", e);
-                process::exit(1);
-            });
+            .context("querying subdirectory sizes")?;
         for (name, size) in &subs {
             println!("  {}  {}", format_size(*size), name);
         }
     }
+    Ok(())
 }
 
 /// Stream files from DB, printing matching paths immediately. Returns (count, total_size).
@@ -526,7 +507,7 @@ pub async fn stream_find_matches(
     pattern: &regex::Regex,
     exclude: &[String],
     filter: &FilterConfig,
-) -> (usize, u64) {
+) -> anyhow::Result<(usize, u64)> {
     use crate::finder;
     use std::future::poll_fn;
     use std::pin::Pin;
@@ -541,28 +522,21 @@ pub async fn stream_find_matches(
     })
     .await
     {
-        match result {
-            Ok(record) => {
-                if is_excluded_path(&record.dir_path, exclude) {
-                    continue;
-                }
-                if !filter.should_show(&record.dir_path, &record.filename) {
-                    continue;
-                }
-                if let Some(m) = finder::matches_pattern(&record, pattern) {
-                    println!("{}", m.full_path);
-                    total_size += m.size;
-                    count += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("error reading from database: {}", e);
-                process::exit(1);
-            }
+        let record = result.context("reading from database")?;
+        if is_excluded_path(&record.dir_path, exclude) {
+            continue;
+        }
+        if !filter.should_show(&record.dir_path, &record.filename) {
+            continue;
+        }
+        if let Some(m) = finder::matches_pattern(&record, pattern) {
+            println!("{}", m.full_path);
+            total_size += m.size;
+            count += 1;
         }
     }
 
-    (count, total_size)
+    Ok((count, total_size))
 }
 
 /// Collect all matching files into a Vec. Returns the matches.
@@ -576,20 +550,19 @@ pub async fn collect_find_matches(
     pattern: &regex::Regex,
     exclude: &[String],
     filter: &FilterConfig,
-) -> Vec<crate::finder::FindMatch> {
+) -> anyhow::Result<Vec<crate::finder::FindMatch>> {
     use crate::finder;
 
-    let files = dao::list_files(pool, scan_id).await.unwrap_or_else(|e| {
-        eprintln!("error reading from database: {}", e);
-        process::exit(1);
-    });
+    let files = dao::list_files(pool, scan_id)
+        .await
+        .context("reading from database")?;
 
-    files
+    Ok(files
         .iter()
         .filter(|record| !is_excluded_path(&record.dir_path, exclude))
         .filter(|record| filter.should_show(&record.dir_path, &record.filename))
         .filter_map(|record| finder::matches_pattern(record, pattern))
-        .collect()
+        .collect())
 }
 
 /// Stream files from all scans in DB, printing matching paths. Returns (count, total_size).
@@ -602,7 +575,7 @@ pub async fn stream_find_all_matches(
     pattern: &regex::Regex,
     exclude: &[String],
     filter: &FilterConfig,
-) -> (usize, u64) {
+) -> anyhow::Result<(usize, u64)> {
     use crate::finder;
     use std::future::poll_fn;
     use std::pin::Pin;
@@ -617,28 +590,21 @@ pub async fn stream_find_all_matches(
     })
     .await
     {
-        match result {
-            Ok(record) => {
-                if is_excluded_path(&record.dir_path, exclude) {
-                    continue;
-                }
-                if !filter.should_show(&record.dir_path, &record.filename) {
-                    continue;
-                }
-                if let Some(m) = finder::matches_pattern(&record, pattern) {
-                    println!("{}", m.full_path);
-                    total_size += m.size;
-                    count += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("error reading from database: {}", e);
-                process::exit(1);
-            }
+        let record = result.context("reading from database")?;
+        if is_excluded_path(&record.dir_path, exclude) {
+            continue;
+        }
+        if !filter.should_show(&record.dir_path, &record.filename) {
+            continue;
+        }
+        if let Some(m) = finder::matches_pattern(&record, pattern) {
+            println!("{}", m.full_path);
+            total_size += m.size;
+            count += 1;
         }
     }
 
-    (count, total_size)
+    Ok((count, total_size))
 }
 
 /// Collect all matching files across all scans into a Vec.
@@ -651,20 +617,19 @@ pub async fn collect_find_all_matches(
     pattern: &regex::Regex,
     exclude: &[String],
     filter: &FilterConfig,
-) -> Vec<crate::finder::FindMatch> {
+) -> anyhow::Result<Vec<crate::finder::FindMatch>> {
     use crate::finder;
 
-    let files = dao::list_all_files(pool).await.unwrap_or_else(|e| {
-        eprintln!("error reading from database: {}", e);
-        process::exit(1);
-    });
+    let files = dao::list_all_files(pool)
+        .await
+        .context("reading from database")?;
 
-    files
+    Ok(files
         .iter()
         .filter(|record| !is_excluded_path(&record.dir_path, exclude))
         .filter(|record| filter.should_show(&record.dir_path, &record.filename))
         .filter_map(|record| finder::matches_pattern(record, pattern))
-        .collect()
+        .collect())
 }
 
 /// Write matched files as CSV to a file path, or stdout when `output == "-"`.
@@ -913,7 +878,7 @@ pub async fn run_metadata_scan(
     force: bool,
     verbose: bool,
     cas_dir: Option<&Path>,
-) -> MetadataScanStats {
+) -> anyhow::Result<MetadataScanStats> {
     let start = Instant::now();
     let mut stats = MetadataScanStats {
         files_scanned: 0,
@@ -922,16 +887,9 @@ pub async fn run_metadata_scan(
         elapsed_ms: 0,
     };
 
-    let files =
-        match dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS, force)
-            .await
-        {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("error: failed to query files for metadata scan: {e}");
-                return stats;
-            }
-        };
+    let files = dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS, force)
+        .await
+        .context("querying files for metadata scan")?;
 
     if verbose {
         eprintln!("metadata scan: {} file(s) to process", files.len());
@@ -950,7 +908,7 @@ pub async fn run_metadata_scan(
     }
 
     stats.elapsed_ms = start.elapsed().as_millis();
-    stats
+    Ok(stats)
 }
 
 /// Extract and persist metadata for a single audio file.
@@ -959,7 +917,7 @@ async fn process_audio_file(
     record: &dao::AudioFileRecord,
     verbose: bool,
     cas_dir: Option<&Path>,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let full_path = if record.dir_path.is_empty() {
         PathBuf::from(&record.root_path).join(&record.filename)
     } else {
@@ -972,7 +930,7 @@ async fn process_audio_file(
         eprintln!("  reading: {}", full_path.display());
     }
 
-    let file_meta = metadata::read_metadata(&full_path).map_err(|e| format!("{e}"))?;
+    let file_meta = metadata::read_metadata(&full_path).context("reading metadata")?;
 
     let all_tags: Vec<(String, String)> = file_meta
         .properties
@@ -983,7 +941,7 @@ async fn process_audio_file(
 
     dao::replace_file_metadata(pool, record.file_id, &all_tags)
         .await
-        .map_err(|e| format!("metadata: {e}"))?;
+        .context("replacing file metadata")?;
 
     if !file_meta.images.is_empty() {
         let mut image_inputs = Vec::new();
@@ -1038,15 +996,15 @@ async fn process_audio_file(
 
     dao::mark_metadata_scanned(pool, record.file_id, content_hash.as_deref())
         .await
-        .map_err(|e| format!("mark scanned: {e}"))?;
+        .context("marking metadata scanned")?;
 
     Ok(())
 }
 
 /// Read metadata from a single audio file (no database). Returns JSON.
-pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
-    let meta = metadata::read_metadata(path).map_err(|e| format!("{e}"))?;
-    let mut json = serde_json::to_value(&meta).map_err(|e| format!("{e}"))?;
+pub fn read_file_metadata(path: &Path) -> anyhow::Result<serde_json::Value> {
+    let meta = metadata::read_metadata(path).context("reading metadata")?;
+    let mut json = serde_json::to_value(&meta).context("serializing metadata")?;
 
     // Add file path and replace image data with sizes
     if let Some(obj) = json.as_object_mut() {
@@ -1083,22 +1041,16 @@ pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
 
 /// Remove CAS blobs that are not referenced by any database record.
 /// Returns the number of blobs removed.
-pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool, cas_dir: Option<&Path>) -> usize {
-    let referenced = match dao::referenced_blob_hashes(pool).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: failed to query referenced blobs: {e}");
-            return 0;
-        }
-    };
+pub async fn gc_orphan_blobs(
+    pool: &SqlitePool,
+    verbose: bool,
+    cas_dir: Option<&Path>,
+) -> anyhow::Result<usize> {
+    let referenced = dao::referenced_blob_hashes(pool)
+        .await
+        .context("querying referenced blobs")?;
 
-    let on_disk = match cas::list_blob_hashes(cas_dir) {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("error: failed to list CAS blobs: {e}");
-            return 0;
-        }
-    };
+    let on_disk = cas::list_blob_hashes(cas_dir).context("listing CAS blobs")?;
 
     let mut removed = 0;
     for hash in &on_disk {
@@ -1110,5 +1062,5 @@ pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool, cas_dir: Option<&
             removed += 1;
         }
     }
-    removed
+    Ok(removed)
 }

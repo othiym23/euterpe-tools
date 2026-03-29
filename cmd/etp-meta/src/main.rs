@@ -92,11 +92,17 @@ async fn main() {
             let cas_dir = config.cas_dir.as_deref();
             let db_path = match (&directory, &db) {
                 (Some(dir), Some(db)) => {
-                    ops::validate_directory(dir);
+                    ops::validate_directory(dir).unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    });
                     db.clone()
                 }
                 (Some(dir), None) => {
-                    ops::validate_directory(dir);
+                    ops::validate_directory(dir).unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    });
                     dir.join(".etp.db")
                 }
                 (None, Some(db)) => db.clone(),
@@ -121,21 +127,28 @@ async fn main() {
                 let run_type = canon.to_string_lossy();
 
                 if is_new || force {
-                    ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose, cas_dir).await
+                    ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose, cas_dir)
+                        .await
+                        .unwrap_or_else(|e| {
+                            eprintln!("error: {e}");
+                            std::process::exit(1);
+                        })
                 } else {
                     match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
                         Ok(Some(id)) => id,
-                        Ok(None) => {
-                            ops::run_scan_to_db(
-                                dir,
-                                &pool,
-                                &run_type,
-                                &exclude,
-                                cli.verbose,
-                                cas_dir,
-                            )
-                            .await
-                        }
+                        Ok(None) => ops::run_scan_to_db(
+                            dir,
+                            &pool,
+                            &run_type,
+                            &exclude,
+                            cli.verbose,
+                            cas_dir,
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            eprintln!("error: {e}");
+                            std::process::exit(1);
+                        }),
                         Err(e) => {
                             eprintln!("error querying database: {e}");
                             std::process::exit(1);
@@ -152,7 +165,12 @@ async fn main() {
                 }
             };
 
-            let stats = ops::run_metadata_scan(&pool, scan_id, force, cli.verbose, cas_dir).await;
+            let stats = ops::run_metadata_scan(&pool, scan_id, force, cli.verbose, cas_dir)
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
 
             eprintln!(
                 "metadata scan complete: {} scanned, {} errors in {}ms",

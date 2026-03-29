@@ -53,7 +53,10 @@ async fn main() {
         }
     };
 
-    ops::validate_directory(&directory);
+    ops::validate_directory(&directory).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     let pool = etp_lib::db::open_db(&db_path, cli.verbose)
         .await
@@ -73,7 +76,11 @@ async fn main() {
         cli.verbose,
         config.cas_dir.as_deref(),
     )
-    .await;
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     if cli.verbose {
         eprintln!("scan complete, scan_id = {scan_id}");

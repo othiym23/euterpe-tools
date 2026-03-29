@@ -90,7 +90,12 @@ async fn main() {
                     eprintln!("error opening database: {e}");
                     std::process::exit(1);
                 });
-            let removed = ops::gc_orphan_blobs(&pool, verbose, config.cas_dir.as_deref()).await;
+            let removed = ops::gc_orphan_blobs(&pool, verbose, config.cas_dir.as_deref())
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
             etp_lib::db::close_db(pool).await;
             if removed > 0 || verbose {
                 eprintln!("removed {removed} orphan blob(s)");

@@ -81,7 +81,10 @@ async fn main() {
 
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
-    let pattern = ops::compile_pattern(&cli.pattern, cli.insensitive);
+    let pattern = ops::compile_pattern(&cli.pattern, cli.insensitive).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     // Resolve nicknames on -R/--root and/or --db.
     let (directory, explicit_db) = if let Some(ref dir) = cli.directory {
@@ -93,20 +96,35 @@ async fn main() {
         (None, cli.db.clone())
     };
 
-    let resolved_db = explicit_db.map(|db| ops::resolve_db_path(&db, &config));
+    let resolved_db = explicit_db
+        .map(|db| ops::resolve_db_path(&db, &config))
+        .transpose()
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
 
     // When no directory is given, --db is required and we search all scans.
     let db_path = match (&directory, &resolved_db) {
         (Some(dir), Some(db)) => {
-            ops::validate_directory(dir);
+            ops::validate_directory(dir).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
             db.clone()
         }
         (Some(dir), None) => {
-            ops::validate_directory(dir);
+            ops::validate_directory(dir).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
             dir.join(".etp.db")
         }
         (None, Some(db)) => db.clone(),
-        (None, None) => ops::resolve_db_or_default(None, &config),
+        (None, None) => ops::resolve_db_or_default(None, &config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
     };
 
     // Check before open_db, which creates the file if missing.
@@ -158,6 +176,10 @@ async fn main() {
                 config.cas_dir.as_deref(),
             )
             .await
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            })
         };
         Some(id)
     } else {
@@ -185,7 +207,11 @@ async fn main() {
         let matches = match scan_id {
             Some(id) => ops::collect_find_matches(&pool, id, &pattern, &cli.exclude, &filter).await,
             None => ops::collect_find_all_matches(&pool, &pattern, &cli.exclude, &filter).await,
-        };
+        }
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
         let count = matches.len();
         let total_size: u64 = matches.iter().map(|m| m.size).sum();
 
@@ -225,7 +251,11 @@ async fn main() {
         let (count, total_size) = match scan_id {
             Some(id) => ops::stream_find_matches(&pool, id, &pattern, &cli.exclude, &filter).await,
             None => ops::stream_find_all_matches(&pool, &pattern, &cli.exclude, &filter).await,
-        };
+        }
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
 
         if cli.size {
             println!("\n{} matches, {}", count, ops::format_size(total_size));
