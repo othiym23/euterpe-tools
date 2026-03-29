@@ -118,8 +118,9 @@ _COMPOUND_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Placeholder character unlikely to appear in filenames
-_COMPOUND_PLACEHOLDER = "\x00"
+# Placeholder string that cannot appear in filenames (NUL bytes are stripped
+# from input before tokenization, so a single NUL is safe as a sentinel).
+_COMPOUND_PLACEHOLDER = "\x00COMPOUND\x00"
 
 # ---------------------------------------------------------------------------
 # Structural tokenizer
@@ -195,6 +196,10 @@ def tokenize_component(text: str) -> list[Token]:
     Handles brackets [], parens () with nesting, lenticular quotes 「」,
     and detects scene-style dot-separated names.
     """
+    # Strip NUL bytes — they can't appear in filenames and would collide
+    # with the compound-token placeholder used in scene-style splitting.
+    text = text.replace("\x00", "")
+
     # Strip extension first if this looks like a filename
     ext_token: Token | None = None
     text, ext_token = _strip_extension(text)
