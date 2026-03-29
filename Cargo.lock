@@ -536,6 +536,7 @@ dependencies = [
 name = "etp-cas"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "tokio",
@@ -546,6 +547,7 @@ dependencies = [
 name = "etp-csv"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "tokio",
@@ -564,6 +566,7 @@ dependencies = [
 name = "etp-find"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "tokio",
@@ -574,6 +577,7 @@ dependencies = [
 name = "etp-init"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "trycmd",
@@ -583,6 +587,7 @@ dependencies = [
 name = "etp-lib"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "blake3",
  "clap",
  "csv",
@@ -597,6 +602,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-chrome",
@@ -608,6 +614,7 @@ dependencies = [
 name = "etp-meta"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-cue",
  "etp-lib",
@@ -620,6 +627,7 @@ dependencies = [
 name = "etp-query"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "futures-core",
@@ -632,6 +640,7 @@ dependencies = [
 name = "etp-scan"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "tokio",
@@ -642,6 +651,7 @@ dependencies = [
 name = "etp-tree"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "etp-lib",
  "tokio",

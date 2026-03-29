@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 etp-lib = { path = "../../crates/etp-lib" }
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

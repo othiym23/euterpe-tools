@@ -8,6 +8,7 @@ profiling = ["etp-lib/profiling"]
 
 [dependencies]
 etp-lib = { path = "../../crates/etp-lib" }
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
 serde_json = "1"
