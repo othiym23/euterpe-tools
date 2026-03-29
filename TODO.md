@@ -37,10 +37,10 @@ implemented.
     - [x] database nickname resolution in all Rust commands
     - [x] wire up `default-database` from config.kdl — used as fallback when no
           `--db` is specified and no `.etp.db` exists in the target directory
-  - [ ] Phase 4: smart porcelain dispatch
-    - [ ] replace os.execv with subprocess.run for orchestrated commands
-    - [ ] auto-scan on exit code 2 for `etp tree` and `etp csv`
-    - [ ] argument extraction for directory and --db from argv
+  - [x] Phase 4: smart porcelain dispatch
+    - [x] replace os.execv with subprocess.run for orchestrated commands
+    - [x] auto-scan on exit code 2 for `etp tree` and `etp csv`
+    - [x] argument extraction for directory and --db from argv
   - [ ] Phase 5: catalog.py update
     - [ ] run etp-scan first, then tree + CSV in parallel
     - [ ] remove @eaDir from scan excludes
