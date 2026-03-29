@@ -328,28 +328,9 @@ pub async fn open_and_resolve_scan(
     let cas_dir = config.cas_dir.as_deref();
     validate_directory(directory);
 
-    let db_path = if let Some(db) = db {
-        db
-    } else {
-        let default = directory.join(".etp.db");
-        if default.exists() {
-            default
-        } else if let Some(ref default_name) = config.default_database {
-            // Fall back to default-database from config.kdl
-            match config.resolve_database(default_name) {
-                Some(entry) => {
-                    eprintln!(
-                        "using default database \"{default_name}\": db={}",
-                        entry.db.display()
-                    );
-                    entry.db.clone()
-                }
-                None => default, // validated at config load, but guard
-            }
-        } else {
-            default
-        }
-    };
+    // When a directory is given, the DB is co-located or explicit via --db.
+    // default-database doesn't apply here — it's for a different scan root.
+    let db_path = db.unwrap_or_else(|| directory.join(".etp.db"));
     let do_scan = resolve_bool_pair(scan, no_scan, "scan", false);
 
     if !do_scan && !db_path.exists() {

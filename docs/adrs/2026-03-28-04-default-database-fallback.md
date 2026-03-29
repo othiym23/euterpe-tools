@@ -16,17 +16,22 @@ The `default-database` setting in `config.kdl` names a configured database
 nickname that serves as the fallback when no `--db` is specified and no
 `.etp.db` exists in the target directory.
 
-### Fallback chain (etp-tree, etp-csv, etp-find)
+### Fallback chain (etp-tree, etp-csv)
+
+When a directory is given, the database is co-located or explicit:
 
 1. Explicit `--db <path>` or `--db <nickname>` — used as-is
-2. `<directory>/.etp.db` — used if the file exists
-3. `default-database` from `config.kdl` — resolved via nickname
-4. Exit with code 2 (EXIT_NO_SCAN) — no database found
+2. `<directory>/.etp.db` — used as the co-located default
+3. Exit with code 2 (EXIT_NO_SCAN) — no database found
 
-### etp-query
+`default-database` does NOT apply here. The default database has a different
+scan root, so using it for an arbitrary directory would find no matching scan
+and produce a confusing error.
 
-Same chain, except etp-query requires `--db` (it has no directory argument). The
-fallback is:
+### etp-query and etp-find (no-directory mode)
+
+These commands have no directory argument (or `-R` is omitted), so there's no
+co-located `.etp.db` to find. The fallback is:
 
 1. `--db <path>` or `--db <nickname>`
 2. `default-database` from `config.kdl`
