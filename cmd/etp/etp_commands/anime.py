@@ -1037,9 +1037,9 @@ def _match_files_to_season(
     # Filter pool by sub-series title similarity against AniDB entry.
     # This prevents files from other sub-series in a batch from being
     # mixed in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD).
-    # Try English first, then Japanese, then romaji — files may use any.
+    # Try English, Japanese, and romaji — files may use any.
     known_titles: list[str] = []
-    for t in (info.title_en, info.title_ja):
+    for t in (info.title_en, info.title_ja, info.title_romaji):
         norm = media_parser.normalize_for_matching(t)
         if norm and norm not in known_titles:
             known_titles.append(norm)

@@ -72,7 +72,12 @@ def _match_bonus_to_anidb_special(
             for ep in specials:
                 en_norm = normalize_for_matching(ep.title_en)
                 ja_norm = normalize_for_matching(ep.title_ja)
-                if (en_norm and ep_norm in en_norm) or (ja_norm and ep_norm in ja_norm):
+                jat_norm = normalize_for_matching(ep.title_romaji)
+                if (
+                    (en_norm and ep_norm in en_norm)
+                    or (ja_norm and ep_norm in ja_norm)
+                    or (jat_norm and ep_norm in jat_norm)
+                ):
                     return ep
     return None
 

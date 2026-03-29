@@ -63,6 +63,7 @@ class Episode:
     title_en: str
     title_ja: str
     special_tag: str  # "S1", "CM01", "NCOP1", "NCED3", "T1", etc.
+    title_romaji: str = ""  # x-jat romanization
     season: int = 1  # TVDB season number (AniDB is always 1)
 
 
@@ -73,17 +74,21 @@ class AnimeInfo:
     title_ja: str
     title_en: str
     year: int
+    title_romaji: str = ""  # x-jat romanization (e.g. "Youjo Senki")
     episodes: list[Episode] = field(default_factory=list)
 
     def find_episode_title(self, ep_number: int, season: int = 1) -> str:
-        """Find the English title for a regular episode by number and season."""
+        """Find the episode title by number and season.
+
+        Prefers English, falls back to romaji.
+        """
         for ep in self.episodes:
             if (
                 ep.ep_type == EpisodeType.REGULAR
                 and ep.number == ep_number
                 and ep.season == season
             ):
-                return ep.title_en
+                return ep.title_en or ep.title_romaji
         return ""
 
 

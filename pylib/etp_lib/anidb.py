@@ -125,6 +125,7 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         # Episode titles
         title_en_ep = ""
         title_ja_ep = ""
+        title_jat_ep = ""
         for title_elem in ep_elem.findall("title"):
             lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
             text = (title_elem.text or "").strip()
@@ -132,6 +133,8 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
                 title_en_ep = text.replace("`", "'")
             elif lang == "ja" and not title_ja_ep:
                 title_ja_ep = text
+            elif lang == "x-jat" and not title_jat_ep:
+                title_jat_ep = text
 
         episodes.append(
             Episode(
@@ -140,6 +143,7 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
                 title_en=title_en_ep,
                 title_ja=title_ja_ep,
                 special_tag=special_tag,
+                title_romaji=title_jat_ep,
             )
         )
 
@@ -152,6 +156,7 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         title_ja=title_ja,
         title_en=title_en,
         year=year,
+        title_romaji=jat_main,
         episodes=episodes,
     )
 
