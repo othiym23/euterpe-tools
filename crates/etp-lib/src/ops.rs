@@ -507,31 +507,29 @@ pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) -> anyh
 }
 
 /// Stream files from DB, printing matching paths immediately. Returns (count, total_size).
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "stream_find_matches", skip_all)
-)]
+///
+/// Pass `scan_id: Some(id)` to search a single scan, or `None` to search all scans.
 pub async fn stream_find_matches(
     pool: &SqlitePool,
-    scan_id: i64,
+    scan_id: Option<i64>,
     pattern: &regex::Regex,
     exclude: &[String],
     filter: &FilterConfig,
 ) -> anyhow::Result<(usize, u64)> {
     use crate::finder;
-    use std::future::poll_fn;
-    use std::pin::Pin;
+    use futures_util::StreamExt;
 
-    let mut stream = dao::stream_files(pool, scan_id);
+    let mut stream: std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<dao::FileRecord, sqlx::Error>> + Send + '_>,
+    > = match scan_id {
+        Some(id) => dao::stream_files(pool, id),
+        None => dao::stream_all_files(pool),
+    };
+
     let mut count = 0;
     let mut total_size = 0u64;
 
-    while let Some(result) = poll_fn(|cx| {
-        use futures_core::Stream;
-        Pin::new(&mut stream).poll_next(cx)
-    })
-    .await
-    {
+    while let Some(result) = stream.next().await {
         let record = result.context("reading from database")?;
         if is_excluded_path(&record.dir_path, exclude) {
             continue;
@@ -550,89 +548,22 @@ pub async fn stream_find_matches(
 }
 
 /// Collect all matching files into a Vec. Returns the matches.
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "collect_find_matches", skip_all)
-)]
+///
+/// Pass `scan_id: Some(id)` to search a single scan, or `None` to search all scans.
 pub async fn collect_find_matches(
     pool: &SqlitePool,
-    scan_id: i64,
+    scan_id: Option<i64>,
     pattern: &regex::Regex,
     exclude: &[String],
     filter: &FilterConfig,
 ) -> anyhow::Result<Vec<crate::finder::FindMatch>> {
     use crate::finder;
 
-    let files = dao::list_files(pool, scan_id)
-        .await
-        .context("reading from database")?;
-
-    Ok(files
-        .iter()
-        .filter(|record| !is_excluded_path(&record.dir_path, exclude))
-        .filter(|record| filter.should_show(&record.dir_path, &record.filename))
-        .filter_map(|record| finder::matches_pattern(record, pattern))
-        .collect())
-}
-
-/// Stream files from all scans in DB, printing matching paths. Returns (count, total_size).
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "stream_find_all_matches", skip_all)
-)]
-pub async fn stream_find_all_matches(
-    pool: &SqlitePool,
-    pattern: &regex::Regex,
-    exclude: &[String],
-    filter: &FilterConfig,
-) -> anyhow::Result<(usize, u64)> {
-    use crate::finder;
-    use std::future::poll_fn;
-    use std::pin::Pin;
-
-    let mut stream = dao::stream_all_files(pool);
-    let mut count = 0;
-    let mut total_size = 0u64;
-
-    while let Some(result) = poll_fn(|cx| {
-        use futures_core::Stream;
-        Pin::new(&mut stream).poll_next(cx)
-    })
-    .await
-    {
-        let record = result.context("reading from database")?;
-        if is_excluded_path(&record.dir_path, exclude) {
-            continue;
-        }
-        if !filter.should_show(&record.dir_path, &record.filename) {
-            continue;
-        }
-        if let Some(m) = finder::matches_pattern(&record, pattern) {
-            println!("{}", m.full_path);
-            total_size += m.size;
-            count += 1;
-        }
+    let files = match scan_id {
+        Some(id) => dao::list_files(pool, id).await,
+        None => dao::list_all_files(pool).await,
     }
-
-    Ok((count, total_size))
-}
-
-/// Collect all matching files across all scans into a Vec.
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "collect_find_all_matches", skip_all)
-)]
-pub async fn collect_find_all_matches(
-    pool: &SqlitePool,
-    pattern: &regex::Regex,
-    exclude: &[String],
-    filter: &FilterConfig,
-) -> anyhow::Result<Vec<crate::finder::FindMatch>> {
-    use crate::finder;
-
-    let files = dao::list_all_files(pool)
-        .await
-        .context("reading from database")?;
+    .context("reading from database")?;
 
     Ok(files
         .iter()

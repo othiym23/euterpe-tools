@@ -170,10 +170,8 @@ async fn run(cli: Cli) -> Result<()> {
 
     if needs_collect {
         // Collect all matches
-        let matches = match scan_id {
-            Some(id) => ops::collect_find_matches(&pool, id, &pattern, &cli.exclude, &filter).await,
-            None => ops::collect_find_all_matches(&pool, &pattern, &cli.exclude, &filter).await,
-        }?;
+        let matches =
+            ops::collect_find_matches(&pool, scan_id, &pattern, &cli.exclude, &filter).await?;
         let count = matches.len();
         let total_size: u64 = matches.iter().map(|m| m.size).sum();
 
@@ -203,10 +201,8 @@ async fn run(cli: Cli) -> Result<()> {
         }
     } else {
         // Stream matches to stdout
-        let (count, total_size) = match scan_id {
-            Some(id) => ops::stream_find_matches(&pool, id, &pattern, &cli.exclude, &filter).await,
-            None => ops::stream_find_all_matches(&pool, &pattern, &cli.exclude, &filter).await,
-        }?;
+        let (count, total_size) =
+            ops::stream_find_matches(&pool, scan_id, &pattern, &cli.exclude, &filter).await?;
 
         if cli.size {
             println!("\n{} matches, {}", count, ops::format_size(total_size));

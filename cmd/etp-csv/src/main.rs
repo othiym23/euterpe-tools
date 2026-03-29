@@ -95,9 +95,14 @@ async fn run(cli: Cli) -> Result<()> {
 
     if let Some(ref find_pattern) = cli.find {
         let pattern = ops::compile_pattern(find_pattern, cli.insensitive)?;
-        let matches =
-            ops::collect_find_matches(&ctx.pool, ctx.scan_id, &pattern, &cli.exclude, &filter)
-                .await?;
+        let matches = ops::collect_find_matches(
+            &ctx.pool,
+            Some(ctx.scan_id),
+            &pattern,
+            &cli.exclude,
+            &filter,
+        )
+        .await?;
         let output_str = output.to_string_lossy();
         ops::write_find_csv(&matches, &output_str).context("writing CSV")?;
     } else {

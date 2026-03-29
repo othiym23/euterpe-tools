@@ -109,9 +109,14 @@ async fn run(cli: Cli) -> Result<()> {
 
     if let Some(ref find_pattern) = cli.find {
         let pattern = ops::compile_pattern(find_pattern, cli.insensitive)?;
-        let matches =
-            ops::collect_find_matches(&ctx.pool, ctx.scan_id, &pattern, &cli.exclude, &filter)
-                .await?;
+        let matches = ops::collect_find_matches(
+            &ctx.pool,
+            Some(ctx.scan_id),
+            &pattern,
+            &cli.exclude,
+            &filter,
+        )
+        .await?;
         ops::render_find_tree(&matches, &ctx.directory, "-").context("rendering tree")?;
     } else {
         let mut all_ignore = cli.ignore.clone();
