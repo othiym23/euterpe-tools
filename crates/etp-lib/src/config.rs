@@ -108,7 +108,7 @@ struct RawDatabaseEntry {
 pub struct RuntimeConfig {
     pub default_database: Option<String>,
     pub cas_dir: Option<PathBuf>,
-    pub system_patterns: Vec<String>,
+    pub system_patterns: std::collections::HashSet<String>,
     pub user_excludes: Vec<String>,
     pub databases: Vec<DatabaseEntry>,
 }
@@ -239,6 +239,7 @@ fn resolve_raw_config(raw: RawRuntimeConfig) -> Result<RuntimeConfig, ConfigErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn parse_full_config() {
@@ -376,7 +377,10 @@ database "tv" {
             config.cas_dir.as_deref(),
             Some(Path::new("/volume1/data/etp/assets"))
         );
-        assert_eq!(config.system_patterns, vec!["@eaDir", "@custom"]);
+        assert_eq!(
+            config.system_patterns,
+            HashSet::from(["@eaDir".to_string(), "@custom".to_string()])
+        );
         assert_eq!(config.user_excludes, vec!["*.bak"]);
         assert_eq!(config.databases.len(), 2);
         assert_eq!(config.databases[0].name, "music");
@@ -393,7 +397,10 @@ system-files {
 }
 "#;
         let config = parse_runtime_config(kdl).unwrap();
-        assert_eq!(config.system_patterns, vec!["only-this"]);
+        assert_eq!(
+            config.system_patterns,
+            HashSet::from(["only-this".to_string()])
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ use crate::{cas, metadata, scanner};
 use crate::{csv_writer, tree};
 use anyhow::{Context, bail};
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -97,8 +98,8 @@ pub fn is_excluded_path(dir_path: &str, exclude: &[String]) -> bool {
 }
 
 /// Check whether a name matches any system file pattern (exact match).
-pub fn is_system_name(name: &str, system_patterns: &[String]) -> bool {
-    system_patterns.iter().any(|p| p == name)
+pub fn is_system_name(name: &str, system_patterns: &HashSet<String>) -> bool {
+    system_patterns.contains(name)
 }
 
 /// Check whether a directory path or filename matches any system file pattern.
@@ -111,7 +112,11 @@ pub fn is_system_name(name: &str, system_patterns: &[String]) -> bool {
 /// patterns are extended with generic names, they could false-positive on root
 /// path components — but this is a configuration error caught by testing, not
 /// an architectural limitation.
-pub fn is_system_path(dir_path: &str, filename: Option<&str>, system_patterns: &[String]) -> bool {
+pub fn is_system_path(
+    dir_path: &str,
+    filename: Option<&str>,
+    system_patterns: &HashSet<String>,
+) -> bool {
     if system_patterns.is_empty() {
         return false;
     }
@@ -132,7 +137,7 @@ pub fn is_user_excluded_name(name: &str, patterns: &[glob::Pattern]) -> bool {
     patterns.iter().any(|p| p.matches(name))
 }
 
-pub fn default_system_patterns() -> Vec<String> {
+pub fn default_system_patterns() -> HashSet<String> {
     DEFAULT_SYSTEM_PATTERNS
         .iter()
         .map(|s| s.to_string())
@@ -149,7 +154,7 @@ pub fn default_user_exclude_patterns() -> Vec<glob::Pattern> {
 
 /// Bundled filtering options for display-time filtering.
 pub struct FilterConfig {
-    pub system_patterns: Vec<String>,
+    pub system_patterns: HashSet<String>,
     pub user_excludes: Vec<glob::Pattern>,
     pub include_system_files: bool,
     pub show_hidden: bool,
