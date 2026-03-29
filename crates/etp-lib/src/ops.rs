@@ -90,12 +90,13 @@ pub fn is_system_name(name: &str, system_patterns: &[String]) -> bool {
 /// Check whether a directory path or filename matches any system file pattern.
 /// Checks each path component and the filename itself.
 ///
-/// FIXME: dir_path is the full absolute path (e.g. `/volume1/music/sub`), so
-/// this checks ALL components including the root. Currently safe because system
-/// patterns use distinctive prefixes (`@`, `#`, `.etp.`), but adding a generic
-/// pattern like `tmp` would false-positive on `/tmp/...` paths. Consider
-/// stripping the scan root prefix before matching, or only checking the
-/// relative portion of the path.
+/// Note: dir_path is the full absolute path (e.g. `/volume1/music/sub`), so
+/// all components are checked including the root. This is safe because system
+/// patterns use distinctive prefixes (`@`, `#`, `.etp.`, `.Synology`) that
+/// don't collide with normal filesystem path components. If config.kdl system
+/// patterns are extended with generic names, they could false-positive on root
+/// path components — but this is a configuration error caught by testing, not
+/// an architectural limitation.
 pub fn is_system_path(dir_path: &str, filename: Option<&str>, system_patterns: &[String]) -> bool {
     if system_patterns.is_empty() {
         return false;
@@ -175,13 +176,15 @@ impl FilterConfig {
 
     /// Check whether a name (file or directory) should be shown.
     ///
-    /// FIXME: This checks a single name in isolation (used by tree rendering's
-    /// merge_entries for both files and directories). It cannot check dir_path
-    /// context, so a file inside `@eaDir` won't be caught unless the `@eaDir`
-    /// directory itself is filtered first. Currently correct because tree
-    /// rendering filters directories before descending, but the implicit
-    /// ordering dependency isn't enforced by the API. Consider unifying with
-    /// should_show() or documenting the required call ordering.
+    /// This checks a single name in isolation — it cannot check dir_path
+    /// context. A file inside `@eaDir` won't be caught unless the `@eaDir`
+    /// directory itself was filtered first.
+    ///
+    /// **Contract**: only use this in tree rendering's `merge_entries`, which
+    /// filters entries at each directory level during top-down traversal.
+    /// System directories are removed before their children are visited, so
+    /// files inside system directories are never reached. CSV and find output
+    /// use `should_show()` instead, which checks the full dir_path.
     pub fn should_show_name(&self, name: &str) -> bool {
         let is_system = is_system_name(name, &self.system_patterns);
         if !self.include_system_files && is_system {

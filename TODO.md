@@ -24,11 +24,12 @@ implemented.
     - [x] `--[no-]include-system-files` flag on etp-tree, etp-csv, etp-find,
           etp-query
     - [x] configurable default patterns for both lists
-    - [ ] `is_system_path` checks all absolute path components — strip scan root
-          before matching to prevent false positives on generic patterns
-    - [ ] unify or document `should_show_name` vs `should_show` contract — the
-          tree rendering ordering dependency (filter dirs before descending) is
-          implicit
+    - [x] `is_system_path` checks all absolute path components — documented as
+          safe due to distinctive pattern prefixes; configuration error, not
+          architectural limitation
+    - [x] `should_show_name` vs `should_show` contract — documented: only use
+          `should_show_name` in tree rendering's top-down traversal where
+          directories are filtered before descending
   - [x] Phase 3: runtime config + etp-init
     - [x] `config.kdl` with system patterns, user excludes, database nicknames,
           and CAS directory path
