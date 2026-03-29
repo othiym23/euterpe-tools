@@ -73,6 +73,17 @@ enum Commands {
 async fn main() {
     let cli = Cli::parse();
 
+    // Validate arguments before doing any I/O.
+    if let Commands::Stats { ref format } = cli.command {
+        match format.as_str() {
+            "text" | "csv" | "json" | "kdl" => {}
+            other => {
+                eprintln!("error: unknown format \"{other}\"; expected text, csv, json, or kdl");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let config = etp_lib::config::load_runtime_config().unwrap_or_else(|e| {
         eprintln!("warning: failed to load config: {e}");
         etp_lib::config::RuntimeConfig::defaults()
@@ -316,12 +327,8 @@ async fn main() {
                     }
                     println!("}}");
                 }
-                other => {
-                    eprintln!(
-                        "error: unknown format \"{other}\"; expected text, csv, json, or kdl"
-                    );
-                    std::process::exit(1);
-                }
+                // Validated at startup; unreachable.
+                _ => unreachable!(),
             }
         }
         Commands::Size { directory } => {
