@@ -20,6 +20,7 @@ async fn scan_mode_creates_db_and_returns_scan_id() {
         false, // --no-scan
         &[],
         false,
+        None,
     )
     .await;
 
@@ -45,12 +46,14 @@ async fn no_scan_mode_reads_existing_db() {
 
     // First: scan to create the DB
     let ctx1 =
-        ops::open_and_resolve_scan(&root, Some(db_path.clone()), true, false, &[], false).await;
+        ops::open_and_resolve_scan(&root, Some(db_path.clone()), true, false, &[], false, None)
+            .await;
     let first_scan_id = ctx1.scan_id;
     db::close_db(ctx1.pool).await;
 
     // Second: read without scanning
-    let ctx2 = ops::open_and_resolve_scan(&root, Some(db_path), false, false, &[], false).await;
+    let ctx2 =
+        ops::open_and_resolve_scan(&root, Some(db_path), false, false, &[], false, None).await;
     assert_eq!(
         ctx2.scan_id, first_scan_id,
         "should return the same scan_id from existing DB"
@@ -69,8 +72,16 @@ async fn custom_db_path() {
 
     let custom_db = tmp.path().join("custom.db");
 
-    let ctx =
-        ops::open_and_resolve_scan(&root, Some(custom_db.clone()), true, false, &[], false).await;
+    let ctx = ops::open_and_resolve_scan(
+        &root,
+        Some(custom_db.clone()),
+        true,
+        false,
+        &[],
+        false,
+        None,
+    )
+    .await;
 
     assert!(custom_db.exists(), "DB should be at custom path");
     assert!(
@@ -93,7 +104,8 @@ async fn scan_respects_exclude() {
 
     let db_path = tmp.path().join("test.db");
     let exclude = vec!["skip".to_string()];
-    let ctx = ops::open_and_resolve_scan(&root, Some(db_path), true, false, &exclude, false).await;
+    let ctx =
+        ops::open_and_resolve_scan(&root, Some(db_path), true, false, &exclude, false, None).await;
 
     let files = db::dao::list_files(&ctx.pool, ctx.scan_id).await.unwrap();
     assert_eq!(files.len(), 1, "excluded directory should be skipped");
@@ -110,7 +122,7 @@ async fn directory_is_preserved() {
     fs::create_dir(&root).unwrap();
 
     let db_path = tmp.path().join("test.db");
-    let ctx = ops::open_and_resolve_scan(&root, Some(db_path), true, false, &[], false).await;
+    let ctx = ops::open_and_resolve_scan(&root, Some(db_path), true, false, &[], false, None).await;
     assert_eq!(ctx.directory, root);
 
     db::close_db(ctx.pool).await;

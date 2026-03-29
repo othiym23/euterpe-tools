@@ -152,7 +152,15 @@ async fn main() {
                 }
             }
         } else {
-            ops::run_scan_to_db(dir, &pool, &run_type, &cli.exclude, cli.verbose).await
+            ops::run_scan_to_db(
+                dir,
+                &pool,
+                &run_type,
+                &cli.exclude,
+                cli.verbose,
+                config.cas_dir.as_deref(),
+            )
+            .await
         };
         Some(id)
     } else {

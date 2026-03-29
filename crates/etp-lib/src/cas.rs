@@ -1,15 +1,33 @@
 use crate::paths;
 use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
+
+/// Resolve the CAS root directory, using an override if provided or
+/// falling back to the platform default (`paths::cas_dir()`).
+pub fn resolve_cas_dir(override_dir: Option<&Path>) -> io::Result<PathBuf> {
+    match override_dir {
+        Some(dir) => Ok(dir.to_path_buf()),
+        None => paths::cas_dir().map_err(io::Error::other),
+    }
+}
+
+/// Compute the blob path for a given hash within a CAS root.
+fn blob_path(cas_root: &Path, hash: &str) -> PathBuf {
+    let prefix = &hash[..2.min(hash.len())];
+    cas_root.join(prefix).join(hash)
+}
 
 /// Store blob data in the CAS. Returns `(hash, size)`.
 ///
 /// Writes to a temp file then renames for atomicity (safe on Btrfs).
 /// No-op if a blob with the same hash already exists.
-pub fn store_blob(data: &[u8]) -> io::Result<(String, u64)> {
+/// Pass `cas_dir: None` to use the platform default.
+pub fn store_blob(data: &[u8], cas_dir: Option<&Path>) -> io::Result<(String, u64)> {
     let hash = blake3::hash(data).to_hex().to_string();
     let size = data.len() as u64;
-    let path = paths::cas_blob_path(&hash).map_err(io::Error::other)?;
+    let cas_root = resolve_cas_dir(cas_dir)?;
+    let path = blob_path(&cas_root, &hash);
 
     if path.exists() {
         return Ok((hash, size));
@@ -26,14 +44,15 @@ pub fn store_blob(data: &[u8]) -> io::Result<(String, u64)> {
 }
 
 /// Read a blob by its hash.
-pub fn get_blob(hash: &str) -> io::Result<Vec<u8>> {
-    let path = paths::cas_blob_path(hash).map_err(io::Error::other)?;
-    fs::read(path)
+pub fn get_blob(hash: &str, cas_dir: Option<&Path>) -> io::Result<Vec<u8>> {
+    let cas_root = resolve_cas_dir(cas_dir)?;
+    fs::read(blob_path(&cas_root, hash))
 }
 
 /// Remove a blob by its hash.
-pub fn remove_blob(hash: &str) -> io::Result<()> {
-    let path = paths::cas_blob_path(hash).map_err(io::Error::other)?;
+pub fn remove_blob(hash: &str, cas_dir: Option<&Path>) -> io::Result<()> {
+    let cas_root = resolve_cas_dir(cas_dir)?;
+    let path = blob_path(&cas_root, hash);
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -42,7 +61,7 @@ pub fn remove_blob(hash: &str) -> io::Result<()> {
 
 /// BLAKE3 hash of a file using streaming I/O (constant memory).
 /// Returns None if the file can't be read.
-pub fn hash_file(path: &std::path::Path) -> Option<String> {
+pub fn hash_file(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut reader = io::BufReader::new(file);
     let mut hasher = blake3::Hasher::new();
@@ -51,8 +70,8 @@ pub fn hash_file(path: &std::path::Path) -> Option<String> {
 }
 
 /// List all blob hashes present on disk in the CAS directory.
-pub fn list_blob_hashes() -> io::Result<Vec<String>> {
-    let cas = paths::cas_dir().map_err(io::Error::other)?;
+pub fn list_blob_hashes(cas_dir: Option<&Path>) -> io::Result<Vec<String>> {
+    let cas = resolve_cas_dir(cas_dir)?;
     let mut hashes = Vec::new();
     if !cas.exists() {
         return Ok(hashes);

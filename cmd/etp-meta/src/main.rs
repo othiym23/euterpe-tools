@@ -80,6 +80,8 @@ async fn main() {
         None
     };
 
+    let config = etp_lib::config::RuntimeConfig::load_or_default();
+
     match cli.command {
         Commands::Scan {
             directory,
@@ -118,12 +120,28 @@ async fn main() {
                 let run_type = canon.to_string_lossy();
 
                 if is_new || force {
-                    ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose).await
+                    ops::run_scan_to_db(
+                        dir,
+                        &pool,
+                        &run_type,
+                        &exclude,
+                        cli.verbose,
+                        config.cas_dir.as_deref(),
+                    )
+                    .await
                 } else {
                     match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
                         Ok(Some(id)) => id,
                         Ok(None) => {
-                            ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose).await
+                            ops::run_scan_to_db(
+                                dir,
+                                &pool,
+                                &run_type,
+                                &exclude,
+                                cli.verbose,
+                                config.cas_dir.as_deref(),
+                            )
+                            .await
                         }
                         Err(e) => {
                             eprintln!("error querying database: {e}");
@@ -141,7 +159,14 @@ async fn main() {
                 }
             };
 
-            let stats = ops::run_metadata_scan(&pool, scan_id, force, cli.verbose).await;
+            let stats = ops::run_metadata_scan(
+                &pool,
+                scan_id,
+                force,
+                cli.verbose,
+                config.cas_dir.as_deref(),
+            )
+            .await;
 
             eprintln!(
                 "metadata scan complete: {} scanned, {} errors in {}ms",

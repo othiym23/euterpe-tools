@@ -26,6 +26,7 @@ pub async fn scan_to_db(
     run_type: &str,
     exclude: &[String],
     verbose: bool,
+    cas_dir: Option<&Path>,
 ) -> io::Result<(i64, ScanStats)> {
     let start = Instant::now();
 
@@ -169,7 +170,7 @@ pub async fn scan_to_db(
 
     // Clean up CAS blobs orphaned by unmatched deletions + stale dirs
     for hash in orphan_hashes.iter().chain(stale_orphans.iter()) {
-        let _ = cas::remove_blob(hash);
+        let _ = cas::remove_blob(hash, cas_dir);
     }
 
     dao::finish_scan(pool, scan_id)

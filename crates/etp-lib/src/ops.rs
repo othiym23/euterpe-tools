@@ -319,6 +319,7 @@ pub async fn open_and_resolve_scan(
     no_scan: bool,
     exclude: &[String],
     verbose: bool,
+    cas_dir: Option<&Path>,
 ) -> ScanContext {
     validate_directory(directory);
 
@@ -343,7 +344,7 @@ pub async fn open_and_resolve_scan(
     let run_type = canon.to_string_lossy();
 
     let scan_id = if do_scan {
-        run_scan_to_db(directory, &pool, &run_type, exclude, verbose).await
+        run_scan_to_db(directory, &pool, &run_type, exclude, verbose, cas_dir).await
     } else {
         resolve_latest_scan_id(&pool, &run_type, verbose).await
     };
@@ -387,8 +388,9 @@ pub async fn run_scan_to_db(
     run_type: &str,
     exclude: &[String],
     verbose: bool,
+    cas_dir: Option<&Path>,
 ) -> i64 {
-    match scanner::scan_to_db(root, pool, run_type, exclude, verbose).await {
+    match scanner::scan_to_db(root, pool, run_type, exclude, verbose, cas_dir).await {
         Ok((scan_id, stats)) => {
             if verbose {
                 eprintln!(
@@ -892,6 +894,7 @@ pub async fn run_metadata_scan(
     scan_id: i64,
     force: bool,
     verbose: bool,
+    cas_dir: Option<&Path>,
 ) -> MetadataScanStats {
     let start = Instant::now();
     let mut stats = MetadataScanStats {
@@ -917,7 +920,7 @@ pub async fn run_metadata_scan(
     }
 
     for record in &files {
-        match process_audio_file(pool, record, verbose).await {
+        match process_audio_file(pool, record, verbose, cas_dir).await {
             Ok(()) => stats.files_scanned += 1,
             Err(e) => {
                 if verbose {
@@ -937,6 +940,7 @@ async fn process_audio_file(
     pool: &SqlitePool,
     record: &dao::AudioFileRecord,
     verbose: bool,
+    cas_dir: Option<&Path>,
 ) -> Result<(), String> {
     let full_path = if record.dir_path.is_empty() {
         PathBuf::from(&record.root_path).join(&record.filename)
@@ -968,7 +972,7 @@ async fn process_audio_file(
     if !file_meta.images.is_empty() {
         let mut image_inputs = Vec::new();
         for img in &file_meta.images {
-            match cas::store_blob(&img.data) {
+            match cas::store_blob(&img.data, cas_dir) {
                 Ok((hash, size)) => {
                     image_inputs.push(dao::EmbeddedImageInput {
                         image_type: img.image_type.clone(),
@@ -990,7 +994,7 @@ async fn process_audio_file(
             dao::replace_embedded_images(pool, record.file_id, &image_inputs).await
         {
             for hash in &orphan_hashes {
-                let _ = cas::remove_blob(hash);
+                let _ = cas::remove_blob(hash, cas_dir);
             }
         }
     }
@@ -1065,7 +1069,7 @@ pub fn read_file_metadata(path: &Path) -> Result<serde_json::Value, String> {
 
 /// Remove CAS blobs that are not referenced by any database record.
 /// Returns the number of blobs removed.
-pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool) -> usize {
+pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool, cas_dir: Option<&Path>) -> usize {
     let referenced = match dao::referenced_blob_hashes(pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -1074,7 +1078,7 @@ pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool) -> usize {
         }
     };
 
-    let on_disk = match cas::list_blob_hashes() {
+    let on_disk = match cas::list_blob_hashes(cas_dir) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("error: failed to list CAS blobs: {e}");
@@ -1088,7 +1092,7 @@ pub async fn gc_orphan_blobs(pool: &SqlitePool, verbose: bool) -> usize {
             if verbose {
                 eprintln!("  removing orphan blob: {hash}");
             }
-            let _ = cas::remove_blob(hash);
+            let _ = cas::remove_blob(hash, cas_dir);
             removed += 1;
         }
     }

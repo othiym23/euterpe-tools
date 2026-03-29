@@ -8,9 +8,10 @@ async fn scan(dir: &std::path::Path, pool: &sqlx::SqlitePool) -> i64 {
     // (filesystem mtime resolution may be 1 second).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let run_type = dir.to_string_lossy();
-    let (scan_id, _stats) = scanner::scan_to_db(dir, pool, &run_type, &[".etp.db".into()], false)
-        .await
-        .unwrap();
+    let (scan_id, _stats) =
+        scanner::scan_to_db(dir, pool, &run_type, &[".etp.db".into()], false, None)
+            .await
+            .unwrap();
     scan_id
 }
 

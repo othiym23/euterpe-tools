@@ -65,7 +65,15 @@ async fn main() {
     let canon = directory.canonicalize().unwrap_or(directory);
     let run_type = canon.to_string_lossy();
 
-    let scan_id = ops::run_scan_to_db(&canon, &pool, &run_type, &cli.exclude, cli.verbose).await;
+    let scan_id = ops::run_scan_to_db(
+        &canon,
+        &pool,
+        &run_type,
+        &cli.exclude,
+        cli.verbose,
+        config.cas_dir.as_deref(),
+    )
+    .await;
 
     if cli.verbose {
         eprintln!("scan complete, scan_id = {scan_id}");

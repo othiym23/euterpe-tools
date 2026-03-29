@@ -26,7 +26,7 @@ async fn csv_output_from_db_is_correct() {
 
     let pool = db::open_memory().await.unwrap();
     let run_type = root.to_string_lossy();
-    let (scan_id, _stats) = scanner::scan_to_db(&root, &pool, &run_type, &[], false)
+    let (scan_id, _stats) = scanner::scan_to_db(&root, &pool, &run_type, &[], false, None)
         .await
         .unwrap();
 
@@ -66,7 +66,7 @@ async fn csv_output_with_exclude_filters_correctly() {
     let pool = db::open_memory().await.unwrap();
     let run_type = root.to_string_lossy();
     let exclude = vec!["@eaDir".to_string()];
-    let (scan_id, _stats) = scanner::scan_to_db(&root, &pool, &run_type, &exclude, false)
+    let (scan_id, _stats) = scanner::scan_to_db(&root, &pool, &run_type, &exclude, false, None)
         .await
         .unwrap();
 
@@ -103,7 +103,7 @@ async fn scan_to_db_excludes_directories() {
     let pool = db::open_memory().await.unwrap();
     let run_type = root.to_string_lossy();
     let exclude = vec!["@eaDir".to_string()];
-    let (scan_id, stats) = scanner::scan_to_db(&root, &pool, &run_type, &exclude, false)
+    let (scan_id, stats) = scanner::scan_to_db(&root, &pool, &run_type, &exclude, false, None)
         .await
         .unwrap();
 
@@ -132,7 +132,7 @@ async fn scan_to_db_without_exclude_captures_all() {
 
     let pool = db::open_memory().await.unwrap();
     let run_type = root.to_string_lossy();
-    let (scan_id, stats) = scanner::scan_to_db(&root, &pool, &run_type, &[], false)
+    let (scan_id, stats) = scanner::scan_to_db(&root, &pool, &run_type, &[], false, None)
         .await
         .unwrap();
 

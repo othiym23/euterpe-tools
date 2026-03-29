@@ -91,6 +91,7 @@ async fn main() {
         cli.no_scan,
         &cli.exclude,
         cli.verbose,
+        config.cas_dir.as_deref(),
     )
     .await;
 
