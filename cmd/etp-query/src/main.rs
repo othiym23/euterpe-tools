@@ -1,6 +1,8 @@
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use etp_lib::{db, ops};
 use std::path::PathBuf;
+use std::process;
 
 #[derive(Clone, ValueEnum)]
 enum StatsFormat {
@@ -77,33 +79,21 @@ enum Commands {
     },
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let cli = Cli::parse();
-
+async fn run(cli: Cli) -> Result<()> {
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
-    let db_path = ops::resolve_db_or_default(cli.db.as_deref(), &config).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    let db_path = ops::resolve_db_or_default(cli.db.as_deref(), &config)?;
 
     let pool = db::open_db(&db_path, cli.verbose)
         .await
-        .unwrap_or_else(|e| {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        });
+        .context("opening database")?;
 
-    let scan_id = match db::dao::latest_any_scan_id(&pool).await {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            eprintln!("error: no scans found in database; run etp-scan first");
-            std::process::exit(ops::EXIT_NO_SCAN);
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
+    let scan_id = match db::dao::latest_any_scan_id(&pool).await? {
+        Some(id) => id,
+        None => {
+            return Err(
+                ops::NoScanExists("no scans found in database; run etp-scan first".into()).into(),
+            );
         }
     };
 
@@ -123,12 +113,7 @@ async fn main() {
     match cli.command {
         Commands::Files { directory } => {
             let prefix = directory.as_deref().unwrap_or("");
-            let files = db::dao::list_files_in_directory(&pool, scan_id, prefix)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            let files = db::dao::list_files_in_directory(&pool, scan_id, prefix).await?;
             for f in &files {
                 if filter.should_show(&f.dir_path, &f.filename) {
                     println!("{}/{}", f.dir_path, f.filename);
@@ -136,21 +121,11 @@ async fn main() {
             }
         }
         Commands::Tags { file } => {
-            let file_id = db::dao::find_file_id_by_path_suffix(&pool, scan_id, &file)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            let file_id = db::dao::find_file_id_by_path_suffix(&pool, scan_id, &file).await?;
 
             match file_id {
                 Some(id) => {
-                    let tags = db::dao::get_file_metadata(&pool, id)
-                        .await
-                        .unwrap_or_else(|e| {
-                            eprintln!("error: {e}");
-                            std::process::exit(1);
-                        });
+                    let tags = db::dao::get_file_metadata(&pool, id).await?;
                     if tags.is_empty() {
                         eprintln!("no metadata found for {file}");
                     } else {
@@ -161,8 +136,7 @@ async fn main() {
                     }
                 }
                 None => {
-                    eprintln!("error: file not found in database: {file}");
-                    std::process::exit(1);
+                    anyhow::bail!("file not found in database: {file}");
                 }
             }
         }
@@ -172,12 +146,7 @@ async fn main() {
             } else {
                 format!("%{value}%")
             };
-            let results = db::dao::find_files_by_tag(&pool, Some(scan_id), &tag, &pattern)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            let results = db::dao::find_files_by_tag(&pool, Some(scan_id), &tag, &pattern).await?;
             let mut count = 0;
             for (path, val) in &results {
                 // find_files_by_tag returns full paths; extract filename for filtering
@@ -217,26 +186,19 @@ async fn main() {
             })
             .await
             {
-                match result {
-                    Ok(record) => {
-                        if !filter.should_show(&record.dir_path, &record.filename) {
-                            continue;
-                        }
-                        file_count += 1;
-                        total += record.size;
-                        let ext = record
-                            .filename
-                            .rfind('.')
-                            .map(|i| record.filename[i + 1..].to_lowercase())
-                            .unwrap_or_default();
-                        if !ext.is_empty() {
-                            *ext_counts.entry(ext).or_default() += 1;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("error reading from database: {e}");
-                        std::process::exit(1);
-                    }
+                let record = result.context("reading from database")?;
+                if !filter.should_show(&record.dir_path, &record.filename) {
+                    continue;
+                }
+                file_count += 1;
+                total += record.size;
+                let ext = record
+                    .filename
+                    .rfind('.')
+                    .map(|i| record.filename[i + 1..].to_lowercase())
+                    .unwrap_or_default();
+                if !ext.is_empty() {
+                    *ext_counts.entry(ext).or_default() += 1;
                 }
             }
 
@@ -305,12 +267,7 @@ async fn main() {
         }
         Commands::Sql { where_clause } => {
             // SQL passthrough — no display-time filtering applied.
-            let results = db::dao::query_files_where(&pool, &where_clause)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            let results = db::dao::query_files_where(&pool, &where_clause).await?;
             for path in &results {
                 println!("{path}");
             }
@@ -321,4 +278,19 @@ async fn main() {
     }
 
     db::close_db(pool).await;
+    Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let cli = Cli::parse();
+
+    if let Err(e) = run(cli).await {
+        if e.downcast_ref::<ops::NoScanExists>().is_some() {
+            eprintln!("error: {e}");
+            process::exit(ops::EXIT_NO_SCAN);
+        }
+        eprintln!("error: {e:#}");
+        process::exit(1);
+    }
 }

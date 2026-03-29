@@ -1,6 +1,8 @@
+use anyhow::{Context, Result};
 use clap::Parser;
 use etp_lib::ops;
 use std::path::PathBuf;
+use std::process;
 
 #[derive(Parser)]
 #[command(
@@ -74,19 +76,7 @@ struct Cli {
     profile: bool,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let cli = Cli::parse();
-
-    #[cfg(feature = "profiling")]
-    let _profiling_guard = if cli.profile {
-        Some(etp_lib::profiling::init_profiling(
-            &etp_lib::profiling::trace_path("etp-tree"),
-        ))
-    } else {
-        None
-    };
-
+async fn run(cli: Cli) -> Result<()> {
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
     let (directory, db) = match ops::resolve_nickname(&cli.directory, &config) {
@@ -107,15 +97,7 @@ async fn main() {
         cli.verbose,
         &config,
     )
-    .await
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(if e.to_string().contains("no previous scan") {
-            ops::EXIT_NO_SCAN
-        } else {
-            1
-        });
-    });
+    .await?;
 
     let filter = ops::FilterConfig::from_config(
         &config,
@@ -126,21 +108,11 @@ async fn main() {
     );
 
     if let Some(ref find_pattern) = cli.find {
-        let pattern = ops::compile_pattern(find_pattern, cli.insensitive).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+        let pattern = ops::compile_pattern(find_pattern, cli.insensitive)?;
         let matches =
             ops::collect_find_matches(&ctx.pool, ctx.scan_id, &pattern, &cli.exclude, &filter)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-        ops::render_find_tree(&matches, &ctx.directory, "-").unwrap_or_else(|e| {
-            eprintln!("error rendering tree: {}", e);
-            std::process::exit(1);
-        });
+                .await?;
+        ops::render_find_tree(&matches, &ctx.directory, "-").context("rendering tree")?;
     } else {
         let mut all_ignore = cli.ignore.clone();
         all_ignore.extend(cli.exclude.iter().cloned());
@@ -154,22 +126,38 @@ async fn main() {
             cli.no_escape,
         )
         .await
-        .unwrap_or_else(|e| {
-            eprintln!("error rendering tree: {}", e);
-            std::process::exit(1);
-        });
+        .context("rendering tree")?;
     }
 
     if cli.du {
-        ops::render_du(&ctx.pool, ctx.scan_id, cli.du_subs)
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
+        ops::render_du(&ctx.pool, ctx.scan_id, cli.du_subs).await?;
     }
 
     etp_lib::db::close_db(ctx.pool).await;
+    Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let cli = Cli::parse();
+
+    #[cfg(feature = "profiling")]
+    let _profiling_guard = if cli.profile {
+        Some(etp_lib::profiling::init_profiling(
+            &etp_lib::profiling::trace_path("etp-tree"),
+        ))
+    } else {
+        None
+    };
+
+    if let Err(e) = run(cli).await {
+        if e.downcast_ref::<ops::NoScanExists>().is_some() {
+            eprintln!("error: {e}");
+            process::exit(ops::EXIT_NO_SCAN);
+        }
+        eprintln!("error: {e:#}");
+        process::exit(1);
+    }
 
     #[cfg(feature = "profiling")]
     if let Some(guard) = _profiling_guard {

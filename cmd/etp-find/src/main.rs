@@ -1,6 +1,8 @@
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use etp_lib::ops;
 use std::path::PathBuf;
+use std::process;
 
 #[derive(Parser)]
 #[command(
@@ -66,25 +68,10 @@ struct Cli {
     profile: bool,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let cli = Cli::parse();
-
-    #[cfg(feature = "profiling")]
-    let _profiling_guard = if cli.profile {
-        Some(etp_lib::profiling::init_profiling(
-            &etp_lib::profiling::trace_path("etp-find"),
-        ))
-    } else {
-        None
-    };
-
+async fn run(cli: Cli) -> Result<()> {
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
-    let pattern = ops::compile_pattern(&cli.pattern, cli.insensitive).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    let pattern = ops::compile_pattern(&cli.pattern, cli.insensitive)?;
 
     // Resolve nicknames on -R/--root and/or --db.
     let (directory, explicit_db) = if let Some(ref dir) = cli.directory {
@@ -98,33 +85,20 @@ async fn main() {
 
     let resolved_db = explicit_db
         .map(|db| ops::resolve_db_path(&db, &config))
-        .transpose()
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+        .transpose()?;
 
     // When no directory is given, --db is required and we search all scans.
     let db_path = match (&directory, &resolved_db) {
         (Some(dir), Some(db)) => {
-            ops::validate_directory(dir).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
+            ops::validate_directory(dir)?;
             db.clone()
         }
         (Some(dir), None) => {
-            ops::validate_directory(dir).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
+            ops::validate_directory(dir)?;
             dir.join(".etp.db")
         }
         (None, Some(db)) => db.clone(),
-        (None, None) => ops::resolve_db_or_default(None, &config).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }),
+        (None, None) => ops::resolve_db_or_default(None, &config)?,
     };
 
     // Check before open_db, which creates the file if missing.
@@ -132,10 +106,7 @@ async fn main() {
 
     let pool = etp_lib::db::open_db(&db_path, cli.verbose)
         .await
-        .unwrap_or_else(|e| {
-            eprintln!("error opening database: {}", e);
-            std::process::exit(1);
-        });
+        .context("opening database")?;
 
     // Resolve scan_id when a directory is given; None means search all scans.
     let scan_id: Option<i64> = if let Some(ref dir) = directory {
@@ -155,15 +126,14 @@ async fn main() {
             match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
                 Ok(Some(id)) => id,
                 Ok(None) => {
-                    eprintln!(
-                        "error: no previous scan exists for this directory in {}; run etp-scan first",
+                    return Err(ops::NoScanExists(format!(
+                        "no previous scan exists for this directory in {}; run etp-scan first",
                         db_path.display()
-                    );
-                    std::process::exit(ops::EXIT_NO_SCAN);
+                    ))
+                    .into());
                 }
                 Err(e) => {
-                    eprintln!("error querying database: {}", e);
-                    std::process::exit(1);
+                    return Err(e).context("querying database");
                 }
             }
         } else {
@@ -175,11 +145,7 @@ async fn main() {
                 cli.verbose,
                 config.cas_dir.as_deref(),
             )
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            })
+            .await?
         };
         Some(id)
     } else {
@@ -207,11 +173,7 @@ async fn main() {
         let matches = match scan_id {
             Some(id) => ops::collect_find_matches(&pool, id, &pattern, &cli.exclude, &filter).await,
             None => ops::collect_find_all_matches(&pool, &pattern, &cli.exclude, &filter).await,
-        }
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+        }?;
         let count = matches.len();
         let total_size: u64 = matches.iter().map(|m| m.size).sum();
 
@@ -225,22 +187,15 @@ async fn main() {
         // Write tree output (requires a root directory for the tree)
         if let Some(ref tree_path) = cli.tree {
             if let Some(ref dir) = directory {
-                ops::render_find_tree(&matches, dir, tree_path).unwrap_or_else(|e| {
-                    eprintln!("error rendering tree: {}", e);
-                    std::process::exit(1);
-                });
+                ops::render_find_tree(&matches, dir, tree_path).context("rendering tree")?;
             } else {
-                eprintln!("error: --tree requires --root <directory>");
-                std::process::exit(1);
+                bail!("--tree requires --root <directory>");
             }
         }
 
         // Write CSV output
         if let Some(ref csv_path) = cli.csv {
-            ops::write_find_csv(&matches, csv_path).unwrap_or_else(|e| {
-                eprintln!("error writing CSV: {}", e);
-                std::process::exit(1);
-            });
+            ops::write_find_csv(&matches, csv_path).context("writing CSV")?;
         }
 
         if cli.size {
@@ -251,11 +206,7 @@ async fn main() {
         let (count, total_size) = match scan_id {
             Some(id) => ops::stream_find_matches(&pool, id, &pattern, &cli.exclude, &filter).await,
             None => ops::stream_find_all_matches(&pool, &pattern, &cli.exclude, &filter).await,
-        }
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+        }?;
 
         if cli.size {
             println!("\n{} matches, {}", count, ops::format_size(total_size));
@@ -263,6 +214,30 @@ async fn main() {
     }
 
     etp_lib::db::close_db(pool).await;
+    Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let cli = Cli::parse();
+
+    #[cfg(feature = "profiling")]
+    let _profiling_guard = if cli.profile {
+        Some(etp_lib::profiling::init_profiling(
+            &etp_lib::profiling::trace_path("etp-find"),
+        ))
+    } else {
+        None
+    };
+
+    if let Err(e) = run(cli).await {
+        if e.downcast_ref::<ops::NoScanExists>().is_some() {
+            eprintln!("error: {e}");
+            process::exit(ops::EXIT_NO_SCAN);
+        }
+        eprintln!("error: {e:#}");
+        process::exit(1);
+    }
 
     #[cfg(feature = "profiling")]
     if let Some(guard) = _profiling_guard {

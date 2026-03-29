@@ -1,6 +1,8 @@
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use etp_lib::ops;
 use std::path::PathBuf;
+use std::process;
 
 #[derive(Parser)]
 #[command(
@@ -67,19 +69,7 @@ enum Commands {
     },
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let cli = Cli::parse();
-
-    #[cfg(feature = "profiling")]
-    let _profiling_guard = if cli.profile {
-        Some(etp_lib::profiling::init_profiling(
-            &etp_lib::profiling::trace_path("etp-meta"),
-        ))
-    } else {
-        None
-    };
-
+async fn run(cli: Cli) -> Result<()> {
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
     match cli.command {
@@ -92,23 +82,16 @@ async fn main() {
             let cas_dir = config.cas_dir.as_deref();
             let db_path = match (&directory, &db) {
                 (Some(dir), Some(db)) => {
-                    ops::validate_directory(dir).unwrap_or_else(|e| {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    });
+                    ops::validate_directory(dir)?;
                     db.clone()
                 }
                 (Some(dir), None) => {
-                    ops::validate_directory(dir).unwrap_or_else(|e| {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    });
+                    ops::validate_directory(dir)?;
                     dir.join(".etp.db")
                 }
                 (None, Some(db)) => db.clone(),
                 (None, None) => {
-                    eprintln!("error: --root or --db is required");
-                    std::process::exit(1);
+                    bail!("--root or --db is required");
                 }
             };
 
@@ -116,10 +99,7 @@ async fn main() {
 
             let pool = etp_lib::db::open_db(&db_path, cli.verbose)
                 .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error opening database: {e}");
-                    std::process::exit(1);
-                });
+                .context("opening database")?;
 
             // Find or create a scan for this directory
             let scan_id = if let Some(ref dir) = directory {
@@ -128,49 +108,36 @@ async fn main() {
 
                 if is_new || force {
                     ops::run_scan_to_db(dir, &pool, &run_type, &exclude, cli.verbose, cas_dir)
-                        .await
-                        .unwrap_or_else(|e| {
-                            eprintln!("error: {e}");
-                            std::process::exit(1);
-                        })
+                        .await?
                 } else {
                     match etp_lib::db::dao::latest_scan_id(&pool, &run_type).await {
                         Ok(Some(id)) => id,
-                        Ok(None) => ops::run_scan_to_db(
-                            dir,
-                            &pool,
-                            &run_type,
-                            &exclude,
-                            cli.verbose,
-                            cas_dir,
-                        )
-                        .await
-                        .unwrap_or_else(|e| {
-                            eprintln!("error: {e}");
-                            std::process::exit(1);
-                        }),
+                        Ok(None) => {
+                            ops::run_scan_to_db(
+                                dir,
+                                &pool,
+                                &run_type,
+                                &exclude,
+                                cli.verbose,
+                                cas_dir,
+                            )
+                            .await?
+                        }
                         Err(e) => {
-                            eprintln!("error querying database: {e}");
-                            std::process::exit(1);
+                            return Err(e).context("querying database");
                         }
                     }
                 }
             } else {
-                match etp_lib::db::dao::latest_any_scan_id(&pool).await {
-                    Ok(Some(id)) => id,
-                    _ => {
-                        eprintln!("error: no scans found in database");
-                        std::process::exit(1);
+                match etp_lib::db::dao::latest_any_scan_id(&pool).await? {
+                    Some(id) => id,
+                    None => {
+                        bail!("no scans found in database");
                     }
                 }
             };
 
-            let stats = ops::run_metadata_scan(&pool, scan_id, force, cli.verbose, cas_dir)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            let stats = ops::run_metadata_scan(&pool, scan_id, force, cli.verbose, cas_dir).await?;
 
             eprintln!(
                 "metadata scan complete: {} scanned, {} errors in {}ms",
@@ -181,36 +148,25 @@ async fn main() {
         }
         Commands::Read { file, images } => {
             if !file.is_file() {
-                eprintln!("error: {} is not a file", file.display());
-                std::process::exit(1);
+                bail!("{} is not a file", file.display());
             }
 
-            match ops::read_file_metadata(&file) {
-                Ok(mut json) => {
-                    if !images && let Some(obj) = json.as_object_mut() {
-                        obj.remove("images");
-                    }
-                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
-                }
-                Err(e) => {
-                    eprintln!("error reading {}: {e}", file.display());
-                    std::process::exit(1);
-                }
+            let mut json = ops::read_file_metadata(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            if !images && let Some(obj) = json.as_object_mut() {
+                obj.remove("images");
             }
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
         }
         Commands::Cue {
             file,
             audio_files,
             format,
         } => {
-            let content = std::fs::read_to_string(&file).unwrap_or_else(|e| {
-                eprintln!("error: {}: {e}", file.display());
-                std::process::exit(1);
-            });
-            let sheet = etp_cue::parse_cue_sheet(&content).unwrap_or_else(|e| {
-                eprintln!("error parsing {}: {e}", file.display());
-                std::process::exit(1);
-            });
+            let content =
+                std::fs::read_to_string(&file).with_context(|| format!("{}", file.display()))?;
+            let sheet = etp_cue::parse_cue_sheet(&content)
+                .map_err(|e| anyhow::anyhow!("parsing {}: {e}", file.display()))?;
 
             // Get per-file durations in sectors from audio files
             let mut file_durations: Vec<u64> = Vec::new();
@@ -266,6 +222,27 @@ async fn main() {
                 _ => unreachable!(),
             }
         }
+    }
+
+    Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let cli = Cli::parse();
+
+    #[cfg(feature = "profiling")]
+    let _profiling_guard = if cli.profile {
+        Some(etp_lib::profiling::init_profiling(
+            &etp_lib::profiling::trace_path("etp-meta"),
+        ))
+    } else {
+        None
+    };
+
+    if let Err(e) = run(cli).await {
+        eprintln!("error: {e:#}");
+        process::exit(1);
     }
 
     #[cfg(feature = "profiling")]

@@ -21,6 +21,12 @@ pub fn make_collator() -> std::io::Result<icu_collator::CollatorBorrowed<'static
 /// Exit code for "no scan exists" — recoverable by running etp-scan first.
 pub const EXIT_NO_SCAN: i32 = 2;
 
+/// Error indicating no scan exists for a directory. Binary crates check for
+/// this via `anyhow::Error::downcast_ref::<NoScanExists>()` to set exit code 2.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct NoScanExists(pub String);
+
 /// NAS/OS system files: always scanned, counted in du, hidden from display
 /// unless `--include-system-files` is passed.
 pub const DEFAULT_SYSTEM_PATTERNS: &[&str] = &[
@@ -341,7 +347,10 @@ pub async fn open_and_resolve_scan(
     let do_scan = resolve_bool_pair(scan, no_scan, "scan", false);
 
     if !do_scan && !db_path.exists() {
-        bail!("no previous scan exists for this directory; run etp-scan first, or pass --scan");
+        return Err(NoScanExists(
+            "no previous scan exists for this directory; run etp-scan first, or pass --scan".into(),
+        )
+        .into());
     }
 
     let pool = crate::db::open_db(&db_path, verbose)
@@ -378,9 +387,10 @@ pub async fn resolve_latest_scan_id(
         .context("querying database")?
     {
         Some(id) => Ok(id),
-        None => {
-            bail!("no previous scan exists for this directory; run etp-scan first, or pass --scan");
-        }
+        None => Err(NoScanExists(
+            "no previous scan exists for this directory; run etp-scan first, or pass --scan".into(),
+        )
+        .into()),
     }
 }
 

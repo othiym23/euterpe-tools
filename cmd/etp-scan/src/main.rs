@@ -1,6 +1,8 @@
+use anyhow::{Context, Result};
 use clap::Parser;
 use etp_lib::ops;
 use std::path::PathBuf;
+use std::process;
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +32,44 @@ struct Cli {
     profile: bool,
 }
 
+async fn run(cli: Cli) -> Result<()> {
+    let config = etp_lib::config::RuntimeConfig::load_or_default();
+
+    let (directory, db_path) = match ops::resolve_nickname(&cli.directory, &config) {
+        Some((root, db)) => (root, db),
+        None => {
+            let db = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
+            (cli.directory.clone(), db)
+        }
+    };
+
+    ops::validate_directory(&directory)?;
+
+    let pool = etp_lib::db::open_db(&db_path, cli.verbose)
+        .await
+        .context("opening database")?;
+
+    let canon = directory.canonicalize().unwrap_or(directory);
+    let run_type = canon.to_string_lossy();
+
+    let scan_id = ops::run_scan_to_db(
+        &canon,
+        &pool,
+        &run_type,
+        &cli.exclude,
+        cli.verbose,
+        config.cas_dir.as_deref(),
+    )
+    .await?;
+
+    if cli.verbose {
+        eprintln!("scan complete, scan_id = {scan_id}");
+    }
+
+    etp_lib::db::close_db(pool).await;
+    Ok(())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
@@ -43,50 +83,10 @@ async fn main() {
         None
     };
 
-    let config = etp_lib::config::RuntimeConfig::load_or_default();
-
-    let (directory, db_path) = match ops::resolve_nickname(&cli.directory, &config) {
-        Some((root, db)) => (root, db),
-        None => {
-            let db = cli.db.unwrap_or_else(|| cli.directory.join(".etp.db"));
-            (cli.directory.clone(), db)
-        }
-    };
-
-    ops::validate_directory(&directory).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-
-    let pool = etp_lib::db::open_db(&db_path, cli.verbose)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        });
-
-    let canon = directory.canonicalize().unwrap_or(directory);
-    let run_type = canon.to_string_lossy();
-
-    let scan_id = ops::run_scan_to_db(
-        &canon,
-        &pool,
-        &run_type,
-        &cli.exclude,
-        cli.verbose,
-        config.cas_dir.as_deref(),
-    )
-    .await
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-
-    if cli.verbose {
-        eprintln!("scan complete, scan_id = {scan_id}");
+    if let Err(e) = run(cli).await {
+        eprintln!("error: {e:#}");
+        process::exit(1);
     }
-
-    etp_lib::db::close_db(pool).await;
 
     #[cfg(feature = "profiling")]
     if let Some(guard) = _profiling_guard {
