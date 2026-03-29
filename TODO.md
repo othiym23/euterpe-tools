@@ -106,6 +106,14 @@ implemented.
 - [ ] external binary callouts via etp.run() in Lua
 - [ ] everything feeds into the coalesced write pipeline
 
+## Config Bootstrapping
+
+- [ ] `etp init` should bootstrap `config.kdl` from `catalog.kdl` if it exists:
+      generate database nicknames from catalog scan blocks (name → root/db
+      mapping), set first scan as default-database
+- [ ] Cross-reference databases in `config.kdl` with scans in `catalog.kdl` to
+      validate that nicknames point to real catalog entries
+
 ## Post-SP3: Memory Profiling
 
 - [ ] Profile peak memory of all commands and subcommands against a large

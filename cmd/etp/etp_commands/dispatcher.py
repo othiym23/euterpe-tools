@@ -65,7 +65,6 @@ def _extract_target(args: list[str]) -> tuple[str | None, str | None]:
             if "=" in arg:
                 i += 1
             elif arg in (
-                "-R",
                 "--root",
                 "-o",
                 "--output",
@@ -141,7 +140,15 @@ def main() -> int:
 
     directory, db = _extract_target(sys.argv[2:])
     if directory is None:
-        # Can't auto-scan without a directory (e.g., etp query without --db)
+        print(
+            "error: no scan exists and no directory given; cannot auto-scan",
+            file=sys.stderr,
+        )
+        return EXIT_NO_SCAN
+
+    if not os.path.isdir(directory):
+        # The extracted "directory" isn't a real path (e.g., a regex pattern
+        # from etp-find). Don't attempt to scan it.
         return EXIT_NO_SCAN
 
     scan_cmd: list[str] = [scan_exe, directory]
