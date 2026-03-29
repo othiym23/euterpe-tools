@@ -1,12 +1,12 @@
 """Incremental filesystem catalog builder driven by KDL config.
 
-Orchestrates etp-tree and etp-csv across multiple directory trees,
-generating tree files and CSV metadata indexes. Evolved from
-scripts/catalog-nas.py with KDL config support and direct etp-*
-binary invocation.
+Orchestrates etp-scan, etp-tree, and etp-csv across multiple directory trees,
+generating tree files and CSV metadata indexes. Runs etp-scan first, then
+etp-tree and etp-csv in parallel for each scan entry.
 """
 
 import argparse
+import concurrent.futures
 import os
 import re
 import subprocess
@@ -155,7 +155,7 @@ def require_binary(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tree generators
+# Scan runner
 # ---------------------------------------------------------------------------
 
 
@@ -181,15 +181,8 @@ def generate_tree(
     *,
     verbose: bool = False,
     profile: bool = False,
-) -> None:
-    """Generate a tree file for a scan entry.
-
-    Mode controls the summary appended after the tree output:
-      - 'used': --du on disk
-      - 'df':   df -PH on disk
-      - 'subs': df -PH on disk + --du --du-subs
-    """
-    _validate_scan_cfg(name, scan_cfg)
+) -> str:
+    """Generate a tree file for a scan entry. Returns the tree output path."""
     disk = scan_cfg["disk"]
     header = scan_cfg["header"]
     mode = scan_cfg["mode"]
@@ -199,7 +192,6 @@ def generate_tree(
     tree_file = Path(global_cfg["trees_path"]) / f"{desc}.tree"
     db_file = Path(global_cfg["db_path"]) / f"{desc}.db"
 
-    # Run etp-tree
     cmd: list[str] = [etp_tree, disk, "--db", str(db_file), "-N"]
     if mode in ("used", "subs"):
         cmd.append("--du")
@@ -225,10 +217,33 @@ def generate_tree(
             f.write("\n")
             f.write(part)
 
+    return str(tree_file)
 
-# ---------------------------------------------------------------------------
-# Scan runner
-# ---------------------------------------------------------------------------
+
+def generate_csv(
+    name: str,
+    scan_cfg: dict[str, Any],
+    global_cfg: dict[str, str],
+    *,
+    verbose: bool = False,
+    profile: bool = False,
+) -> str:
+    """Generate a CSV index for a scan entry. Returns the CSV output path."""
+    disk = scan_cfg["disk"]
+    desc = scan_cfg["desc"]
+
+    etp_csv = require_binary("etp-csv")
+    csv_file = Path(global_cfg["csvs_path"]) / f"{desc}.csv"
+    db_file = Path(global_cfg["db_path"]) / f"{desc}.db"
+
+    cmd = [etp_csv, disk, "--db", str(db_file), "-o", str(csv_file)]
+    if verbose:
+        cmd.append("-v")
+    if profile:
+        cmd.append("--profile")
+
+    run_cmd(cmd, verbose=verbose)
+    return str(csv_file)
 
 
 def run_scan(
@@ -252,52 +267,60 @@ def run_scan(
         print(f"error: unknown mode '{mode}' for scan '{name}'", file=sys.stderr)
         return False
 
-    etp_csv = require_binary("etp-csv")
-    csv_file = Path(global_cfg["csvs_path"]) / f"{desc}.csv"
+    etp_scan = require_binary("etp-scan")
     db_file = Path(global_cfg["db_path"]) / f"{desc}.db"
 
     print(f"\n# cataloging {name}: {disk}", flush=True)
 
     ok = True
     with Timer() as total:
-        with Timer() as tree_t:
-            try:
-                generate_tree(
-                    name, scan_cfg, global_cfg, verbose=verbose, profile=profile
-                )
-            except subprocess.CalledProcessError as exc:
-                print(
-                    f"warning: {exc.cmd} failed (code {exc.returncode}): {exc.stderr or ''}",
-                    file=sys.stderr,
-                )
-                return False
-        print(f"# tree: {tree_t}", flush=True)
-
-        # CSV run reuses the DB from the tree scan
-        cmd = [
-            etp_csv,
-            disk,
-            "--db",
-            str(db_file),
-            "--no-scan",
-            "-o",
-            str(csv_file),
-        ]
+        # Phase 1: scan the directory
+        scan_cmd: list[str] = [etp_scan, disk, "--db", str(db_file)]
         if verbose:
-            cmd.append("-v")
+            scan_cmd.append("-v")
         if profile:
-            cmd.append("--profile")
+            scan_cmd.append("--profile")
 
         with Timer() as scan_t:
             try:
-                run_cmd(cmd, verbose=verbose)
+                run_cmd(scan_cmd, verbose=verbose)
             except subprocess.CalledProcessError as exc:
                 print(
-                    f"warning: CSV generation failed (code {exc.returncode})",
+                    f"warning: scan failed (code {exc.returncode})",
+                    file=sys.stderr,
+                )
+                return False
+        print(f"# scan: {scan_t}", flush=True)
+
+        # Phase 2: generate tree and CSV in parallel (both read from existing DB)
+        with Timer() as output_t:
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    tree_future = pool.submit(
+                        generate_tree,
+                        name,
+                        scan_cfg,
+                        global_cfg,
+                        verbose=verbose,
+                        profile=profile,
+                    )
+                    csv_future = pool.submit(
+                        generate_csv,
+                        name,
+                        scan_cfg,
+                        global_cfg,
+                        verbose=verbose,
+                        profile=profile,
+                    )
+                    tree_future.result()
+                    csv_future.result()
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"warning: output generation failed (code {exc.returncode})",
                     file=sys.stderr,
                 )
                 ok = False
-        print(f"# csv: {scan_t}", flush=True)
+        print(f"# tree+csv: {output_t}", flush=True)
 
     print(f"# {name} TOTAL: {total}", flush=True)
     return ok
@@ -310,7 +333,7 @@ def run_scan(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Catalog filesystem trees using etp-tree, etp-csv, and df.",
+        description="Catalog filesystem trees using etp-scan, etp-tree, etp-csv, and df.",
     )
     parser.add_argument(
         "config",
@@ -334,12 +357,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         "-v",
         action="store_true",
-        help="Verbose output; passes -v to etp-tree/etp-csv",
+        help="Verbose output; passes -v to etp-scan/etp-tree/etp-csv",
     )
     parser.add_argument(
         "--profile",
         action="store_true",
-        help="Pass --profile to etp-tree/etp-csv for Chrome Trace output",
+        help="Pass --profile to etp-scan/etp-tree/etp-csv for Chrome Trace output",
     )
     return parser
 
