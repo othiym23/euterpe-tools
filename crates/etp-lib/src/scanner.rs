@@ -272,21 +272,24 @@ async fn reconcile_moves(
     }
     let candidates: Vec<(i64, String, String, i64, i64, i64, i64)> = q.fetch_all(pool).await?;
 
-    // Pre-fetch directory paths for removed files (must happen before we
-    // start the transaction, since pool has max_connections=1)
-    let mut dir_paths: HashMap<i64, String> = HashMap::new();
-    for rf in removed.iter() {
-        if let std::collections::hash_map::Entry::Vacant(e) = dir_paths.entry(rf.dir_id) {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT path FROM directories WHERE id = ?")
-                    .bind(rf.dir_id)
-                    .fetch_optional(pool)
-                    .await?;
-            if let Some((path,)) = row {
-                e.insert(path);
-            }
+    // Pre-fetch directory paths for removed files in one query (must happen
+    // before we start the transaction, since pool has max_connections=1)
+    let unique_dir_ids: HashSet<i64> = removed.iter().map(|rf| rf.dir_id).collect();
+    let dir_paths: HashMap<i64, String> = if unique_dir_ids.is_empty() {
+        HashMap::new()
+    } else {
+        let placeholders: String = unique_dir_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!("SELECT id, path FROM directories WHERE id IN ({placeholders})");
+        let mut q = sqlx::query_as::<_, (i64, String)>(&query);
+        for &id in &unique_dir_ids {
+            q = q.bind(id);
         }
-    }
+        q.fetch_all(pool).await?.into_iter().collect()
+    };
 
     // Build a size → candidates index to check uniqueness
     let mut candidates_by_size: HashMap<u64, Vec<usize>> = HashMap::new();
