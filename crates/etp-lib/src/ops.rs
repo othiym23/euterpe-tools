@@ -851,7 +851,7 @@ pub async fn run_metadata_scan(
         elapsed_ms: 0,
     };
 
-    let files = dao::files_needing_metadata_scan(pool, scan_id, metadata::AUDIO_EXTENSIONS, force)
+    let files = dao::files_needing_metadata_scan(pool, scan_id, metadata::MEDIA_EXTENSIONS, force)
         .await
         .context("querying files for metadata scan")?;
 
@@ -860,7 +860,7 @@ pub async fn run_metadata_scan(
     }
 
     for record in &files {
-        match process_audio_file(pool, record, verbose, cas_dir).await {
+        match process_media_file(pool, record, verbose, cas_dir).await {
             Ok(()) => stats.files_scanned += 1,
             Err(e) => {
                 if verbose {
@@ -875,10 +875,10 @@ pub async fn run_metadata_scan(
     Ok(stats)
 }
 
-/// Extract and persist metadata for a single audio file.
-async fn process_audio_file(
+/// Extract and persist metadata for a single media file.
+async fn process_media_file(
     pool: &SqlitePool,
-    record: &dao::AudioFileRecord,
+    record: &dao::MediaFileRecord,
     verbose: bool,
     cas_dir: Option<&Path>,
 ) -> anyhow::Result<()> {

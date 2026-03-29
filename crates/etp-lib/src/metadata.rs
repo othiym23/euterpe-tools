@@ -5,21 +5,21 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Audio file extensions recognized for metadata scanning.
-pub const AUDIO_EXTENSIONS: &[&str] = &[
-    "aac", "aiff", "ape", "dsf", "flac", "m4a", "mka", "mp3", "mpc", "ogg", "opus", "spx", "wav",
-    "wma", "wv",
+/// Media file extensions recognized for metadata scanning.
+pub const MEDIA_EXTENSIONS: &[&str] = &[
+    "aac", "aiff", "ape", "avi", "dsf", "flac", "m4a", "mka", "mkv", "mp3", "mp4", "mpc", "ogg",
+    "opus", "spx", "wav", "wma", "wv",
 ];
 
 /// Extensions that require the mediainfo subprocess instead of lofty.
-const MEDIAINFO_EXTENSIONS: &[&str] = &["wma", "mka"];
+const MEDIAINFO_EXTENSIONS: &[&str] = &["avi", "mka", "mkv", "mp4", "wma"];
 
-/// Check whether a filename has an audio extension.
-pub fn is_audio_file(filename: &str) -> bool {
+/// Check whether a filename has a recognized media extension.
+pub fn is_media_file(filename: &str) -> bool {
     filename
         .rsplit('.')
         .next()
-        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .is_some_and(|ext| MEDIA_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 /// Errors from metadata reading.
@@ -239,8 +239,10 @@ fn parse_mediainfo_json(json: &serde_json::Value) -> Result<FileMetadata, Metada
 
     let general = tracks.iter().find(|t| t["@type"] == "General");
     let audio = tracks.iter().find(|t| t["@type"] == "Audio");
+    let video = tracks.iter().find(|t| t["@type"] == "Video");
 
-    let properties = extract_mediainfo_properties(audio);
+    let mut properties = extract_mediainfo_audio_properties(audio);
+    properties.extend(extract_mediainfo_video_properties(video));
     let tags = extract_mediainfo_tags(general);
 
     Ok(FileMetadata {
@@ -251,7 +253,57 @@ fn parse_mediainfo_json(json: &serde_json::Value) -> Result<FileMetadata, Metada
     })
 }
 
-fn extract_mediainfo_properties(
+fn extract_mediainfo_video_properties(
+    video: Option<&serde_json::Value>,
+) -> Vec<(String, serde_json::Value)> {
+    let mut out = Vec::new();
+    let Some(video) = video else { return out };
+
+    // Width/Height — mediainfo returns these as strings, sometimes with spaces
+    // (e.g. "1 920") so strip non-digit chars before parsing.
+    fn parse_int_field(val: &serde_json::Value) -> Option<u64> {
+        val.as_str()
+            .map(|s| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
+            .and_then(|s| s.parse::<u64>().ok())
+    }
+
+    if let Some(w) = parse_int_field(&video["Width"]) {
+        out.push(("video_width".into(), serde_json::Value::Number(w.into())));
+    }
+    if let Some(h) = parse_int_field(&video["Height"]) {
+        out.push(("video_height".into(), serde_json::Value::Number(h.into())));
+    }
+    if let Some(bd) = video["BitDepth"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        out.push((
+            "video_bit_depth".into(),
+            serde_json::Value::Number(bd.into()),
+        ));
+    }
+    if let Some(codec) = video["Format"].as_str() {
+        out.push((
+            "video_codec".into(),
+            serde_json::Value::String(codec.to_string()),
+        ));
+    }
+    if let Some(fr) = video["FrameRate"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+    {
+        out.push(("video_frame_rate".into(), serde_json::json!(fr)));
+    }
+    if let Some(hdr) = video["HDR_Format"].as_str() {
+        out.push((
+            "video_hdr_format".into(),
+            serde_json::Value::String(hdr.to_string()),
+        ));
+    }
+    out
+}
+
+fn extract_mediainfo_audio_properties(
     audio: Option<&serde_json::Value>,
 ) -> Vec<(String, serde_json::Value)> {
     let mut out = Vec::new();
@@ -483,18 +535,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_audio_file() {
-        assert!(is_audio_file("song.mp3"));
-        assert!(is_audio_file("song.FLAC"));
-        assert!(is_audio_file("path/to/song.ogg"));
-        assert!(is_audio_file("track.m4a"));
-        assert!(is_audio_file("album.dsf"));
-        assert!(is_audio_file("track.wma"));
-        assert!(is_audio_file("concert.mka"));
-        assert!(!is_audio_file("video.mkv"));
-        assert!(!is_audio_file("image.png"));
-        assert!(!is_audio_file("noextension"));
-        assert!(!is_audio_file(""));
+    fn test_is_media_file() {
+        // Audio
+        assert!(is_media_file("song.mp3"));
+        assert!(is_media_file("song.FLAC"));
+        assert!(is_media_file("path/to/song.ogg"));
+        assert!(is_media_file("track.m4a"));
+        assert!(is_media_file("album.dsf"));
+        assert!(is_media_file("track.wma"));
+        assert!(is_media_file("concert.mka"));
+        // Video
+        assert!(is_media_file("episode.mkv"));
+        assert!(is_media_file("movie.mp4"));
+        assert!(is_media_file("clip.avi"));
+        assert!(is_media_file("EPISODE.MKV"));
+        // Non-media
+        assert!(!is_media_file("image.png"));
+        assert!(!is_media_file("noextension"));
+        assert!(!is_media_file(""));
     }
 
     #[test]
@@ -613,6 +671,9 @@ mod tests {
     fn test_extension_dispatch() {
         assert!(MEDIAINFO_EXTENSIONS.contains(&"wma"));
         assert!(MEDIAINFO_EXTENSIONS.contains(&"mka"));
+        assert!(MEDIAINFO_EXTENSIONS.contains(&"mkv"));
+        assert!(MEDIAINFO_EXTENSIONS.contains(&"mp4"));
+        assert!(MEDIAINFO_EXTENSIONS.contains(&"avi"));
         assert!(!MEDIAINFO_EXTENSIONS.contains(&"mp3"));
         assert!(!MEDIAINFO_EXTENSIONS.contains(&"dsf"));
         assert!(!MEDIAINFO_EXTENSIONS.contains(&"flac"));
@@ -695,5 +756,85 @@ mod tests {
     fn test_normalize_mediainfo_lyricist_vs_lyrics() {
         assert_eq!(normalize_mediainfo_tag_key("Lyricist"), "lyricist");
         assert_eq!(normalize_mediainfo_tag_key("Lyrics"), "lyrics");
+    }
+
+    #[test]
+    fn test_parse_mediainfo_json_video_track() {
+        let json = serde_json::json!({
+            "media": {
+                "track": [
+                    {
+                        "@type": "General",
+                        "Title": "Episode 1",
+                    },
+                    {
+                        "@type": "Video",
+                        "Width": "1920",
+                        "Height": "1080",
+                        "BitDepth": "10",
+                        "Format": "HEVC",
+                        "FrameRate": "23.976",
+                    },
+                    {
+                        "@type": "Audio",
+                        "Duration": "1440.000",
+                        "BitRate": "1536000",
+                        "SamplingRate": "48000",
+                        "Channels": "6",
+                    }
+                ]
+            }
+        });
+
+        let meta = parse_mediainfo_json(&json).unwrap();
+        let props: HashMap<&str, &serde_json::Value> = meta
+            .properties
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+
+        // Video properties
+        assert_eq!(props["video_width"], 1920);
+        assert_eq!(props["video_height"], 1080);
+        assert_eq!(props["video_bit_depth"], 10);
+        assert_eq!(props["video_codec"], "HEVC");
+
+        // Audio properties still extracted
+        assert_eq!(props["audio_duration_ms"], 1440000u64);
+        assert_eq!(props["audio_channels"], 6);
+    }
+
+    #[test]
+    fn test_parse_mediainfo_json_video_only() {
+        let json = serde_json::json!({
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {
+                        "@type": "Video",
+                        "Width": "3 840",
+                        "Height": "2 160",
+                        "BitDepth": "10",
+                        "Format": "AV1",
+                        "HDR_Format": "Dolby Vision",
+                    }
+                ]
+            }
+        });
+
+        let meta = parse_mediainfo_json(&json).unwrap();
+        let props: HashMap<&str, &serde_json::Value> = meta
+            .properties
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+
+        // Width with space-separated digits (mediainfo quirk)
+        assert_eq!(props["video_width"], 3840);
+        assert_eq!(props["video_height"], 2160);
+        assert_eq!(props["video_codec"], "AV1");
+        assert_eq!(props["video_hdr_format"], "Dolby Vision");
+        // No audio properties
+        assert!(!props.contains_key("audio_duration_ms"));
     }
 }

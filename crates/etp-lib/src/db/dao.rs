@@ -677,7 +677,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 
 /// A file record for metadata scanning, with its database ID.
 #[derive(Debug, Clone)]
-pub struct AudioFileRecord {
+pub struct MediaFileRecord {
     pub file_id: i64,
     pub root_path: String,
     pub dir_path: String,
@@ -710,7 +710,7 @@ pub async fn files_needing_metadata_scan(
     scan_id: i64,
     extensions: &[&str],
     force: bool,
-) -> Result<Vec<AudioFileRecord>, sqlx::Error> {
+) -> Result<Vec<MediaFileRecord>, sqlx::Error> {
     let like_clauses: Vec<String> = extensions
         .iter()
         .map(|_| "lower(f.filename) LIKE ?".to_string())
@@ -742,7 +742,7 @@ pub async fn files_needing_metadata_scan(
     Ok(rows
         .into_iter()
         .map(
-            |(file_id, root_path, dir_path, filename, mtime)| AudioFileRecord {
+            |(file_id, root_path, dir_path, filename, mtime)| MediaFileRecord {
                 file_id,
                 root_path,
                 dir_path,
