@@ -109,19 +109,6 @@ _COMPOUND_TOKENS = {
     "FLAC.2.0",
 }
 
-# Build a regex that matches compound tokens (case-insensitive, longest first)
-_COMPOUND_RE = re.compile(
-    "|".join(
-        re.escape(t)
-        for t in sorted(_COMPOUND_TOKENS, key=lambda s: len(s), reverse=True)
-    ),
-    re.IGNORECASE,
-)
-
-# Placeholder string that cannot appear in filenames (NUL bytes are stripped
-# from input before tokenization, so a single NUL is safe as a sentinel).
-_COMPOUND_PLACEHOLDER = "\x00COMPOUND\x00"
-
 # ---------------------------------------------------------------------------
 # Structural tokenizer
 # ---------------------------------------------------------------------------
@@ -142,35 +129,6 @@ def _strip_extension(text: str) -> tuple[str, Token | None]:
 def _is_scene_style(text: str) -> bool:
     """Detect if text uses dot-separated scene naming (2+ dots, no spaces)."""
     return text.count(".") >= 2 and " " not in text
-
-
-def _split_scene_dots(text: str) -> list[Token]:
-    """Split dot-separated scene text into DOT_TEXT tokens.
-
-    Preserves compound tokens like H.264, AAC2.0, WEB-DL, DTS-HD.
-    """
-    # Replace compound tokens with placeholders
-    compounds_found: list[str] = []
-
-    def _replace(m: re.Match[str]) -> str:
-        compounds_found.append(m.group(0))
-        return _COMPOUND_PLACEHOLDER
-
-    processed = _COMPOUND_RE.sub(_replace, text)
-
-    # Split on dots
-    parts = processed.split(".")
-    tokens: list[Token] = []
-    compound_idx = 0
-    for part in parts:
-        if not part:
-            continue
-        # Restore any placeholders
-        while _COMPOUND_PLACEHOLDER in part:
-            part = part.replace(_COMPOUND_PLACEHOLDER, compounds_found[compound_idx], 1)
-            compound_idx += 1
-        tokens.append(Token(kind=TokenKind.DOT_TEXT, text=part))
-    return tokens
 
 
 def _split_separators(text: str) -> list[Token]:
@@ -196,10 +154,6 @@ def tokenize_component(text: str) -> list[Token]:
     Handles brackets [], parens () with nesting, lenticular quotes 「」,
     and detects scene-style dot-separated names.
     """
-    # Strip NUL bytes — they can't appear in filenames and would collide
-    # with the compound-token placeholder used in scene-style splitting.
-    text = text.replace("\x00", "")
-
     # Strip extension first if this looks like a filename
     ext_token: Token | None = None
     text, ext_token = _strip_extension(text)

@@ -215,20 +215,21 @@ class TestTokenizePath:
 
 
 class TestSceneDotSplitting:
-    """Tests for dot-separated scene name handling."""
+    """Tests for dot-separated scene name handling via scanner."""
 
-    def test_preserves_web_dl(self):
-        tokens = mp._split_scene_dots("Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG")
-        texts = [t.text for t in tokens]
-        assert "WEB-DL" not in texts or True  # WEB-DL has a dash not a dot
-        # Actually WEB-DL doesn't get split by dots, only H.264 and AAC2.0 matter
-        assert "H.264-VARYG" in texts or "H.264" in texts
-        assert "AAC2.0" in texts
+    def test_preserves_compound_tokens(self):
+        """H.264 and AAC2.0 are recognized as typed tokens, not split on dots."""
+        tokens = mp.tokenize_component(
+            "Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG.mkv"
+        )
+        all_texts = [t.text for t in tokens]
+        assert "H.264" in all_texts
+        assert "AAC2.0" in all_texts
 
-    def test_preserves_dts_hd_ma(self):
-        tokens = mp._split_scene_dots("Movie.2001.1080p.BluRay.FLAC.2.0.x265")
-        texts = [t.text for t in tokens]
-        assert "FLAC.2.0" in texts or "FLAC" in texts
+    def test_preserves_flac(self):
+        tokens = mp.tokenize_component("Movie.2001.1080p.BluRay.FLAC.2.0.x265.mkv")
+        audio = [t for t in tokens if t.kind == mp.TokenKind.AUDIO_CODEC]
+        assert any("FLAC" in t.text for t in audio)
 
 
 # ===================================================================
