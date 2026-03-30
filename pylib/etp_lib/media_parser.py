@@ -544,14 +544,42 @@ def scan_words(text: str) -> list[Token]:
             used.append((start, end, token))
             last_end = end
 
-    # Build token list: recognized spans + unrecognized gaps as TEXT
+    # Build token list: recognized spans + unrecognized gaps
     def _emit_gap(gap_text: str) -> None:
+        """Classify gap words, with dash-compound splitting."""
         gap_text = gap_text.strip(" ,-")
-        if gap_text:
-            for w in re.split(r"[\s,\-]+", gap_text):
-                w = w.strip()
-                if w:
-                    tokens.append(Token(kind=TokenKind.TEXT, text=w))
+        if not gap_text:
+            return
+        for w in re.split(r"[\s,]+", gap_text):
+            w = w.strip()
+            if not w:
+                continue
+            token = _try_recognize(w)
+            if token is not None:
+                tokens.append(token)
+            elif "-" in w and not w.startswith("-"):
+                sub_parts = w.split("-")
+                sub_tokens: list[Token] = []
+                for sp in sub_parts:
+                    sp = sp.strip()
+                    if not sp:
+                        continue
+                    st = _try_recognize(sp)
+                    if st is not None:
+                        sub_tokens.append(st)
+                    else:
+                        sub_tokens.append(Token(kind=TokenKind.UNKNOWN, text=sp))
+                # Scene convention: last unclassified part after metadata
+                # is the release group (e.g., "REMUX-FraMeSToR")
+                has_meta = any(t.kind != TokenKind.UNKNOWN for t in sub_tokens)
+                if has_meta and sub_tokens and sub_tokens[-1].kind == TokenKind.UNKNOWN:
+                    sub_tokens[-1] = Token(
+                        kind=TokenKind.RELEASE_GROUP,
+                        text=sub_tokens[-1].text,
+                    )
+                tokens.extend(sub_tokens)
+            else:
+                tokens.append(Token(kind=TokenKind.UNKNOWN, text=w))
 
     pos = 0
     for start, end, token in used:
@@ -714,47 +742,6 @@ def count_metadata_words(text: str) -> int:
         if w and is_metadata_word(w):
             count += 1
     return count
-
-
-def expand_metadata_words(text: str) -> list[Token]:
-    """Split text on whitespace/commas and classify each word.
-
-    Drop-in replacement for media_parser._expand_metadata_words.
-    Dash-separated compounds are sub-split so each part can be classified.
-    """
-    tokens: list[Token] = []
-    for w in re.split(r"[\s,]+", text):
-        w = w.strip()
-        if not w:
-            continue
-        token = _try_recognize(w)
-        if token is not None:
-            tokens.append(token)
-        else:
-            sub_parts = w.split("-")
-            if len(sub_parts) > 1:
-                sub_tokens: list[Token] = []
-                for sp in sub_parts:
-                    sp = sp.strip()
-                    if not sp:
-                        continue
-                    st = _try_recognize(sp)
-                    if st is not None:
-                        sub_tokens.append(st)
-                    else:
-                        sub_tokens.append(Token(kind=TokenKind.UNKNOWN, text=sp))
-                # Scene convention: last unclassified part after metadata
-                # is the release group (e.g., "REMUX-FraMeSToR")
-                has_meta = any(t.kind != TokenKind.UNKNOWN for t in sub_tokens)
-                if has_meta and sub_tokens and sub_tokens[-1].kind == TokenKind.UNKNOWN:
-                    sub_tokens[-1] = Token(
-                        kind=TokenKind.RELEASE_GROUP,
-                        text=sub_tokens[-1].text,
-                    )
-                tokens.extend(sub_tokens)
-            else:
-                tokens.append(Token(kind=TokenKind.UNKNOWN, text=w))
-    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -1088,9 +1075,10 @@ def _split_text_with_embedded(token: Token) -> list[Token]:
 def _expand_metadata_words(text: str) -> list[Token]:
     """Split text on whitespace/commas and classify each word.
 
-    Delegates to the scanner's parsy-based recognizers.
+    Delegates to scan_words which handles multi-word patterns,
+    dash-compound splitting, and release group detection.
     """
-    return expand_metadata_words(text)
+    return scan_words(text)
 
 
 def _is_metadata_word(word: str) -> bool:

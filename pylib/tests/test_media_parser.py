@@ -996,7 +996,7 @@ class TestScanWords:
     def test_unrecognized_text(self):
         tokens = scan_words("Champignon")
         assert len(tokens) == 1
-        assert tokens[0].kind == mp.TokenKind.TEXT
+        assert tokens[0].kind == mp.TokenKind.UNKNOWN
         assert tokens[0].text == "Champignon"
 
     def test_mixed_content(self):
@@ -1026,7 +1026,7 @@ class TestScanWords:
     def test_sonarr_bracket_content(self):
         """Sonarr-style [Group source,res,...] bracket content."""
         tokens = scan_words("Hinna Bluray-1080p Remux,8bit,AVC,FLAC")
-        assert tokens[0].kind == mp.TokenKind.TEXT
+        assert tokens[0].kind == mp.TokenKind.UNKNOWN
         assert tokens[0].text == "Hinna"
 
     def test_bonus_ncop(self):
