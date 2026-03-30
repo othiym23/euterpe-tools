@@ -62,22 +62,22 @@ class TestTokenizeComponent:
         tokens = mp.tokenize_component(
             "Show.S01E05.Title.1080p.WEB-DL.AAC2.0.H.264-VARYG.mkv"
         )
-        dot_tokens = [t for t in tokens if t.kind == mp.TokenKind.DOT_TEXT]
-        texts = [t.text for t in dot_tokens]
-        # Compound tokens preserved
-        assert "AAC2.0" in texts
-        assert "H.264-VARYG" in texts or "H.264" in texts
-        assert "Show" in texts
-        assert "S01E05" in texts
+        all_texts = [t.text for t in tokens]
+        # Compound tokens preserved (now as typed tokens, not DOT_TEXT)
+        assert "AAC2.0" in all_texts
+        assert "H.264" in all_texts
+        assert "Show" in all_texts
+        # S01E05 is now EPISODE, not DOT_TEXT
+        ep_tokens = [t for t in tokens if t.kind == mp.TokenKind.EPISODE]
+        assert len(ep_tokens) == 1
 
     def test_scene_preserves_h264(self):
         tokens = mp.tokenize_component(
             "TO.BE.HERO.X.S01E01.NICE.1080p.CR.WEB-DL.DUAL.AAC2.0.H.264.MSubs-ToonsHub.mkv"
         )
-        dot_tokens = [t for t in tokens if t.kind == mp.TokenKind.DOT_TEXT]
-        texts = [t.text for t in dot_tokens]
-        assert "H.264" in texts
-        assert "AAC2.0" in texts
+        all_texts = [t.text for t in tokens]
+        assert "H.264" in all_texts
+        assert "AAC2.0" in all_texts
 
     def test_nested_parens(self):
         tokens = mp.tokenize_component(

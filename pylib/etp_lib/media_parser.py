@@ -217,7 +217,9 @@ def tokenize_component(text: str) -> list[Token]:
         if not raw:
             return
         if _is_scene_style(raw):
-            tokens.extend(_split_scene_dots(raw))
+            from etp_lib.media_scanner import scan_dot_segments
+
+            tokens.extend(scan_dot_segments(raw))
         else:
             tokens.extend(_split_separators(raw))
 
