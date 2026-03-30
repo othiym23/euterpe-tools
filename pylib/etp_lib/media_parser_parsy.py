@@ -414,41 +414,62 @@ def _extract_metadata_from_words(words: list[str]) -> dict:
         "release_group": "",
     }
     for w in words:
-        lower = w.lower().strip()
-        if not lower:
-            continue
-        # Resolution
-        if lower in {"480p", "540p", "576p", "720p", "1080p", "1080i", "2160p"}:
-            if not meta["resolution"]:
-                meta["resolution"] = w
-        elif lower in {"4k"}:
-            if not meta["resolution"]:
-                meta["resolution"] = w
-        elif re.match(r"^\d{3,4}x\d{3,4}$", w):
-            if not meta["resolution"]:
-                meta["resolution"] = w
-        # Video codec
-        elif lower in _VIDEO_CODECS:
-            if not meta["video_codec"]:
-                meta["video_codec"] = w
-        # Audio codec
-        elif lower in _AUDIO_CODECS or re.match(
-            r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD|PCM|LPCM)"
-            r"(?:[.\s]?\d\.\d)?$",
-            w,
-            re.IGNORECASE,
-        ):
-            meta["audio_codecs"].append(w)
-        # Source
-        elif lower in _SOURCES:
-            if not meta["source_type"]:
-                meta["source_type"] = _SOURCE_TYPE_MAP.get(lower, "")
-        # Remux
-        elif lower == "remux":
-            meta["is_remux"] = True
-            if not meta["source_type"]:
-                meta["source_type"] = "BD"
+        _classify_meta_word(w, meta)
     return meta
+
+
+def _classify_meta_word(w: str, meta: dict) -> None:
+    """Classify a single word and update meta dict."""
+    lower = w.lower().strip()
+    if not lower:
+        return
+    # Resolution
+    if lower in {"480p", "540p", "576p", "720p", "1080p", "1080i", "2160p", "4k"}:
+        if not meta["resolution"]:
+            meta["resolution"] = w
+    elif re.match(r"^\d{3,4}x\d{3,4}$", w):
+        if not meta["resolution"]:
+            meta["resolution"] = w
+    # Video codec
+    elif lower in _VIDEO_CODECS:
+        if not meta["video_codec"]:
+            meta["video_codec"] = w
+    # Audio codec
+    elif lower in _AUDIO_CODECS or re.match(
+        r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD|PCM|LPCM)"
+        r"(?:[.\s]?\d\.\d)?$",
+        w,
+        re.IGNORECASE,
+    ):
+        meta["audio_codecs"].append(w)
+    # Source
+    elif lower in _SOURCES:
+        if not meta["source_type"]:
+            meta["source_type"] = _SOURCE_TYPE_MAP.get(lower, "")
+    # Remux (exact match)
+    elif lower == "remux":
+        meta["is_remux"] = True
+        if not meta["source_type"]:
+            meta["source_type"] = "BD"
+    # Dash compounds: split and classify sub-parts (e.g. REMUX-GROUP, Bluray-1080p)
+    elif "-" in w and not w.startswith("-"):
+        parts = w.split("-")
+        has_meta = False
+        for p in parts:
+            pl = p.lower()
+            if pl in _VIDEO_CODECS | _AUDIO_CODECS | _SOURCES or pl == "remux":
+                has_meta = True
+                break
+            if pl in {"480p", "540p", "576p", "720p", "1080p", "1080i", "2160p", "4k"}:
+                has_meta = True
+                break
+        if has_meta:
+            for p in parts:
+                _classify_meta_word(p, meta)
+            # Last unclassified part after metadata may be release group
+            last = parts[-1]
+            if not _is_metadata_word_simple(last) and not meta["release_group"]:
+                meta["release_group"] = last
 
 
 def _extract_metadata_from_text(text: str) -> dict:
@@ -469,6 +490,8 @@ def _apply_metadata(pm: ParsedMedia, meta: dict) -> None:
     if meta["video_codec"] and not pm.video_codec:
         pm.video_codec = meta["video_codec"]
     pm.audio_codecs.extend(meta["audio_codecs"])
+    if meta["release_group"] and not pm.release_group:
+        pm.release_group = meta["release_group"]
 
 
 # ---------------------------------------------------------------------------
@@ -601,25 +624,43 @@ def parse_scene(text: str) -> ParsedMedia | None:
         pm.extension = m.group(0).lower()
         remaining = remaining[: m.start()]
 
-    # Must contain dots and an SxxExx pattern
+    # Must contain dots and an SxxExx or S-only pattern
     if "." not in remaining:
         return None
 
-    # Split on dots, preserving compound tokens
-    # Placeholder approach for compound tokens
-    placeholders = {}
-    temp = remaining
-    for compound in sorted(_COMPOUND_TOKENS, key=len, reverse=True):
-        if compound in temp:  # ty: ignore[unsupported-operator]
-            ph = f"\x00COMPOUND{len(placeholders)}\x00"
-            placeholders[ph] = compound
-            temp = temp.replace(compound, ph)  # ty: ignore[no-matching-overload]
+    # Split on dots, preserving compound tokens by re-joining them after split.
+    # Compound tokens like H.264, AAC2.0 span multiple dot-separated segments.
+    # The next segment may have a trailing "-GROUP" suffix that needs stripping.
+    _compound_lowers = {c.lower() for c in _COMPOUND_TOKENS}
+    raw_parts = remaining.split(".")
+    parts: list[str] = []
+    i = 0
+    while i < len(raw_parts):
+        p = raw_parts[i]
+        joined = False
+        if i + 1 < len(raw_parts):
+            next_raw = raw_parts[i + 1]
+            # Strip trailing "-suffix" before checking compound membership
+            next_base = re.sub(r"-[A-Za-z].*$", "", next_raw)
+            candidate = f"{p}.{next_base}"
+            if candidate.lower() in _compound_lowers:
+                # Restore the full segment (with any suffix)
+                parts.append(f"{p}.{next_raw}")
+                i += 2
+                joined = True
+            else:
+                # Three-part compounds (MA.5.1)
+                if i + 2 < len(raw_parts):
+                    candidate3 = f"{p}.{raw_parts[i + 1]}.{raw_parts[i + 2]}"
+                    if candidate3.lower() in _compound_lowers:
+                        parts.append(candidate3)
+                        i += 3
+                        joined = True
+        if not joined:
+            parts.append(p)
+            i += 1
 
-    parts = temp.split(".")
-    # Restore compounds
-    parts = [placeholders.get(p, p) if p.startswith("\x00") else p for p in parts]
-
-    # Find SxxExx
+    # Find SxxExx or S-only
     ep_idx = None
     for i, p in enumerate(parts):
         se_m = re.match(r"^[Ss](\d{1,2})[Ee](\d{1,4})(?:v(\d+))?$", p)
@@ -628,6 +669,11 @@ def parse_scene(text: str) -> ParsedMedia | None:
             pm.episode = int(se_m.group(2))
             if se_m.group(3):
                 pm.version = int(se_m.group(3))
+            ep_idx = i
+            break
+        s_only_m = re.match(r"^[Ss](\d{1,2})$", p)
+        if s_only_m:
+            pm.season = int(s_only_m.group(1))
             ep_idx = i
             break
 
@@ -764,6 +810,176 @@ def parse_japanese(text: str) -> ParsedMedia | None:
 
 
 # ---------------------------------------------------------------------------
+# Convention: Sonarr  Title - SxxExx - EpTitle - metadata [audio] - GROUP.ext
+#             also:   Title - sNeNN - EpTitle [Group meta,...].ext
+# ---------------------------------------------------------------------------
+
+
+def parse_sonarr(text: str) -> ParsedMedia | None:
+    """Try to parse a Sonarr/Radarr-style filename.
+
+    Patterns:
+    - Title (Year) - S01E01 - Ep Title - metadata [audio info] - GROUP.ext
+    - Title - s1e01 - Ep Title [Group source,res,...].ext
+    - Title S01E01 Ep Title metadata.ext  (no separators)
+    """
+    pm = ParsedMedia()
+
+    remaining = text
+
+    # Extension
+    m = re.search(r"\.([a-zA-Z0-9]{2,4})$", remaining)
+    if m:
+        pm.extension = m.group(0).lower()
+        remaining = remaining[: m.start()]
+
+    # Must contain SxxExx somewhere (not starting with [)
+    if remaining.startswith("["):
+        return None
+    ep_m = re.search(r"[Ss](\d{1,2})[Ee](\d{1,4})(?:v(\d+))?", remaining)
+    if not ep_m:
+        return None
+
+    pm.season = int(ep_m.group(1))
+    pm.episode = int(ep_m.group(2))
+    if ep_m.group(3):
+        pm.version = int(ep_m.group(3))
+
+    before_ep = remaining[: ep_m.start()].rstrip(" -")
+    after_ep = remaining[ep_m.end() :].strip()
+
+    # Before episode: series name (may have year in parens)
+    year_m = re.search(r"\((\d{4})\)", before_ep)
+    if year_m:
+        y = int(year_m.group(1))
+        if 1900 <= y <= 2099:
+            pm.year = y
+    # Strip year from series name display (keep it in pm.year)
+    series = before_ep.strip()
+    if pm.year:
+        series = re.sub(r"\s*\(\d{4}\)\s*$", "", series).strip()
+    pm.series_name = series
+
+    # Trailing "- GROUP" at the end
+    trail_group_m = re.search(r"\s+-\s+(\S+)\s*$", after_ep)
+    if trail_group_m:
+        candidate = trail_group_m.group(1)
+        if not _is_metadata_word_simple(candidate):
+            pm.release_group = candidate
+            after_ep = after_ep[: trail_group_m.start()].rstrip()
+
+    # Trailing brackets (right to left): audio metadata
+    while True:
+        m_trail = re.search(r"\[([^\]]+)\]\s*$", after_ep)
+        if not m_trail:
+            break
+        content = m_trail.group(1).strip()
+        after_ep = after_ep[: m_trail.start()].rstrip()
+        # CRC32?
+        if re.match(r"^[0-9A-Fa-f]{8}$", content):
+            pm.hash_code = content.upper()
+        else:
+            # Check if first word is release group (Sonarr bracket style)
+            bracket_words = re.split(r"[\s,]+", content)
+            if bracket_words and not _is_metadata_word_simple(bracket_words[0]):
+                if not pm.release_group:
+                    pm.release_group = bracket_words[0]
+                meta = _extract_metadata_from_words(bracket_words[1:])
+            else:
+                meta = _extract_metadata_from_text(content)
+            _apply_metadata(pm, meta)
+
+    # After episode text: split on " - " separators
+    parts = re.split(r"\s+-\s+", after_ep) if after_ep else []
+
+    ep_title_parts = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # Check if this part is all/mostly metadata
+        words = part.split()
+        meta_count = sum(1 for w in words if _is_metadata_word_simple(w))
+        if meta_count > 0 and meta_count >= len(words) // 2:
+            meta = _extract_metadata_from_words(words)
+            _apply_metadata(pm, meta)
+        else:
+            # Scan left-to-right: once metadata starts, everything after is metadata
+            meta_start = None
+            for i, w in enumerate(words):
+                if _is_metadata_word_simple(w):
+                    meta_start = i
+                    break
+            if meta_start is not None and meta_start > 0:
+                ep_title_parts.append(" ".join(words[:meta_start]))
+                meta = _extract_metadata_from_words(words[meta_start:])
+                _apply_metadata(pm, meta)
+            else:
+                ep_title_parts.append(part)
+
+    if ep_title_parts:
+        pm.episode_title = ep_title_parts[0].strip(" -")
+
+    return pm
+
+
+# ---------------------------------------------------------------------------
+# Convention: Bare  Title SxxExx metadata.ext (no delimiters)
+# ---------------------------------------------------------------------------
+
+
+def parse_bare(text: str) -> ParsedMedia | None:
+    """Try to parse a bare title, possibly with embedded SxxExx."""
+    pm = ParsedMedia()
+
+    remaining = text
+
+    # Extension
+    m = re.search(r"\.([a-zA-Z0-9]{2,4})$", remaining)
+    if m:
+        pm.extension = m.group(0).lower()
+        remaining = remaining[: m.start()]
+
+    # Check for embedded SxxExx
+    ep_m = re.search(r"[Ss](\d{1,2})[Ee](\d{1,4})(?:v(\d+))?", remaining)
+    if ep_m:
+        pm.season = int(ep_m.group(1))
+        pm.episode = int(ep_m.group(2))
+        if ep_m.group(3):
+            pm.version = int(ep_m.group(3))
+
+        before = remaining[: ep_m.start()].strip()
+        after = remaining[ep_m.end() :].strip()
+
+        pm.series_name = before.rstrip(" -")
+
+        # After episode: split into ep title + metadata
+        words = after.split()
+        meta_start = None
+        for i, w in enumerate(words):
+            if _is_metadata_word_simple(w):
+                meta_start = i
+                break
+        if meta_start is not None:
+            if meta_start > 0:
+                pm.episode_title = " ".join(words[:meta_start])
+            meta = _extract_metadata_from_words(words[meta_start:])
+            _apply_metadata(pm, meta)
+        elif after:
+            pm.episode_title = after
+    else:
+        # No episode: just title, maybe with year
+        year_m = re.search(r"\((\d{4})\)", remaining)
+        if year_m:
+            y = int(year_m.group(1))
+            if 1900 <= y <= 2099:
+                pm.year = y
+        pm.series_name = remaining.strip()
+
+    return pm
+
+
+# ---------------------------------------------------------------------------
 # Convention detection and dispatch
 # ---------------------------------------------------------------------------
 
@@ -778,6 +994,14 @@ def _is_metadata_word_simple(word: str) -> bool:
     if lower == "remux":
         return True
     if lower in _LANGUAGES:
+        return True
+    # Compound audio codecs: AAC2.0, DDP5.1, etc.
+    if re.match(
+        r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD)"
+        r"(?:[.\s]?\d\.\d)?$",
+        word,
+        re.IGNORECASE,
+    ):
         return True
     if "-" in word:
         parts = word.split("-")
@@ -811,9 +1035,9 @@ def detect_convention(text: str) -> str:
         if dot_count > space_count:
             return "scene"
 
-    # Sonarr-style: has " - SxxExx - " with spaces
-    if re.search(r"\s+-\s+[Ss]\d+[Ee]\d+\s+-\s+", base):
-        return "fansub"  # Sonarr uses same structural approach as fansub
+    # Sonarr-style: has " - SxxExx" or "Title SxxExx" with spaces (no brackets)
+    if re.search(r"[Ss]\d+[Ee]\d+", base):
+        return "sonarr"
 
     return "bare"
 
@@ -832,10 +1056,20 @@ def parse_component_parsy(text: str) -> ParsedMedia:
         result = parse_scene(text)
     elif convention == "fansub":
         result = parse_fansub(text)
+    elif convention == "sonarr":
+        result = parse_sonarr(text)
+    elif convention == "bare":
+        result = parse_bare(text)
 
     if result is None:
         # Fallback: try each convention
-        for parser in [parse_fansub, parse_scene, parse_japanese]:
+        for parser in [
+            parse_fansub,
+            parse_sonarr,
+            parse_scene,
+            parse_japanese,
+            parse_bare,
+        ]:
             result = parser(text)
             if result is not None:
                 break
