@@ -391,7 +391,6 @@ _RE_SEASON_ONLY = re.compile(r"^[Ss](\d{1,2})$")
 _RE_SEASON_WORD = re.compile(r"^(\d+)(?:st|nd|rd|th)\s+Season$", re.IGNORECASE)
 _RE_SPECIAL = re.compile(r"^(SP|OVA|OAD|ONA)(\d*)$", re.IGNORECASE)
 _RE_BATCH_RANGE = re.compile(r"^(\d{1,4})\s*[~～]\s*(\d{1,4})$")
-_RE_VERSION = re.compile(r"^v(\d+)$", re.IGNORECASE)
 # Release group detection
 _RE_SCENE_TRAILING_GROUP = re.compile(r"^(.*)-([A-Za-z][A-Za-z0-9]{1,})$")
 
@@ -1114,10 +1113,8 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
             if pm.season is None:
                 pm.season = token.season
         elif token.kind == TokenKind.VERSION:
-            if pm.version is None:
-                m = _RE_VERSION.match(token.text)
-                if m:
-                    pm.version = int(m.group(1))
+            if pm.version is None and token.version is not None:
+                pm.version = token.version
         elif token.kind == TokenKind.RESOLUTION and not pm.resolution:
             pm.resolution = token.text
         elif token.kind == TokenKind.VIDEO_CODEC and not pm.video_codec:

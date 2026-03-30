@@ -410,6 +410,8 @@ def _result_to_token(result: object, text: str) -> Token:
     elif isinstance(result, Special):
         token.episode = result.number
         # Mark as special via text pattern — classify phase handles this
+    elif isinstance(result, Version):
+        token.version = result.number
     elif isinstance(result, Year):
         token.year = result.value
     elif isinstance(result, BatchRange):
