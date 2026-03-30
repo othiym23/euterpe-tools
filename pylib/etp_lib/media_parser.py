@@ -271,13 +271,6 @@ _AUDIO_CODECS = frozenset(
     }
 )
 
-# Audio codecs that appear as compound tokens with channel info (e.g. AAC2.0)
-_RE_AUDIO_COMPOUND = re.compile(
-    r"^(AAC|DD|DDP|DTS-HD\s*MA|FLAC|AC3|EAC3|E-AC-3|TrueHD)"
-    r"[.\s]?(\d\.\d)$",
-    re.IGNORECASE,
-)
-
 _SOURCES = frozenset(
     {
         "bd",
@@ -353,21 +346,6 @@ _SOURCE_TYPE_MAP: dict[str, str] = {
     "cdr": "CD-R",
 }
 
-_RESOLUTIONS = frozenset(
-    {
-        "480p",
-        "540p",
-        "576p",
-        "720p",
-        "1080p",
-        "1080i",
-        "2160p",
-        "4k",
-    }
-)
-
-_RE_RESOLUTION_DIMS = re.compile(r"^\d{3,4}x\d{3,4}$")
-
 _LANGUAGES = frozenset(
     {
         "dual",
@@ -414,16 +392,8 @@ _RE_SEASON_WORD = re.compile(r"^(\d+)(?:st|nd|rd|th)\s+Season$", re.IGNORECASE)
 _RE_SPECIAL = re.compile(r"^(SP|OVA|OAD|ONA)(\d*)$", re.IGNORECASE)
 _RE_BATCH_RANGE = re.compile(r"^(\d{1,4})\s*[~～]\s*(\d{1,4})$")
 _RE_VERSION = re.compile(r"^v(\d+)$", re.IGNORECASE)
-_RE_REPACK = re.compile(r"^REPACK\d?$", re.IGNORECASE)
-
 # Release group detection
 _RE_SCENE_TRAILING_GROUP = re.compile(r"^(.*)-([A-Za-z][A-Za-z0-9]{1,})$")
-
-# Site prefix
-_RE_SITE_PREFIX = re.compile(r"^www\.\w+\.\w+$", re.IGNORECASE)
-
-# Remux
-_RE_REMUX = re.compile(r"remux$", re.IGNORECASE)
 
 # Japanese bonus content markers
 _BONUS_KEYWORDS = frozenset(
