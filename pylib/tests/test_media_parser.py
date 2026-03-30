@@ -1269,3 +1269,28 @@ class TestQARegression:
         assert pm.season == 3
         assert pm.is_special is True
         assert pm.bonus_type == "NCOP"
+
+    def test_bracket_artist_not_release_group(self):
+        """[Artist Name] should not override directory release group."""
+        pm = mp.parse_media_path(
+            "Show S03 1080p BD FLAC-TTGA/S03ED-Song Title [Artist Name].mkv"
+        )
+        # Directory group TTGA should win over bracket artist
+        assert pm.release_group == "TTGA"
+
+    def test_season_zero_is_special(self):
+        """S00E01 should be marked as a special."""
+        pm = mp.parse_component(
+            "Buddy.Daddies.S00E01.Cherry-Pick.1080p.BluRay.Remux."
+            "FLAC2.0.H.264-CRUCiBLE.mkv"
+        )
+        assert pm.season == 0
+        assert pm.episode == 1
+        assert pm.is_special is True
+        assert "Cherry-Pick" in pm.episode_title or "Cherry" in pm.episode_title
+
+    def test_scene_hyphenated_episode_title(self):
+        """Cherry-Pick should not be split into Cherry + release group Pick."""
+        pm = mp.parse_component("Show.S01E05.Cherry-Pick.1080p.BluRay.x265-GROUP.mkv")
+        assert pm.episode_title == "Cherry-Pick"
+        assert pm.release_group == "GROUP"

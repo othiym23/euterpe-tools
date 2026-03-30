@@ -1321,19 +1321,18 @@ def classify(tokens: list[Token]) -> list[Token]:
                     continue
 
             # Scene trailing group: "H.264-VARYG" -> split into codec + group
+            # Only split when the prefix is a recognized metadata keyword,
+            # otherwise keep as-is (e.g. "Cherry-Pick" is a hyphenated title)
             if token.kind == TokenKind.DOT_TEXT:
                 m = _RE_SCENE_TRAILING_GROUP.match(text)
                 if m:
                     prefix = m.group(1)
                     group = m.group(2)
-                    # Classify the prefix part
                     prefix_kind = classify_text(prefix)
                     if prefix_kind:
                         result.append(Token(kind=prefix_kind, text=prefix))
-                    else:
-                        result.append(Token(kind=token.kind, text=prefix))
-                    result.append(Token(kind=TokenKind.RELEASE_GROUP, text=group))
-                    continue
+                        result.append(Token(kind=TokenKind.RELEASE_GROUP, text=group))
+                        continue
 
             # Bonus content in text
             if _RE_BONUS_KEYWORD.search(text):
@@ -1475,8 +1474,10 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
                     pm.season = token.season
                 if token.version is not None:
                     pm.version = token.version
-                # Check for special episodes
+                # Check for special episodes (including season 0)
                 stripped = token.text.strip().upper()
+                if token.season == 0:
+                    pm.is_special = True
                 if _RE_SPECIAL.match(stripped) or _RE_SEASON_SPECIAL.match(stripped):
                     pm.is_special = True
                     pm.special_tag = token.text.strip()
@@ -1648,9 +1649,11 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
         result.batch_range = dir_pm.batch_range
         result.path_is_batch = True
 
-    # Release group fallback
-    if not result.release_group and dir_pm.release_group:
+    # Release group — directory group is more reliable than filename brackets
+    # (brackets in filenames may contain artist credits, not release groups)
+    if dir_pm.release_group:
         result.release_group = dir_pm.release_group
+    # Keep file group only if directory didn't provide one
 
     # Source type fallback
     if not result.source_type and dir_pm.source_type:
