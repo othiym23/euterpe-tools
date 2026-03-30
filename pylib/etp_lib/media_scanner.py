@@ -268,6 +268,30 @@ def _bare_episode_parser(stream: str, index: int):
 
 episode_bare: Parser = Parser(_bare_episode_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
+
+# Episode: EP05, E5 format
+def _ep_prefix_parser(stream: str, index: int):
+    m = re.match(r"[Ee][Pp]?(\d{1,4})(?:v(\d+))?$", stream[index:])
+    if not m:
+        return Result.failure(index, frozenset({"ep_prefix"}))
+    version = int(m.group(2)) if m.group(2) else None
+    return Result.success(index + m.end(), EpisodeBare(int(m.group(1)), version))
+
+
+episode_ep: Parser = Parser(_ep_prefix_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
+# Episode: "05 END", "05v2 END" (final episode marker)
+def _ep_final_parser(stream: str, index: int):
+    m = re.match(r"(\d{1,4})(?:v(\d+))?\s*END$", stream[index:], re.IGNORECASE)
+    if not m:
+        return Result.failure(index, frozenset({"ep_final"}))
+    version = int(m.group(2)) if m.group(2) else None
+    return Result.success(index + m.end(), EpisodeBare(int(m.group(1)), version))
+
+
+episode_final: Parser = Parser(_ep_final_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
 # Episode: Japanese 第NN話
 episode_jp: Parser = regex(r"第(\d{1,4})話").map(
     lambda s: EpisodeJP(int(_re_group(r"第(\d+)話", s)))
@@ -438,6 +462,8 @@ _RECOGNIZERS: list[Parser] = [
     season_jp,  # 第1期
     season_word,  # 4th Season
     season_only,  # S01 (after episode_se to avoid S01E05 → S01)
+    episode_final,  # 05 END, 05v2 END (before bare to match END suffix)
+    episode_ep,  # EP05, E5
     episode_bare,  # 08, 12v2 (after season_only to avoid S01 → ep 1)
     # Bonus keywords
     bonus_en,  # NCOP, NC OP1, Creditless ED

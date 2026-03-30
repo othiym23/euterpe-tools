@@ -380,17 +380,7 @@ _RE_CRC32 = re.compile(r"^[0-9A-Fa-f]{8}$")
 
 _RE_YEAR = re.compile(r"^(1[89]\d{2}|20[0-9]{2})$")
 
-# Episode patterns
-_RE_EP_SE = re.compile(r"^[Ss](\d{1,2})[Ee](\d{1,4})(?:v(\d+))?$")
-_RE_EP_NUM = re.compile(r"^(\d{1,4})(?:v(\d+))?$")
-_RE_EP_EP = re.compile(r"^[Ee][Pp]?(\d{1,4})(?:v(\d+))?$")
-_RE_EP_JP = re.compile(r"^第(\d{1,4})話")  # 第01話
-_RE_SEASON_JP = re.compile(r"^第(\d{1,2})期")  # 第1期
-_RE_EP_FINAL = re.compile(r"^(\d{1,4})(?:v(\d+))?\s*END$", re.IGNORECASE)
-_RE_SEASON_ONLY = re.compile(r"^[Ss](\d{1,2})$")
-_RE_SEASON_WORD = re.compile(r"^(\d+)(?:st|nd|rd|th)\s+Season$", re.IGNORECASE)
 _RE_SPECIAL = re.compile(r"^(SP|OVA|OAD|ONA)(\d*)$", re.IGNORECASE)
-_RE_BATCH_RANGE = re.compile(r"^(\d{1,4})\s*[~～]\s*(\d{1,4})$")
 # Release group detection
 _RE_SCENE_TRAILING_GROUP = re.compile(r"^(.*)-([A-Za-z][A-Za-z0-9]{1,})$")
 
@@ -470,117 +460,17 @@ def _classify_text_content(text: str) -> TokenKind | None:
 def _classify_episode_text(text: str) -> Token | None:
     """Try to parse text as an episode/season identifier.
 
-    Matches the *entire* text. Returns a new Token with extracted numbers,
-    or None.
+    Delegates to the scanner's parsy-based recognizers.
     """
-    stripped = text.strip()
+    from etp_lib.media_scanner import _try_recognize
 
-    # S01E05 or S01E05v2
-    m = _RE_EP_SE.match(stripped)
-    if m:
-        t = Token(
-            kind=TokenKind.EPISODE,
-            text=stripped,
-            season=int(m.group(1)),
-            episode=int(m.group(2)),
-        )
-        if m.group(3):
-            t.version = int(m.group(3))
-        return t
-
-    # 第01話 (Japanese episode) — full match only
-    m = _RE_EP_JP.match(stripped)
-    if m:
-        return Token(
-            kind=TokenKind.EPISODE,
-            text=stripped,
-            episode=int(m.group(1)),
-        )
-
-    # 第1期 (Japanese season) — full match only
-    m = _RE_SEASON_JP.match(stripped)
-    if m:
-        return Token(
-            kind=TokenKind.SEASON,
-            text=stripped,
-            season=int(m.group(1)),
-        )
-
-    # Special: SP1, OVA, OAD, ONA
-    m = _RE_SPECIAL.match(stripped)
-    if m:
-        ep = int(m.group(2)) if m.group(2) else None
-        return Token(
-            kind=TokenKind.EPISODE,
-            text=stripped,
-            episode=ep,
-        )
-
-    # Season only: S01
-    m = _RE_SEASON_ONLY.match(stripped)
-    if m:
-        return Token(
-            kind=TokenKind.SEASON,
-            text=stripped,
-            season=int(m.group(1)),
-        )
-
-    # "4th Season", "2nd Season"
-    m = _RE_SEASON_WORD.match(stripped)
-    if m:
-        return Token(
-            kind=TokenKind.SEASON,
-            text=stripped,
-            season=int(m.group(1)),
-        )
-
-    # EP05, E5
-    m = _RE_EP_EP.match(stripped)
-    if m:
-        t = Token(
-            kind=TokenKind.EPISODE,
-            text=stripped,
-            episode=int(m.group(1)),
-        )
-        if m.group(2):
-            t.version = int(m.group(2))
-        return t
-
-    # Batch range: 01 ~ 13, 01~26
-    m = _RE_BATCH_RANGE.match(stripped)
-    if m:
-        return Token(
-            kind=TokenKind.BATCH_RANGE,
-            text=stripped,
-            batch_start=int(m.group(1)),
-            batch_end=int(m.group(2)),
-        )
-
-    # "05 END" or "05v2 END"
-    m = _RE_EP_FINAL.match(stripped)
-    if m:
-        t = Token(
-            kind=TokenKind.EPISODE,
-            text=stripped,
-            episode=int(m.group(1)),
-        )
-        if m.group(2):
-            t.version = int(m.group(2))
-        return t
-
-    # Bare number with optional version: "08", "04v2"
-    # But NOT 4-digit numbers that look like years (1900-2099)
-    m = _RE_EP_NUM.match(stripped)
-    if m and not _RE_YEAR.match(m.group(1)):
-        t = Token(
-            kind=TokenKind.EPISODE,
-            text=stripped,
-            episode=int(m.group(1)),
-        )
-        if m.group(2):
-            t.version = int(m.group(2))
-        return t
-
+    token = _try_recognize(text.strip())
+    if token is not None and token.kind in (
+        TokenKind.EPISODE,
+        TokenKind.SEASON,
+        TokenKind.BATCH_RANGE,
+    ):
+        return token
     return None
 
 
@@ -712,20 +602,16 @@ def _classify_paren(token: Token) -> Token | list[Token]:
     """
     text = token.text.strip()
 
-    # Year: (1964), (2024)
-    if _RE_YEAR.match(text):
-        return Token(kind=TokenKind.YEAR, text=text, year=int(text))
+    # Try scanner recognizers for year, season, special, etc.
+    from etp_lib.media_scanner import _try_recognize
 
-    # Japanese season: (第1期)
-    m = _RE_SEASON_JP.match(text)
-    if m:
-        return Token(kind=TokenKind.SEASON, text=text, season=int(m.group(1)))
-
-    # OVA in parens
-    m = _RE_SPECIAL.match(text)
-    if m:
-        ep = int(m.group(2)) if m.group(2) else None
-        return Token(kind=TokenKind.EPISODE, text=text, episode=ep)
+    recognized = _try_recognize(text)
+    if recognized is not None and recognized.kind in (
+        TokenKind.YEAR,
+        TokenKind.SEASON,
+        TokenKind.EPISODE,
+    ):
+        return recognized
 
     # Subtitle info: softSub(chi+eng)
     if _RE_SUBTITLE_SOFT.search(text):
