@@ -1028,7 +1028,7 @@ def _split_text_with_embedded(token: Token) -> list[Token]:
     if ep_match:
         start, end, ep_token = ep_match
         before = text[:start].strip()
-        after = text[end:].strip()
+        after = text[end:].lstrip(" -")
         result = []
         if before:
             result.append(Token(kind=TokenKind.TEXT, text=before))
@@ -1539,9 +1539,33 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
     # Merge: directory provides path_series_name, filename is primary
     result = file_pm
 
-    # Directory series name
+    # Directory series name — clean metadata from directory name
     if dir_pm.series_name:
-        result.path_series_name = dir_pm.series_name
+        cleaned = clean_series_title(dir_pm.series_name)
+        result.path_series_name = cleaned if cleaned else dir_pm.series_name
+
+        # If the directory had metadata words that parse_component didn't
+        # extract (common for bare directory names without brackets/dots),
+        # scan the full directory text for metadata to fill gaps.
+        if not dir_pm.source_type and not dir_pm.resolution:
+            dir_meta_tokens = scan_words(dir_pm.series_name)
+            for t in dir_meta_tokens:
+                if t.kind == TokenKind.SOURCE and not dir_pm.source_type:
+                    mapped = _SOURCE_TYPE_MAP.get(t.text.lower(), "")
+                    if mapped:
+                        dir_pm.source_type = mapped
+                    if "remux" in t.text.lower():
+                        dir_pm.is_remux = True
+                elif t.kind == TokenKind.REMUX:
+                    dir_pm.is_remux = True
+                    if not dir_pm.source_type:
+                        dir_pm.source_type = "BD"
+                elif t.kind == TokenKind.RESOLUTION and not dir_pm.resolution:
+                    dir_pm.resolution = t.text
+                elif t.kind == TokenKind.VIDEO_CODEC and not dir_pm.video_codec:
+                    dir_pm.video_codec = t.text
+                elif t.kind == TokenKind.RELEASE_GROUP and not dir_pm.release_group:
+                    dir_pm.release_group = t.text
 
     # Batch info from directory
     if dir_pm.path_is_batch:
@@ -1557,6 +1581,16 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
     # Source type fallback
     if not result.source_type and dir_pm.source_type:
         result.source_type = dir_pm.source_type
+    if dir_pm.is_remux and not result.is_remux:
+        result.is_remux = True
+
+    # Resolution fallback
+    if not result.resolution and dir_pm.resolution:
+        result.resolution = dir_pm.resolution
+
+    # Video codec fallback
+    if not result.video_codec and dir_pm.video_codec:
+        result.video_codec = dir_pm.video_codec
 
     # Year fallback
     if result.year is None and dir_pm.year is not None:

@@ -1173,3 +1173,52 @@ class TestTryRecognize:
     )
     def test_not_recognized(self, word):
         assert _try_recognize(word) is None
+
+
+# ===================================================================
+# Regression: QA-discovered edge cases
+# ===================================================================
+
+
+class TestQARegression:
+    """Regression tests from parser QA review of real filenames."""
+
+    def test_sxxexx_dash_title_no_space(self):
+        """S01E01-Title (no space before dash) should strip leading dash."""
+        pm = mp.parse_component("S01E01-A World Without Books.mkv")
+        assert pm.season == 1
+        assert pm.episode == 1
+        assert pm.episode_title == "A World Without Books"
+
+    def test_directory_metadata_propagation(self):
+        """File with no metadata should inherit from directory."""
+        pm = mp.parse_media_path(
+            "Ascendance of a Bookworm S01-S02+OVA Dual Audio BDRip x265-EMBER/"
+            "01.Ascendance of a Bookworm S01 1080p Dual Audio BDRip 10 bits x265-EMBER/"
+            "S01E01-A World Without Books.mkv"
+        )
+        assert pm.series_name or pm.path_series_name
+        assert pm.episode == 1
+        # Episode title should not have leading dash
+        assert not pm.episode_title.startswith("-")
+
+    def test_multi_season_batch_directory_cleaning(self):
+        """S01-S02+OVA should be stripped from path_series_name."""
+        pm = mp.parse_media_path(
+            "Ascendance of a Bookworm S01-S02+OVA Dual Audio BDRip x265-EMBER/"
+            "S01E01-A World Without Books.mkv"
+        )
+        # path_series_name should be cleaned of metadata
+        assert "S01-S02" not in pm.path_series_name
+        assert "BDRip" not in pm.path_series_name
+        assert "Ascendance" in pm.path_series_name
+
+    def test_directory_metadata_fills_gaps(self):
+        """When file has no source/resolution/codec, directory should fill in."""
+        pm = mp.parse_media_path(
+            "Show S01 1080p BDRip x265-GROUP/S01E01-Episode Title.mkv"
+        )
+        assert pm.source_type == "BD"
+        assert pm.resolution == "1080p"
+        assert pm.video_codec == "x265"
+        assert pm.release_group == "GROUP"
