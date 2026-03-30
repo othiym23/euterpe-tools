@@ -7,3 +7,5 @@ __pycache__/
 .venv/
 *.db
 .coverage
+parser-problems.jsonl
+parser-problems.state

@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import date
 
 from parsy import Parser, Result, regex
 
@@ -74,9 +75,18 @@ class EpisodeSE:
 
 
 @dataclass(frozen=True, slots=True)
+class EpisodeMultiSE:
+    """Multi-episode: S01E01-E06, S01E01-06, S01E01E02E03."""
+
+    season: int
+    episodes: list[int]
+
+
+@dataclass(frozen=True, slots=True)
 class EpisodeBare:
     episode: int
     version: int | None = None
+    is_decimal_special: bool = False  # 01.5 → special between episodes
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +179,11 @@ class DualAudio:
 @dataclass(frozen=True, slots=True)
 class Edition:
     value: str  # "Criterion", "Director's Cut", etc.
+
+
+@dataclass(frozen=True, slots=True)
+class Uncensored:
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,7 +291,42 @@ source: Parser = Parser(_source_parser)  # type: ignore[arg-type]  # ty: ignore[
 # REMUX
 remux: Parser = regex(r"REMUX", re.IGNORECASE).map(lambda _: Remux())
 
-# Episode: SxxExx
+# Episode: SxxExx (multi-episode and single)
+
+# Multi-episode: S01E01-E06, S01E01-06, S01E01E02E03
+_RE_EP_MULTI_SE = re.compile(
+    r"[Ss](\d{1,2})[Ee](\d{1,4})"
+    r"(?:"
+    r"(?:-[Ee]?(\d{1,4}))"  # S01E01-E06 or S01E01-06 (range)
+    r"|"
+    r"([Ee]\d{1,4}(?:[Ee]\d{1,4})*)"  # S01E01E02E03 (repeated E)
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _multi_episode_se_parser(stream: str, index: int):
+    m = _RE_EP_MULTI_SE.match(stream, index)
+    if not m:
+        return Result.failure(index, frozenset({"multi_episode_se"}))
+    season = int(m.group(1))
+    first = int(m.group(2))
+    if m.group(3):
+        # Range: S01E01-06 or S01E01-E06
+        last = int(m.group(3))
+        if last < first or last - first > 100:
+            return Result.failure(index, frozenset({"multi_episode_se"}))
+        episodes = list(range(first, last + 1))
+    else:
+        # Repeated: S01E01E02E03
+        extra = re.findall(r"[Ee](\d{1,4})", m.group(4))
+        episodes = [first] + [int(e) for e in extra]
+    return Result.success(m.end(), EpisodeMultiSE(season=season, episodes=episodes))
+
+
+episode_multi_se: Parser = Parser(_multi_episode_se_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+# Single episode: S01E05, s1e1, S03E13v2
 _RE_EP_SE_P = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,4})(?:v(\d+))?", re.IGNORECASE)
 
 
@@ -305,6 +355,21 @@ def _bare_episode_parser(stream: str, index: int):
         return Result.failure(index, frozenset({"bare_episode"}))
     version = int(m.group(2)) if m.group(2) else None
     return Result.success(index + m.end(), EpisodeBare(num, version))
+
+
+# Decimal episode special (01.5) — NOT in _RECOGNIZERS to avoid false positives
+# from scan_dot_segments compound matching.
+_RE_DECIMAL_EP = re.compile(r"^(\d{1,4})\.(\d{1,2})$")
+
+
+def _try_decimal_episode(text: str) -> Token | None:
+    """Try to parse text as a decimal episode special (01.5)."""
+    md = _RE_DECIMAL_EP.match(text)
+    if md:
+        num = int(md.group(1))
+        if not (1900 <= num <= 2099):
+            return _result_to_token(EpisodeBare(num, is_decimal_special=True), text)
+    return None
 
 
 episode_bare: Parser = Parser(_bare_episode_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
@@ -343,10 +408,21 @@ season_jp: Parser = regex(r"第(\d{1,2})期").map(
     lambda s: SeasonJP(int(_re_group(r"第(\d+)期", s)))
 )
 
-# Season: English ordinal "4th Season"
-season_word: Parser = regex(r"(\d+)(?:st|nd|rd|th)\s+Season", re.IGNORECASE).map(
-    lambda s: SeasonWord(int(_re_group(r"(\d+)", s)))
+# Season: English ordinal "4th Season" or "Season 01" (GM-Team format)
+_RE_SEASON_WORD = re.compile(
+    r"(?:(\d+)(?:st|nd|rd|th)\s+Season|Season\s+(\d{1,2}))", re.IGNORECASE
 )
+
+
+def _season_word_parser(stream: str, index: int):
+    m = _RE_SEASON_WORD.match(stream, index)
+    if not m:
+        return Result.failure(index, frozenset({"season_word"}))
+    num = int(m.group(1) or m.group(2))
+    return Result.success(m.end(), SeasonWord(num))
+
+
+season_word: Parser = Parser(_season_word_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 # Season: bare "S01"
 season_only: Parser = regex(r"[Ss](\d{1,2})(?!\d|[Ee])").map(
@@ -397,8 +473,22 @@ version: Parser = regex(r"v(\d+)", re.IGNORECASE).map(
     lambda s: Version(int(_re_group(r"v(\d+)", s, flags=re.IGNORECASE)))
 )
 
-# Year
-year: Parser = regex(r"(?:19|20)\d{2}(?!\d)").map(lambda s: Year(int(s)))
+# Year — reject pre-1940 (oldest content of interest) and future years
+_CURRENT_YEAR = date.today().year
+_RE_YEAR_P = re.compile(r"((?:19|20)\d{2})(?!\d)")
+
+
+def _year_parser(stream: str, index: int):
+    m = _RE_YEAR_P.match(stream, index)
+    if not m:
+        return Result.failure(index, frozenset({"year"}))
+    y = int(m.group(1))
+    if y < 1940 or y > _CURRENT_YEAR + 1:
+        return Result.failure(index, frozenset({"year"}))
+    return Result.success(m.end(), Year(y))
+
+
+year: Parser = Parser(_year_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 # CRC32
 crc32: Parser = regex(r"[0-9A-Fa-f]{8}(?![0-9A-Fa-f])").map(lambda s: CRC32(s.upper()))
@@ -434,8 +524,8 @@ def _bit_depth_parser(stream: str, index: int):
 
 bit_depth: Parser = Parser(_bit_depth_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
-# Dual Audio / Dual-Audio
-_RE_DUAL_AUDIO = re.compile(r"Dual[- ]?Audio", re.IGNORECASE)
+# Dual Audio / Dual-Audio / Dual.Audio / DUAL (scene shorthand)
+_RE_DUAL_AUDIO = re.compile(r"Dual[- .]?Audio|\bDUAL\b", re.IGNORECASE)
 
 
 def _dual_audio_parser(stream: str, index: int):
@@ -450,6 +540,9 @@ dual_audio: Parser = Parser(_dual_audio_parser)  # type: ignore[arg-type]  # ty:
 # Edition markers: Criterion, Director's Cut, etc.
 _EDITIONS = frozenset({"criterion", "remastered", "uncut", "theatrical", "extended"})
 edition: Parser = _match_set_ci(_EDITIONS, Edition)
+
+# Uncensored marker
+uncensored: Parser = regex(r"Uncensored", re.IGNORECASE).map(lambda _: Uncensored())
 
 # Bonus keywords (English)
 _RE_BONUS_EN_P = re.compile(
@@ -483,6 +576,7 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     Source: TokenKind.SOURCE,
     Remux: TokenKind.REMUX,
     EpisodeSE: TokenKind.EPISODE,
+    EpisodeMultiSE: TokenKind.EPISODE,
     EpisodeBare: TokenKind.EPISODE,
     EpisodeJP: TokenKind.EPISODE,
     SeasonJP: TokenKind.SEASON,
@@ -501,8 +595,9 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     Repack: TokenKind.UNKNOWN,
     SitePrefix: TokenKind.SITE_PREFIX,
     BitDepth: TokenKind.UNKNOWN,  # Metadata, not title — no dedicated kind
-    DualAudio: TokenKind.UNKNOWN,
-    Edition: TokenKind.UNKNOWN,
+    DualAudio: TokenKind.DUAL_AUDIO,
+    Edition: TokenKind.EDITION,
+    Uncensored: TokenKind.UNCENSORED,
 }
 
 # Known redistributor site brackets — not release groups
@@ -515,13 +610,19 @@ def _result_to_token(result: object, text: str) -> Token:
     token = Token(kind=kind, text=text)
 
     # Populate numeric fields
-    if isinstance(result, EpisodeSE):
+    if isinstance(result, EpisodeMultiSE):
+        token.season = result.season
+        token.episode = result.episodes[0]
+        token.batch_start = result.episodes[0]
+        token.batch_end = result.episodes[-1]
+    elif isinstance(result, EpisodeSE):
         token.season = result.season
         token.episode = result.episode
         token.version = result.version
     elif isinstance(result, EpisodeBare):
         token.episode = result.episode
         token.version = result.version
+        token.is_decimal_special = result.is_decimal_special
     elif isinstance(result, EpisodeJP):
         token.episode = result.episode
     elif isinstance(result, SeasonJP):
@@ -556,6 +657,7 @@ def _result_to_token(result: object, text: str) -> Token:
 
 _RECOGNIZERS: list[Parser] = [
     # Episode markers (most distinctive)
+    episode_multi_se,  # S01E01-E06, S01E01-06, S01E01E02E03
     episode_se,  # S01E05, s1e1, S03E13v2
     episode_jp,  # 第01話
     batch_range,  # 01~26
@@ -579,12 +681,13 @@ _RECOGNIZERS: list[Parser] = [
     crc32,  # ABCD1234
     year,  # 2019 (after episode to avoid episode false positives)
     version,  # v2, v3
-    # Context
+    # Context (dual_audio before language — "DUAL" must match as dual-audio, not language)
+    dual_audio,  # Dual Audio, Dual-Audio, DUAL
     language,  # jpn, eng, dual
     subtitle_info,  # multisub, msubs
     hdr_info,  # HDR, HDR10, DoVi
     bit_depth,  # 10bit, 10-Bit, Hi10
-    dual_audio,  # Dual Audio, Dual-Audio
+    uncensored,  # Uncensored
     edition,  # Criterion, Remastered
     repack,  # REPACK, REPACK2
     site_prefix,  # www.example.com
@@ -637,8 +740,8 @@ def scan_words(text: str) -> list[Token]:
                     continue
             pos += 1
 
-    # Sort by position, take non-overlapping matches
-    pre_tokens.sort(key=lambda x: x[0])
+    # Sort by position, longest match first at each position
+    pre_tokens.sort(key=lambda x: (x[0], -(x[1] - x[0])))
     used: list[tuple[int, int, Token]] = []
     last_end = 0
     for start, end, token in pre_tokens:
@@ -658,6 +761,10 @@ def scan_words(text: str) -> list[Token]:
         for w in _RE_WORD_SPLIT.split(gap_text):
             w = w.strip()
             if not w:
+                continue
+            dec_token = _try_decimal_episode(w)
+            if dec_token is not None:
+                tokens.append(dec_token)
                 continue
             token = _try_recognize(w)
             if token is not None:
@@ -794,8 +901,8 @@ def find_episode_in_text(text: str) -> tuple[int, int, Token] | None:
     Tries SxxExx first, then S##OVA/S##SP patterns.
     Returns (start, end, token) or None.
     """
-    for recognizer in (episode_se, season_special):
-        for pos in range(len(text)):
+    for pos in range(len(text)):
+        for recognizer in (episode_multi_se, episode_se, season_special):
             result = recognizer(text, pos)
             if result.status:
                 return (
@@ -1009,7 +1116,7 @@ _RE_SUBTITLE_SOFT = re.compile(r"softsub", re.IGNORECASE)
 
 _RE_CRC32 = re.compile(r"^[0-9A-Fa-f]{8}$")
 
-_RE_YEAR = re.compile(r"^(1[89]\d{2}|20[0-9]{2})$")
+_RE_YEAR = re.compile(r"^(19[4-9]\d|20[0-9]{2})$")  # 1940-2099 structural match
 
 _RE_SPECIAL = re.compile(r"^(SP|OVA|OAD|ONA)(\d*)$", re.IGNORECASE)
 # Release group detection
@@ -1071,7 +1178,13 @@ def _classify_episode_text(text: str) -> Token | None:
 
     Delegates to the scanner's parsy-based recognizers.
     """
-    token = _try_recognize(text.strip())
+    text = text.strip()
+
+    dec_token = _try_decimal_episode(text)
+    if dec_token is not None:
+        return dec_token
+
+    token = _try_recognize(text)
     if token is not None and token.kind in (
         TokenKind.EPISODE,
         TokenKind.SEASON,
@@ -1188,6 +1301,9 @@ def _classify_paren(token: Token) -> Token | list[Token]:
         TokenKind.YEAR,
         TokenKind.SEASON,
         TokenKind.EPISODE,
+        TokenKind.DUAL_AUDIO,
+        TokenKind.UNCENSORED,
+        TokenKind.EDITION,
     ):
         return recognized
 
@@ -1350,8 +1466,10 @@ def classify(tokens: list[Token]) -> list[Token]:
 
             # Year?
             if _RE_YEAR.match(text):
-                result.append(Token(kind=TokenKind.YEAR, text=text, year=int(text)))
-                continue
+                y = int(text)
+                if 1940 <= y <= _CURRENT_YEAR + 1:
+                    result.append(Token(kind=TokenKind.YEAR, text=text, year=y))
+                    continue
 
             # Known metadata keyword?
             kind = classify_text(text)
@@ -1434,9 +1552,11 @@ class ParsedMedia:
     """Result of parsing a media file path."""
 
     series_name: str = ""
+    series_name_alt: str = ""  # Alternate-language title (CJK/Latin split on / or |)
     episode_title: str = ""
     season: int | None = None
     episode: int | None = None
+    episodes: list[int] = field(default_factory=list)
     version: int | None = None
     is_special: bool = False
     special_tag: str = ""
@@ -1448,6 +1568,7 @@ class ParsedMedia:
     is_remux: bool = False
     is_dual_audio: bool = False
     is_criterion: bool = False
+    is_uncensored: bool = False
     hash_code: str = ""
     resolution: str = ""
     video_codec: str = ""
@@ -1459,14 +1580,25 @@ class ParsedMedia:
     path_is_batch: bool = False
 
 
-def _extract_title_from_tokens(tokens: list[Token]) -> tuple[str, str]:
-    """Extract series name and episode title from classified tokens.
+_RE_TITLE_SPLIT = re.compile(r"\s*[/|]\s*")
+_RE_CJK_CHAR = re.compile(r"[\u3000-\u9fff\uff00-\uffef]")
 
-    Returns (series_name, episode_title).
+
+def _has_cjk(text: str) -> bool:
+    return bool(_RE_CJK_CHAR.search(text))
+
+
+def _extract_title_from_tokens(tokens: list[Token]) -> tuple[str, str, str]:
+    """Extract series name, alt title, and episode title from classified tokens.
+
+    Returns (series_name, series_name_alt, episode_title).
 
     Strategy: collect TEXT/DOT_TEXT tokens that appear in the "title zone"
     (before the first episode marker or metadata-only region).
     After the episode marker, TEXT tokens become episode title (for scene style).
+
+    If the series name contains a ``/`` or ``|`` separator (common in
+    CJK/Latin bilingual releases), splits into primary and alt titles.
     """
     series_parts: list[str] = []
     ep_title_parts: list[str] = []
@@ -1522,10 +1654,43 @@ def _extract_title_from_tokens(tokens: list[Token]) -> tuple[str, str]:
     series_name = re.sub(r"\s*-\s*$", "", series_name)
     series_name = re.sub(r"\s+", " ", series_name)
 
+    # Split bilingual titles on / or | (common in CJK/Latin fansub releases).
+    # Only split on / when one side contains CJK characters (avoids breaking
+    # titles like "Fate/stay night"). Pipe with surrounding spaces is always
+    # treated as a bilingual separator.
+    series_name_alt = ""
+    m = _RE_TITLE_SPLIT.search(series_name)
+    if m:
+        left = series_name[: m.start()].strip()
+        right = series_name[m.end() :].strip()
+        sep = m.group(0).strip()
+        if sep == "|" or (_has_cjk(left) != _has_cjk(right)):
+            series_name = left
+            series_name_alt = right
+
     episode_title = " ".join(ep_title_parts).strip()
     episode_title = re.sub(r"\s+", " ", episode_title)
 
-    return series_name, episode_title
+    return series_name, series_name_alt, episode_title
+
+
+def _check_special(token: Token, pm: ParsedMedia) -> None:
+    """Check if an EPISODE token represents a special episode and update pm."""
+    stripped = token.text.strip().upper()
+    if token.season == 0:
+        pm.is_special = True
+    if token.is_decimal_special:
+        pm.is_special = True
+    m_ss = _RE_SEASON_SPECIAL.match(stripped)
+    if _RE_SPECIAL.match(stripped) or m_ss:
+        pm.is_special = True
+        pm.special_tag = token.text.strip()
+        if m_ss:
+            tag = m_ss.group(2).upper()
+            if tag == "OP":
+                pm.bonus_type = "NCOP"
+            elif tag == "ED":
+                pm.bonus_type = "NCED"
 
 
 def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
@@ -1553,21 +1718,21 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
                     pm.season = token.season
                 if token.version is not None:
                     pm.version = token.version
+                # Multi-episode: expand batch_start..batch_end into episodes list
+                if (
+                    token.batch_start is not None
+                    and token.batch_end is not None
+                    and token.batch_end >= token.batch_start
+                ):
+                    pm.episodes = list(range(token.batch_start, token.batch_end + 1))
                 # Check for special episodes (including season 0)
-                stripped = token.text.strip().upper()
-                if token.season == 0:
-                    pm.is_special = True
-                if _RE_SPECIAL.match(stripped) or _RE_SEASON_SPECIAL.match(stripped):
-                    pm.is_special = True
-                    pm.special_tag = token.text.strip()
-                    # S03OP/S03ED → set bonus_type for credit specials
-                    m_ss = _RE_SEASON_SPECIAL.match(stripped)
-                    if m_ss:
-                        tag = m_ss.group(2).upper()
-                        if tag == "OP":
-                            pm.bonus_type = "NCOP"
-                        elif tag == "ED":
-                            pm.bonus_type = "NCED"
+                _check_special(token, pm)
+            elif pm.season is None and token.season is not None:
+                # A later EPISODE token has season info the first one lacked
+                # (e.g., bare "001" then "(S01E01)" in LoliHouse-style names).
+                # Upgrade with the season; keep original episode number.
+                pm.season = token.season
+                _check_special(token, pm)
         elif token.kind == TokenKind.SEASON:
             if pm.season is None:
                 pm.season = token.season
@@ -1620,38 +1785,61 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
             bt = classify_bonus_type(token.text)
             if bt and (not pm.bonus_type or pm.bonus_type == "Bonus"):
                 pm.bonus_type = bt
+        elif token.kind == TokenKind.DUAL_AUDIO:
+            pm.is_dual_audio = True
+        elif token.kind == TokenKind.UNCENSORED:
+            pm.is_uncensored = True
+        elif token.kind == TokenKind.EDITION:
+            if token.text.lower() == "criterion":
+                pm.is_criterion = True
         elif token.kind == TokenKind.EXTENSION:
             pm.extension = token.text
 
     # Extract title (preserve bonus-extracted episode_title if already set)
     saved_ep_title = pm.episode_title
-    pm.series_name, pm.episode_title = _extract_title_from_tokens(tokens)
+    pm.series_name, pm.series_name_alt, pm.episode_title = _extract_title_from_tokens(
+        tokens
+    )
     if saved_ep_title and not pm.episode_title:
         pm.episode_title = saved_ep_title
 
     return pm
 
 
-_RE_DUAL_AUDIO_SEARCH = re.compile(r"Dual[- ]?Audio", re.IGNORECASE)
-_RE_BIT_DEPTH_SEARCH = re.compile(
-    r"\b(?:Hi)?(\d+)[- ]?[Bb]it\b|\bHi(\d+)\b", re.IGNORECASE
-)
-_RE_CRITERION_SEARCH = re.compile(r"\bCriterion\b", re.IGNORECASE)
-
-
 def parse_component(text: str) -> ParsedMedia:
     """Parse a single path component (directory or filename) into ParsedMedia."""
     tokens = classify(tokenize_component(text))
-    pm = _build_parsed_media(tokens)
+    return _build_parsed_media(tokens)
 
-    # Post-pass: detect flags that span multiple tokens or aren't captured
-    # by the token-level pipeline
-    if _RE_DUAL_AUDIO_SEARCH.search(text):
-        pm.is_dual_audio = True
-    if _RE_CRITERION_SEARCH.search(text):
-        pm.is_criterion = True
 
-    return pm
+def _merge_scanned_metadata(tokens: list[Token], pm: ParsedMedia) -> None:
+    """Merge metadata tokens from scan_words into a ParsedMedia, filling gaps."""
+    for t in tokens:
+        if t.kind == TokenKind.SOURCE and not pm.source_type:
+            mapped = _SOURCE_TYPE_MAP.get(t.text.lower(), "")
+            if mapped:
+                pm.source_type = mapped
+            if "remux" in t.text.lower():
+                pm.is_remux = True
+        elif t.kind == TokenKind.REMUX and not pm.is_remux:
+            pm.is_remux = True
+            if not pm.source_type:
+                pm.source_type = "BD"
+        elif t.kind == TokenKind.RESOLUTION and not pm.resolution:
+            pm.resolution = t.text
+        elif t.kind == TokenKind.VIDEO_CODEC and not pm.video_codec:
+            pm.video_codec = t.text
+        elif t.kind == TokenKind.AUDIO_CODEC:
+            pm.audio_codecs.append(t.text)
+        elif t.kind == TokenKind.RELEASE_GROUP and not pm.release_group:
+            pm.release_group = t.text
+        elif t.kind == TokenKind.DUAL_AUDIO:
+            pm.is_dual_audio = True
+        elif t.kind == TokenKind.UNCENSORED:
+            pm.is_uncensored = True
+        elif t.kind == TokenKind.EDITION:
+            if t.text.lower() == "criterion":
+                pm.is_criterion = True
 
 
 def parse_media_path(rel_path: str) -> ParsedMedia:
@@ -1685,23 +1873,7 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
         else:
             # Scan additional directories for metadata that dir_pm missed
             extra_tokens = scan_words(dp)
-            for t in extra_tokens:
-                if t.kind == TokenKind.SOURCE and not dir_pm.source_type:
-                    mapped = _SOURCE_TYPE_MAP.get(t.text.lower(), "")
-                    if mapped:
-                        dir_pm.source_type = mapped
-                elif t.kind == TokenKind.REMUX and not dir_pm.is_remux:
-                    dir_pm.is_remux = True
-                    if not dir_pm.source_type:
-                        dir_pm.source_type = "BD"
-                elif t.kind == TokenKind.RESOLUTION and not dir_pm.resolution:
-                    dir_pm.resolution = t.text
-                elif t.kind == TokenKind.VIDEO_CODEC and not dir_pm.video_codec:
-                    dir_pm.video_codec = t.text
-                elif t.kind == TokenKind.AUDIO_CODEC:
-                    dir_pm.audio_codecs.append(t.text)
-                elif t.kind == TokenKind.RELEASE_GROUP and not dir_pm.release_group:
-                    dir_pm.release_group = t.text
+            _merge_scanned_metadata(extra_tokens, dir_pm)
 
     if dir_pm is None:
         return file_pm
@@ -1718,26 +1890,7 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
         # extract (common for bare directory names without brackets/dots),
         # scan the full directory text for metadata to fill gaps.
         if not dir_pm.source_type and not dir_pm.resolution:
-            dir_meta_tokens = scan_words(dir_pm.series_name)
-            for t in dir_meta_tokens:
-                if t.kind == TokenKind.SOURCE and not dir_pm.source_type:
-                    mapped = _SOURCE_TYPE_MAP.get(t.text.lower(), "")
-                    if mapped:
-                        dir_pm.source_type = mapped
-                    if "remux" in t.text.lower():
-                        dir_pm.is_remux = True
-                elif t.kind == TokenKind.REMUX:
-                    dir_pm.is_remux = True
-                    if not dir_pm.source_type:
-                        dir_pm.source_type = "BD"
-                elif t.kind == TokenKind.RESOLUTION and not dir_pm.resolution:
-                    dir_pm.resolution = t.text
-                elif t.kind == TokenKind.VIDEO_CODEC and not dir_pm.video_codec:
-                    dir_pm.video_codec = t.text
-                elif t.kind == TokenKind.AUDIO_CODEC:
-                    dir_pm.audio_codecs.append(t.text)
-                elif t.kind == TokenKind.RELEASE_GROUP and not dir_pm.release_group:
-                    dir_pm.release_group = t.text
+            _merge_scanned_metadata(scan_words(dir_pm.series_name), dir_pm)
 
     # Batch info from directory
     if dir_pm.path_is_batch:
@@ -1777,6 +1930,22 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
     # Season fallback from directory
     if result.season is None and dir_pm.season is not None:
         result.season = dir_pm.season
+
+    # Boolean flags — propagate from directory if set
+    if dir_pm.is_dual_audio:
+        result.is_dual_audio = True
+    if dir_pm.is_criterion:
+        result.is_criterion = True
+    if dir_pm.is_uncensored:
+        result.is_uncensored = True
+
+    # Strip release group prefix from series name (dot-prefix convention:
+    # "GroupName.Series.Title.EpNN" → series "GroupName Series Title" but
+    # the group is "GroupName")
+    if result.release_group and result.series_name:
+        prefix = result.release_group + " "
+        if result.series_name.startswith(prefix):
+            result.series_name = result.series_name[len(prefix) :].strip()
 
     return result
 
@@ -1931,11 +2100,14 @@ class TitleAliasIndex:
 _RE_META_BOUNDARY = re.compile(
     r"[\s.]+(?:S\d+(?:[+-]S?\d+)?(?:\+OVA)?|"
     r"BD|BDRip|BluRay|Blu-Ray|WEB|WEB-DL|WEBRip|REMUX|DVD|DVDRip|DVD-R|HDTV|SDTV|VCD|CD-R|"
-    r"Dual[\s.]Audio|x26[45]|HEVC|AVC|H\.26[45]|"
+    r"Dual[\s.]Audio|DUAL|Uncensored|x26[45]|HEVC|AVC|H\.26[45]|"
     r"1080p|720p|2160p|4K|"
     r"FLAC|AAC|DTS|AC3|DD|EAC3)\b",
     re.IGNORECASE,
 )
+
+
+_RE_TRAILING_BRACKET = re.compile(r"\s*\[.*?\]\s*$")
 
 
 def clean_series_title(name: str) -> str:
@@ -1944,10 +2116,14 @@ def clean_series_title(name: str) -> str:
     Handles both space-separated and dot-separated names, e.g.
     ``"Show S01-S02 Dual Audio BDRip x265-GROUP"`` → ``"Show"``
     ``"Show.S02.1080p.BluRay.x265-GROUP"`` → ``"Show"``.
+
+    Also strips trailing ``[bracket]`` content (release groups / metadata
+    that the parser didn't classify).
     """
     m = _RE_META_BOUNDARY.search(name)
     if m:
-        return name[: m.start()].strip(" .-")
+        name = name[: m.start()].strip(" .-")
+    name = _RE_TRAILING_BRACKET.sub("", name).strip()
     return name
 
 
@@ -1955,11 +2131,12 @@ def name_variants(name: str) -> set[str]:
     """Return all normalized key variants for a series name.
 
     Produces keys from the raw name, the parser-extracted name (without
-    year/quality), and the metadata-truncated name.  Any of these may
-    match download index keys.
+    year/quality), the metadata-truncated name, and the alternate-language
+    title (if present).  Any of these may match download index keys.
     """
     keys: set[str] = set()
-    for variant in (name, parse_component(name).series_name, clean_series_title(name)):
+    pm = parse_component(name)
+    for variant in (name, pm.series_name, pm.series_name_alt, clean_series_title(name)):
         k = normalize_for_matching(variant)
         if k:
             keys.add(k)

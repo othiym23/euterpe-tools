@@ -61,7 +61,7 @@ _SOURCES = st.sampled_from(
     ]
 )
 _HASHES = st.from_regex(r"[0-9A-F]{8}", fullmatch=True)
-_YEARS = st.integers(min_value=1950, max_value=2030)
+_YEARS = st.integers(min_value=1950, max_value=2027)
 _EXTENSIONS = st.sampled_from([".mkv", ".mp4", ".avi", ".flac", ".m4a"])
 _VERSIONS = st.integers(min_value=2, max_value=5)
 

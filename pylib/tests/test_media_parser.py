@@ -1366,3 +1366,204 @@ class TestQARegression:
         assert pm.video_codec == "x264"
         assert "AAC" in pm.audio_codecs
         assert pm.hash_code == "BD056DD6"
+
+    def test_dual_standalone_scene(self):
+        """Scene-style DUAL (without Audio) should set is_dual_audio."""
+        pm = mp.parse_component(
+            "Anne.Shirley.S01E01.1080p.CR.WEB-DL.DUAL.AAC2.0.H.264-VARYG.mkv"
+        )
+        assert pm.is_dual_audio is True
+        assert pm.streaming_service == "CR"
+        assert pm.release_group == "VARYG"
+
+    def test_dual_dot_audio_scene(self):
+        """Dual.Audio (dot-separated) should set is_dual_audio."""
+        pm = mp.parse_component(
+            "Chained.Soldier.S01E07.BD.1080p.x264.FLAC.EAC3.Dual.Audio-Freehold.mkv"
+        )
+        assert pm.is_dual_audio is True
+
+    def test_dual_audio_propagated_from_directory(self):
+        """Dual Audio in directory name should propagate to file ParsedMedia."""
+        pm = mp.parse_media_path(
+            "Ascendance of a Bookworm S03+SP 1080p Dual Audio BD Remux FLAC-TTGA/"
+            "S03E01-The Beginning of Winter.mkv"
+        )
+        assert pm.is_dual_audio is True
+        assert pm.release_group == "TTGA"
+
+    def test_dual_audio_propagated_nested_directory(self):
+        """Dual Audio in grandparent directory should propagate."""
+        pm = mp.parse_media_path(
+            "Ascendance of a Bookworm S01-S02+OVA Dual Audio BDRip x265-EMBER/"
+            "01.Ascendance of a Bookworm S01 1080p Dual Audio BDRip 10 bits x265-EMBER/"
+            "S01E01-A World Without Books.mkv"
+        )
+        assert pm.is_dual_audio is True
+
+    def test_uncensored_detected(self):
+        """Uncensored should set is_uncensored flag."""
+        pm = mp.parse_component(
+            "Chained.Soldier.S02E01.ADN.WEB-DL.1080p.x264.AAC.EAC3."
+            "Dual.Audio.Uncensored-Freehold.mkv"
+        )
+        assert pm.is_uncensored is True
+        assert pm.is_dual_audio is True
+        assert pm.release_group == "Freehold"
+
+    def test_uncensored_in_brackets(self):
+        """(Uncensored) in brackets should set is_uncensored."""
+        pm = mp.parse_component(
+            "[SubsPlus+] Chained Soldier - S02E01 (ADN WEB-DL 1080p AVC AAC) "
+            "(Uncensored) [76A7C1CD].mkv"
+        )
+        assert pm.is_uncensored is True
+
+    # -- Multi-episode range expansion (Sonarr-inspired) --
+
+    def test_multi_episode_range_with_e(self):
+        """S01E01-E06 should expand to episodes [1..6]."""
+        pm = mp.parse_component("Show.S01E01-E06.720p.BluRay.x265-GROUP.mkv")
+        assert pm.season == 1
+        assert pm.episode == 1
+        assert pm.episodes == [1, 2, 3, 4, 5, 6]
+
+    def test_multi_episode_range_bare(self):
+        """S01E01-06 should expand to episodes [1..6]."""
+        pm = mp.parse_component("Show.S01E01-06.720p.BluRay.x265-GROUP.mkv")
+        assert pm.season == 1
+        assert pm.episode == 1
+        assert pm.episodes == [1, 2, 3, 4, 5, 6]
+
+    def test_multi_episode_repeated(self):
+        """S01E01E02E03 should produce episodes [1, 2, 3]."""
+        pm = mp.parse_component("Show.S01E01E02E03.720p.BluRay.x265-GROUP.mkv")
+        assert pm.season == 1
+        assert pm.episode == 1
+        assert pm.episodes == [1, 2, 3]
+
+    def test_single_episode_no_episodes_list(self):
+        """Single S01E05 should not populate episodes list."""
+        pm = mp.parse_component("Show.S01E05.720p.BluRay.x265-GROUP.mkv")
+        assert pm.episode == 5
+        assert pm.episodes == []
+
+    # -- Year validation (Sonarr-inspired, extended to 1940) --
+
+    def test_year_1935_rejected(self):
+        """Years before 1940 should not be recognized."""
+        pm = mp.parse_component("Movie.1935.1080p.BluRay.mkv")
+        assert pm.year is None
+
+    def test_year_1940_accepted(self):
+        """1940 is the minimum accepted year."""
+        pm = mp.parse_component("Movie.1940.1080p.BluRay.mkv")
+        assert pm.year == 1940
+
+    def test_year_future_rejected(self):
+        """Years more than 1 beyond current year should be rejected."""
+        from etp_lib.media_parser import _CURRENT_YEAR
+
+        pm = mp.parse_component(f"Movie.{_CURRENT_YEAR + 2}.1080p.BluRay.mkv")
+        assert pm.year is None
+
+    def test_year_next_year_accepted(self):
+        """Current year + 1 should be accepted (pre-release announcements)."""
+        from etp_lib.media_parser import _CURRENT_YEAR
+
+        pm = mp.parse_component(f"Movie.{_CURRENT_YEAR + 1}.1080p.BluRay.mkv")
+        assert pm.year == _CURRENT_YEAR + 1
+
+    # -- Bilingual title splitting --
+
+    def test_cjk_slash_title_split(self):
+        """CJK / English title should split into series_name and series_name_alt."""
+        pm = mp.parse_component(
+            "[LoliHouse] 中文标题 / English Title - 01 [1080p] [ABCD1234].mkv"
+        )
+        assert pm.series_name == "中文标题"
+        assert pm.series_name_alt == "English Title"
+        assert pm.episode == 1
+
+    def test_pipe_title_split(self):
+        """Title with | separator should split into primary and alt."""
+        pm = mp.parse_component(
+            "[Group] 日本語タイトル | Japanese Title - 05 [720p].mkv"
+        )
+        assert pm.series_name == "日本語タイトル"
+        assert pm.series_name_alt == "Japanese Title"
+
+    def test_no_split_without_separator(self):
+        """Normal title without / or | should not populate alt."""
+        pm = mp.parse_component("[Group] My Normal Title - 08 [1080p].mkv")
+        assert pm.series_name == "My Normal Title"
+        assert pm.series_name_alt == ""
+
+    # -- LoliHouse dual numbering --
+
+    def test_lolihouse_dual_numbering_season(self):
+        """[Group] Title - 001 (S01E01) should get season from parens."""
+        pm = mp.parse_component(
+            "[LoliHouse] My Anime Title - 001 (S01E01) [ABCD1234].mkv"
+        )
+        assert pm.series_name == "My Anime Title"
+        assert pm.season == 1
+        assert pm.episode == 1
+        assert pm.hash_code == "ABCD1234"
+
+    # -- dir_series cleaning --
+
+    def test_dir_series_strips_trailing_brackets(self):
+        """Trailing [group] should be stripped from path_series_name."""
+        pm = mp.parse_media_path(
+            "Blue Reflection Ray v2 [WEB Dual Audio 1080p AVC E-AC3 AAC] [hchcsen]/"
+            "[hchcsen] Blue Reflection Ray S01E02 v2 [WEB Dual Audio 1080p AVC AAC].mkv"
+        )
+        assert pm.path_series_name == "Blue Reflection Ray v2"
+
+    # -- sub as subtitle keyword --
+
+    def test_sub_not_in_series_name(self):
+        """'.sub' suffix should be recognized as subtitle keyword, not title."""
+        pm = mp.parse_component(
+            "Chi.wa.kawaiteru.1960.1080p.WEB-DL.DD+2.0.H.264-SbR.Rus.sub.mkv"
+        )
+        assert "sub" not in pm.series_name
+
+    # -- GM-Team Season N format --
+
+    def test_season_n_in_parens(self):
+        """(Season 01) should be recognized as season."""
+        pm = mp.parse_component("[GM-Team] Title (Season 01) 01.mkv")
+        assert pm.season == 1
+        assert pm.episode == 1
+
+    def test_season_n_single_digit(self):
+        """(Season 2) should work with single digit."""
+        pm = mp.parse_component("[GM-Team] Title (Season 2) 05.mkv")
+        assert pm.season == 2
+        assert pm.episode == 5
+
+    def test_ordinal_season_still_works(self):
+        """2nd Season should still work alongside Season N."""
+        pm = mp.parse_component("[Group] Title 2nd Season - 05.mkv")
+        assert pm.season == 2
+
+    # -- Decimal episode specials (Sonarr-inspired) --
+
+    def test_decimal_episode_fansub(self):
+        """01.5 in fansub-style should be a special episode."""
+        pm = mp.parse_component("[Group] Title - 01.5 [1080p].mkv")
+        assert pm.episode == 1
+        assert pm.is_special is True
+
+    def test_decimal_episode_12_5(self):
+        """12.5 should mark episode 12 as special."""
+        pm = mp.parse_component("[Group] Title - 12.5 [720p][ABCD1234].mkv")
+        assert pm.episode == 12
+        assert pm.is_special is True
+
+    def test_decimal_not_in_dot_separated(self):
+        """Dot-separated 01.5 should NOT trigger decimal special."""
+        pm = mp.parse_component("Title.01.5.1080p.BluRay.mkv")
+        assert pm.is_special is False

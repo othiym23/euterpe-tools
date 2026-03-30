@@ -42,6 +42,9 @@ class TokenKind(Enum):
     LANGUAGE = auto()
     SITE_PREFIX = auto()
     BONUS = auto()  # 映像特典, ノンテロップOP, etc.
+    DUAL_AUDIO = auto()
+    UNCENSORED = auto()
+    EDITION = auto()  # Criterion, Remastered, etc.
     UNKNOWN = auto()
 
 
@@ -58,6 +61,7 @@ class Token:
     year: int | None = None
     batch_start: int | None = None
     batch_end: int | None = None
+    is_decimal_special: bool = False  # True for episodes like 01.5
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +257,12 @@ _LANGUAGES = frozenset(
 
 _SUBTITLE_KEYWORDS = frozenset(
     {
+        "sub",
+        "subs",
         "multisub",
         "msubs",
         "subtitle",
+        "subtitles",
         "multiple subtitle",
         "esub",
         "esubs",
@@ -293,6 +300,9 @@ _METADATA_KINDS = frozenset(
         TokenKind.LANGUAGE,
         TokenKind.SITE_PREFIX,
         TokenKind.BONUS,
+        TokenKind.DUAL_AUDIO,
+        TokenKind.UNCENSORED,
+        TokenKind.EDITION,
         TokenKind.UNKNOWN,
         TokenKind.EXTENSION,
         TokenKind.PATH_SEP,
