@@ -25,7 +25,6 @@ dev = [
     "ty>=0.0.25",
     "hypothesis>=6.151.9",
     "parsy>=2.2",
-    "parsimonious>=0.11.0",
 ]
 
 [tool.ruff]
