@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import readline  # noqa: F401 — imported for side effect (enables line editing in input())
 import sys
 from dataclasses import asdict
 from pathlib import Path
