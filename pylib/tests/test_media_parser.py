@@ -1294,3 +1294,36 @@ class TestQARegression:
         pm = mp.parse_component("Show.S01E05.Cherry-Pick.1080p.BluRay.x265-GROUP.mkv")
         assert pm.episode_title == "Cherry-Pick"
         assert pm.release_group == "GROUP"
+
+    def test_dd_plus_audio_codec(self):
+        """DD+ / DD+2.0 should be recognized as Dolby Digital Plus."""
+        pm = mp.parse_component("Movie.2020.1080p.WEB-DL.DD+2.0.H.264-GROUP.mkv")
+        assert any("DD+" in c for c in pm.audio_codecs)
+
+    def test_chi_in_scene_title(self):
+        """'Chi' in a scene title is a known false positive for Chinese language.
+
+        We accept this because chi is a valid language code needed for donghua.
+        The parser will exclude 'Chi' from the series name for this title.
+        """
+        pm = mp.parse_component(
+            "Chi.wa.kawaiteru.1960.1080p.WEB-DL.DD+2.0.H.264-SbR.mkv"
+        )
+        # Chi is recognized as language — accepted false positive
+        assert pm.year == 1960
+        assert pm.source_type == "Web"
+
+    def test_esub_recognized(self):
+        """ESub (English subtitle) should be recognized as metadata."""
+        token = mp._try_recognize("ESub")
+        assert token is not None
+
+    def test_streaming_service_parsed(self):
+        """AMZN, CR, NF etc. should populate streaming_service field."""
+        pm = mp.parse_component("Show.S01E01.1080p.AMZN.WEB-DL.DDP2.0.H.264-GROUP.mkv")
+        assert pm.streaming_service == "AMZN"
+        assert pm.source_type == "Web"
+
+    def test_streaming_service_cr(self):
+        pm = mp.parse_component("Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-GROUP.mkv")
+        assert pm.streaming_service == "CR"

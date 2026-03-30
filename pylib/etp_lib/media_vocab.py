@@ -101,6 +101,7 @@ _AUDIO_CODECS = frozenset(
         "flac",
         "opus",
         "dd",
+        "dd+",
         "ddp",
         "dts",
         "dts-hd",
@@ -146,6 +147,45 @@ _SOURCES = frozenset(
         "cdr",
         "sdtv",
         "raw",
+        # Additional streaming services
+        "pcok",
+        "pmtp",
+        "stan",
+        "it",
+        "ma",
+        "kntv",
+        "tver",
+        "abema",
+        "vrv",
+        "bili",
+    }
+)
+
+# Streaming service tags — these are source keywords that identify the
+# specific streaming platform. All map to source_type "Web".
+_STREAMING_SERVICES: frozenset[str] = frozenset(
+    {
+        "amzn",
+        "cr",
+        "nf",
+        "dsnp",
+        "hidive",
+        "hidi",
+        "hulu",
+        "adn",
+        "unext",
+        "atvp",
+        "funi",
+        "pcok",
+        "pmtp",
+        "stan",
+        "it",
+        "ma",
+        "kntv",
+        "tver",
+        "abema",
+        "vrv",
+        "bili",
     }
 )
 
@@ -171,6 +211,16 @@ _SOURCE_TYPE_MAP: dict[str, str] = {
     "unext": "Web",
     "atvp": "Web",
     "funi": "Web",
+    "pcok": "Web",
+    "pmtp": "Web",
+    "stan": "Web",
+    "it": "Web",
+    "ma": "Web",
+    "kntv": "Web",
+    "tver": "Web",
+    "abema": "Web",
+    "vrv": "Web",
+    "bili": "Web",
     "dvd": "DVD",
     "dvdrip": "DVD",
     "dvd-r": "DVD-R",
@@ -207,6 +257,10 @@ _SUBTITLE_KEYWORDS = frozenset(
         "msubs",
         "subtitle",
         "multiple subtitle",
+        "esub",
+        "esubs",
+        "csub",
+        "hsub",
     }
 )
 

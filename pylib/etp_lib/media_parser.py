@@ -31,6 +31,7 @@ from etp_lib.media_vocab import (  # noqa: F401 (re-exports)
     _METADATA_KINDS,
     _SOURCE_TYPE_MAP,
     _SOURCES,
+    _STREAMING_SERVICES,
     _SUBTITLE_KEYWORDS,
     _VIDEO_CODECS,
 )
@@ -217,7 +218,7 @@ _RE_LEADING_BARE_EP = re.compile(r"^(\d{1,4})(?:v(\d+))?\s")
 
 # Audio codec (compound forms like AAC2.0, DTS-HD MA)
 _RE_AC = re.compile(
-    r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD|PCM|LPCM)"
+    r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD\+|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD|PCM|LPCM)"
     r"(?:[.\s]?\d\.\d)?",
     re.IGNORECASE,
 )
@@ -1368,6 +1369,7 @@ class ParsedMedia:
     batch_range: tuple[int, int] | None = None
     release_group: str = ""
     source_type: str = ""  # "BD", "Web", "DVD", "HDTV", "SDTV", "VCD", "CD-R"
+    streaming_service: str = ""  # "AMZN", "CR", "NF", "DSNP", etc.
     is_remux: bool = False
     hash_code: str = ""
     resolution: str = ""
@@ -1502,13 +1504,15 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
         elif token.kind == TokenKind.AUDIO_CODEC:
             pm.audio_codecs.append(token.text)
         elif token.kind == TokenKind.SOURCE:
+            lower = token.text.lower()
             if not pm.source_type:
-                lower = token.text.lower()
                 mapped = _SOURCE_TYPE_MAP.get(lower)
                 if mapped:
                     pm.source_type = mapped
                     if "remux" in lower:
                         pm.is_remux = True
+            if not pm.streaming_service and lower in _STREAMING_SERVICES:
+                pm.streaming_service = token.text
         elif token.kind == TokenKind.REMUX:
             pm.is_remux = True
             if not pm.source_type:
