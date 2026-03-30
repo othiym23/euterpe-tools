@@ -1327,3 +1327,42 @@ class TestQARegression:
     def test_streaming_service_cr(self):
         pm = mp.parse_component("Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-GROUP.mkv")
         assert pm.streaming_service == "CR"
+
+    def test_10bit_recognized_as_metadata(self):
+        """10bit / 10-Bit should not appear in series name."""
+        pm = mp.parse_component(
+            "Eraserhead.1977.1080p.BluRay.x265.10bit.AAC.2.0-HeVK.mkv"
+        )
+        assert "10bit" not in pm.series_name
+
+    def test_dual_audio_detected(self):
+        """Dual Audio / Dual-Audio should set is_dual_audio."""
+        pm = mp.parse_component(
+            "[Group] Show - 01 (BD 1080p HEVC Opus) [Dual Audio].mkv"
+        )
+        assert pm.is_dual_audio is True
+
+    def test_dual_audio_hyphenated(self):
+        pm = mp.parse_component("Show.S01E01.1080p.BluRay.Dual-Audio.x265-GROUP.mkv")
+        assert pm.is_dual_audio is True
+
+    def test_criterion_edition(self):
+        """Criterion should be recognized as metadata, not title."""
+        pm = mp.parse_component("Movie.1977.Criterion.1080p.BluRay.x265-GROUP.mkv")
+        assert "Criterion" not in pm.series_name
+        assert pm.is_criterion is True
+
+    def test_redistributor_not_release_group(self):
+        """[TGx] redistributor bracket should not override scene group."""
+        pm = mp.parse_media_path(
+            "Movie.2022.2160p.WEB-DL.DD5.1.H.265-EVO[TGx]/"
+            "Movie.2022.2160p.WEB-DL.DD5.1.H.265-EVO.mkv"
+        )
+        assert pm.release_group == "EVO"
+
+    def test_bracket_dot_separated_metadata(self):
+        """[x264.AAC] should be expanded as metadata, not release group."""
+        pm = mp.parse_component("[Group] Show - 01 [x264.AAC][BD056DD6].mkv")
+        assert pm.video_codec == "x264"
+        assert "AAC" in pm.audio_codecs
+        assert pm.hash_code == "BD056DD6"

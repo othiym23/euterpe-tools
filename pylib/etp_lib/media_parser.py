@@ -157,6 +157,21 @@ class HDRInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class BitDepth:
+    value: int
+
+
+@dataclass(frozen=True, slots=True)
+class DualAudio:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class Edition:
+    value: str  # "Criterion", "Director's Cut", etc.
+
+
+@dataclass(frozen=True, slots=True)
 class Repack:
     pass
 
@@ -405,6 +420,37 @@ site_prefix: Parser = regex(r"www\.\w+\.\w+", re.IGNORECASE).map(
     lambda s: SitePrefix(s)
 )
 
+# Bit depth: 10bit, 10-Bit, Hi10, 8bit
+_RE_BIT_DEPTH = re.compile(r"(?:Hi)?(\d+)[- ]?[Bb]it|Hi(\d+)", re.IGNORECASE)
+
+
+def _bit_depth_parser(stream: str, index: int):
+    m = _RE_BIT_DEPTH.match(stream[index:])
+    if not m:
+        return Result.failure(index, frozenset({"bit_depth"}))
+    bits = int(m.group(1) or m.group(2))
+    return Result.success(index + m.end(), BitDepth(bits))
+
+
+bit_depth: Parser = Parser(_bit_depth_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+# Dual Audio / Dual-Audio
+_RE_DUAL_AUDIO = re.compile(r"Dual[- ]?Audio", re.IGNORECASE)
+
+
+def _dual_audio_parser(stream: str, index: int):
+    m = _RE_DUAL_AUDIO.match(stream, index)
+    if not m:
+        return Result.failure(index, frozenset({"dual_audio"}))
+    return Result.success(m.end(), DualAudio())
+
+
+dual_audio: Parser = Parser(_dual_audio_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+# Edition markers: Criterion, Director's Cut, etc.
+_EDITIONS = frozenset({"criterion", "remastered", "uncut", "theatrical", "extended"})
+edition: Parser = _match_set_ci(_EDITIONS, Edition)
+
 # Bonus keywords (English)
 _RE_BONUS_EN_P = re.compile(
     r"NC\s*(?:OP|ED)\d*|NCOP\d*|NCED\d*|Creditless\s+(?:OP|ED)\d*",
@@ -454,7 +500,13 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     HDRInfo: TokenKind.UNKNOWN,  # HDR stored as UNKNOWN (no dedicated kind yet)
     Repack: TokenKind.UNKNOWN,
     SitePrefix: TokenKind.SITE_PREFIX,
+    BitDepth: TokenKind.UNKNOWN,  # Metadata, not title — no dedicated kind
+    DualAudio: TokenKind.UNKNOWN,
+    Edition: TokenKind.UNKNOWN,
 }
+
+# Known redistributor site brackets — not release groups
+_REDISTRIBUTORS = frozenset({"tgx", "eztv", "eztvx.to", "rartv", "ettv", "ion10"})
 
 
 def _result_to_token(result: object, text: str) -> Token:
@@ -531,6 +583,9 @@ _RECOGNIZERS: list[Parser] = [
     language,  # jpn, eng, dual
     subtitle_info,  # multisub, msubs
     hdr_info,  # HDR, HDR10, DoVi
+    bit_depth,  # 10bit, 10-Bit, Hi10
+    dual_audio,  # Dual Audio, Dual-Audio
+    edition,  # Criterion, Remastered
     repack,  # REPACK, REPACK2
     site_prefix,  # www.example.com
 ]
@@ -1190,14 +1245,29 @@ def classify(tokens: list[Token]) -> list[Token]:
                 result.append(Token(kind=TokenKind.SUBTITLE_INFO, text=token.text))
                 continue
 
+            # Check for dot-separated metadata in brackets: [x264.AAC]
+            if "." in token.text and " " not in token.text.strip():
+                dot_tokens = scan_dot_segments(token.text.strip())
+                dot_meta = sum(
+                    1
+                    for t in dot_tokens
+                    if t.kind not in (TokenKind.DOT_TEXT, TokenKind.TEXT)
+                )
+                if dot_meta > 0:
+                    result.extend(dot_tokens)
+                    first_bracket_seen = True
+                    continue
+
             words = _RE_WORD_SPLIT.split(token.text)
             meta_count = count_metadata_words(token.text)
             is_metadata_bracket = meta_count > 0 and meta_count >= len(words) // 2
 
-            # First bracket: release group unless it's metadata
+            # First bracket: release group unless it's metadata or a
+            # known redistributor site (TGx, EZTV, etc.)
             if not first_bracket_seen:
                 first_bracket_seen = True
-                if not is_metadata_bracket:
+                is_redistributor = token.text.strip().lower() in _REDISTRIBUTORS
+                if not is_metadata_bracket and not is_redistributor:
                     result.append(
                         Token(
                             kind=TokenKind.RELEASE_GROUP,
@@ -1234,8 +1304,13 @@ def classify(tokens: list[Token]) -> list[Token]:
                 continue
 
             # Short alpha-only bracket (2-6 chars): likely a release group
+            # (unless it's a known redistributor)
             stripped = token.text.strip()
-            if 2 <= len(stripped) <= 6 and stripped.isalpha():
+            if (
+                2 <= len(stripped) <= 6
+                and stripped.isalpha()
+                and stripped.lower() not in _REDISTRIBUTORS
+            ):
                 result.append(
                     Token(
                         kind=TokenKind.RELEASE_GROUP,
@@ -1371,6 +1446,8 @@ class ParsedMedia:
     source_type: str = ""  # "BD", "Web", "DVD", "HDTV", "SDTV", "VCD", "CD-R"
     streaming_service: str = ""  # "AMZN", "CR", "NF", "DSNP", etc.
     is_remux: bool = False
+    is_dual_audio: bool = False
+    is_criterion: bool = False
     hash_code: str = ""
     resolution: str = ""
     video_codec: str = ""
@@ -1555,10 +1632,26 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
     return pm
 
 
+_RE_DUAL_AUDIO_SEARCH = re.compile(r"Dual[- ]?Audio", re.IGNORECASE)
+_RE_BIT_DEPTH_SEARCH = re.compile(
+    r"\b(?:Hi)?(\d+)[- ]?[Bb]it\b|\bHi(\d+)\b", re.IGNORECASE
+)
+_RE_CRITERION_SEARCH = re.compile(r"\bCriterion\b", re.IGNORECASE)
+
+
 def parse_component(text: str) -> ParsedMedia:
     """Parse a single path component (directory or filename) into ParsedMedia."""
     tokens = classify(tokenize_component(text))
-    return _build_parsed_media(tokens)
+    pm = _build_parsed_media(tokens)
+
+    # Post-pass: detect flags that span multiple tokens or aren't captured
+    # by the token-level pipeline
+    if _RE_DUAL_AUDIO_SEARCH.search(text):
+        pm.is_dual_audio = True
+    if _RE_CRITERION_SEARCH.search(text):
+        pm.is_criterion = True
+
+    return pm
 
 
 def parse_media_path(rel_path: str) -> ParsedMedia:
