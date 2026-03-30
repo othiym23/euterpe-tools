@@ -1222,3 +1222,29 @@ class TestQARegression:
         assert pm.resolution == "1080p"
         assert pm.video_codec == "x265"
         assert pm.release_group == "GROUP"
+
+    def test_s01ova_recognized_as_special(self):
+        """S01OVA should be parsed as season 1 OVA special."""
+        pm = mp.parse_component("S01OVA-Eustachius's Incognito Operation.mkv")
+        assert pm.season == 1
+        assert pm.is_special is True
+        assert pm.episode_title == "Eustachius's Incognito Operation"
+
+    def test_directory_release_group_dash_audio(self):
+        """FLAC-TTGA in directory should extract TTGA as release group."""
+        pm = mp.parse_media_path(
+            "Show S03+SP 1080p Dual Audio BD Remux FLAC-TTGA/"
+            "S03E01-The Beginning of Winter.mkv"
+        )
+        assert pm.release_group == "TTGA"
+
+    def test_multi_directory_metadata_propagation(self):
+        """Metadata should be found across multiple directory components."""
+        pm = mp.parse_media_path(
+            "Ascendance of a Bookworm S01-S02+OVA Dual Audio BDRip x265-EMBER/"
+            "01.Ascendance of a Bookworm S01 1080p Dual Audio BDRip 10 bits x265-EMBER/"
+            "S01E01-A World Without Books.mkv"
+        )
+        assert pm.resolution == "1080p"
+        assert pm.release_group == "EMBER"
+        assert pm.source_type == "BD"

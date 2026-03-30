@@ -99,6 +99,15 @@ class SeasonOnly:
 
 
 @dataclass(frozen=True, slots=True)
+class SeasonSpecial:
+    """S01OVA, S02SP1 — combined season + special marker."""
+
+    season: int
+    tag: str
+    number: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Special:
     tag: str
     number: int | None = None
@@ -338,6 +347,24 @@ def _parse_special(s: str) -> Special:
 
 special: Parser = regex(r"(SP|OVA|OAD|ONA)(\d*)", re.IGNORECASE).map(_parse_special)
 
+# Season + special: S01OVA, S02SP1
+_RE_SEASON_SPECIAL = re.compile(r"[Ss](\d{1,2})(OVA|OAD|ONA|SP)(\d*)", re.IGNORECASE)
+
+
+def _season_special_parser(stream: str, index: int):
+    m = _RE_SEASON_SPECIAL.match(stream[index:])
+    if not m:
+        return Result.failure(index, frozenset({"season_special"}))
+    season = int(m.group(1))
+    tag = m.group(2).upper()
+    num = int(m.group(3)) if m.group(3) else None
+    return Result.success(
+        index + m.end(), SeasonSpecial(season=season, tag=tag, number=num)
+    )
+
+
+season_special: Parser = Parser(_season_special_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
 
 # Batch range: "01~26"
 def _parse_batch_range(s: str) -> BatchRange:
@@ -413,6 +440,7 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     SeasonWord: TokenKind.SEASON,
     SeasonOnly: TokenKind.SEASON,
     Special: TokenKind.EPISODE,
+    SeasonSpecial: TokenKind.EPISODE,
     BatchRange: TokenKind.BATCH_RANGE,
     Version: TokenKind.VERSION,
     Year: TokenKind.YEAR,
@@ -447,9 +475,11 @@ def _result_to_token(result: object, text: str) -> Token:
         token.season = result.season
     elif isinstance(result, SeasonOnly):
         token.season = result.season
+    elif isinstance(result, SeasonSpecial):
+        token.season = result.season
+        token.episode = result.number
     elif isinstance(result, Special):
         token.episode = result.number
-        # Mark as special via text pattern — classify phase handles this
     elif isinstance(result, Version):
         token.version = result.number
     elif isinstance(result, Year):
@@ -474,6 +504,7 @@ _RECOGNIZERS: list[Parser] = [
     episode_se,  # S01E05, s1e1, S03E13v2
     episode_jp,  # 第01話
     batch_range,  # 01~26
+    season_special,  # S01OVA, S02SP1
     special,  # SP1, OVA, OAD, ONA
     season_jp,  # 第1期
     season_word,  # 4th Season
@@ -560,6 +591,9 @@ def scan_words(text: str) -> list[Token]:
     # Build token list: recognized spans + unrecognized gaps
     def _emit_gap(gap_text: str) -> None:
         """Classify gap words, with dash-compound splitting."""
+        # If gap starts with a dash (immediately after a recognized token),
+        # the trailing word is likely a release group (e.g., FLAC-TTGA → TTGA)
+        starts_with_dash = gap_text.lstrip(" ,").startswith("-")
         gap_text = gap_text.strip(" ,-")
         if not gap_text:
             return
@@ -570,6 +604,10 @@ def scan_words(text: str) -> list[Token]:
             token = _try_recognize(w)
             if token is not None:
                 tokens.append(token)
+            elif starts_with_dash and tokens:
+                # Word after a dash that followed a recognized token — release group
+                tokens.append(Token(kind=TokenKind.RELEASE_GROUP, text=w))
+                starts_with_dash = False
             elif "-" in w and not w.startswith("-"):
                 sub_parts = w.split("-")
                 sub_tokens: list[Token] = []
@@ -693,18 +731,20 @@ def scan_dot_segments(text: str) -> list[Token]:
 
 
 def find_episode_in_text(text: str) -> tuple[int, int, Token] | None:
-    """Search for an SxxExx episode marker at any position in text.
+    """Search for an episode/season+special marker at any position in text.
 
-    Returns (start, end, token) or None. Replaces _RE_EP_SE_SEARCH.search().
+    Tries SxxExx first, then S##OVA/S##SP patterns.
+    Returns (start, end, token) or None.
     """
-    for pos in range(len(text)):
-        result = episode_se(text, pos)
-        if result.status:
-            return (
-                pos,
-                result.index,
-                _result_to_token(result.value, text[pos : result.index]),
-            )
+    for recognizer in (episode_se, season_special):
+        for pos in range(len(text)):
+            result = recognizer(text, pos)
+            if result.status:
+                return (
+                    pos,
+                    result.index,
+                    _result_to_token(result.value, text[pos : result.index]),
+                )
     return None
 
 
@@ -1435,7 +1475,7 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
                     pm.version = token.version
                 # Check for special episodes
                 stripped = token.text.strip().upper()
-                if _RE_SPECIAL.match(stripped):
+                if _RE_SPECIAL.match(stripped) or _RE_SEASON_SPECIAL.match(stripped):
                     pm.is_special = True
                     pm.special_tag = token.text.strip()
         elif token.kind == TokenKind.SEASON:
@@ -1524,14 +1564,34 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
     # Parse the filename (primary source of episode/metadata)
     file_pm = parse_component(filename)
 
-    # Parse the most relevant directory component (usually the immediate parent)
-    # Use the first non-trivial directory for series name
+    # Parse directory components — first for series name, all for metadata.
+    # Scan all directory texts for metadata to fill gaps (resolution, codec,
+    # release group often appear in subdirectory names).
     dir_pm: ParsedMedia | None = None
     for dp in dir_parts:
         dp = dp.strip()
-        if dp:
+        if not dp:
+            continue
+        if dir_pm is None:
             dir_pm = parse_component(dp)
-            break
+        else:
+            # Scan additional directories for metadata that dir_pm missed
+            extra_tokens = scan_words(dp)
+            for t in extra_tokens:
+                if t.kind == TokenKind.SOURCE and not dir_pm.source_type:
+                    mapped = _SOURCE_TYPE_MAP.get(t.text.lower(), "")
+                    if mapped:
+                        dir_pm.source_type = mapped
+                elif t.kind == TokenKind.REMUX and not dir_pm.is_remux:
+                    dir_pm.is_remux = True
+                    if not dir_pm.source_type:
+                        dir_pm.source_type = "BD"
+                elif t.kind == TokenKind.RESOLUTION and not dir_pm.resolution:
+                    dir_pm.resolution = t.text
+                elif t.kind == TokenKind.VIDEO_CODEC and not dir_pm.video_codec:
+                    dir_pm.video_codec = t.text
+                elif t.kind == TokenKind.RELEASE_GROUP and not dir_pm.release_group:
+                    dir_pm.release_group = t.text
 
     if dir_pm is None:
         return file_pm
