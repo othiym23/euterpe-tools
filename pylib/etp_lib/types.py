@@ -88,6 +88,16 @@ class SourceFile:
     version: int | None = None  # e.g. 2 for "v2" releases
     media: MediaInfo | None = None
     matched_download: Path | None = None  # download file that enriched this entry
+    # Parser-detected metadata (from ParsedMedia)
+    bonus_type: str = ""  # "NCOP", "NCED", "PV", "CM", etc.
+    is_special: bool = False
+    special_tag: str = ""  # "SP1", "OVA2", "S01OVA", etc.
+    episode_title: str = ""
+    is_dual_audio: bool = False
+    is_uncensored: bool = False
+    series_name_alt: str = ""  # alternate-language title
+    episodes: list[int] = field(default_factory=list)  # multi-episode
+    streaming_service: str = ""  # "AMZN", "CR", "NF", etc.
 
 
 @dataclass
@@ -100,6 +110,9 @@ class GroupDefaults:
 
     release_group: str = ""
     source_type: str = ""
+    is_dual_audio: bool = False
+    is_uncensored: bool = False
+    streaming_service: str = ""
 
 
 @dataclass

@@ -91,13 +91,20 @@ def build_manifest_entries(
     destination paths using defaults.
     """
     entries: list[ManifestEntry] = []
-    hamatv_counters: dict[str, int] = {}
     # Track AniDB specials already matched so each is used at most once
     matched_special_tags: set[str] = set()
     specials = [ep for ep in info.episodes if ep.ep_type != "regular"]
     specials_by_num: dict[int, Episode] = {
         ep.number: ep for ep in specials if ep.season == 0
     }
+
+    # When using TVDB, start HamaTV ranges after the highest existing
+    # TVDB special number to avoid collisions in the single Specials/ dir.
+    max_special_num = max((ep.number for ep in specials_by_num.values()), default=0)
+    hamatv_counters: dict[str, int] = {}
+    if info.tvdb_id is not None and max_special_num > 0:
+        for key, default_start in _HAMATV_RANGES.items():
+            hamatv_counters[key] = max(default_start, max_special_num + 20)
     total = len(parsed)
     for i, sf in enumerate(parsed, 1):
         print(f"  Analyzing {i}/{total}: {sf.path.name}")
@@ -124,28 +131,55 @@ def build_manifest_entries(
 
         ep_number = sf.parsed_episode
         season = sf.parsed_season if sf.parsed_season is not None else 1
-        is_special = season == 0
+        is_special = season == 0 or sf.is_special
         special_tag = ""
         episode_name = ""
         is_unmatched_special = False
 
-        file_pm = parse_component(sf.path.name)
-        bonus_type = file_pm.bonus_type
+        # Use parser-detected bonus_type; fall back to re-parsing only if needed
+        bonus_type = sf.bonus_type
+        episode_title = sf.episode_title
+        if not bonus_type and not episode_title:
+            file_pm = parse_component(sf.path.name)
+            bonus_type = file_pm.bonus_type
+            episode_title = file_pm.episode_title
 
-        if ep_number is not None and is_special:
-            # TVDB specials (s00eXX): look up by special episode number
+        if ep_number is not None and is_special and not bonus_type:
             ep = specials_by_num.get(ep_number)
             if ep is not None:
                 episode_name = ep.title_en
                 special_tag = ep.special_tag
-        elif ep_number is not None:
+                season = 0
+        elif ep_number is not None and not is_special:
             episode_name = info.find_episode_title(ep_number, season)
+        elif ep_number is not None and is_special and bonus_type:
+            # Parser detected both an episode number and a bonus type
+            # (e.g. S03ED from SeasonSpecial) — try bonus matching first
+            available = [
+                ep for ep in specials if ep.special_tag not in matched_special_tags
+            ]
+            matched_ep = _match_bonus_to_anidb_special(
+                bonus_type, episode_title, available
+            )
+            if matched_ep is not None:
+                special_tag = sf.special_tag or matched_ep.special_tag
+                episode_name = episode_title or matched_ep.title_en
+                matched_special_tags.add(matched_ep.special_tag)
+                sf.parsed_episode = matched_ep.number
+                sf.parsed_season = 0
+                ep_number = matched_ep.number
+                season = 0
+            else:
+                # Use parser special tag directly (e.g. S03OP, S01OVA)
+                special_tag = sf.special_tag
+                episode_name = episode_title
+                season = 0
         elif bonus_type:
             available = [
                 ep for ep in specials if ep.special_tag not in matched_special_tags
             ]
             matched_ep = _match_bonus_to_anidb_special(
-                bonus_type, file_pm.episode_title, available
+                bonus_type, episode_title, available
             )
             if matched_ep is not None:
                 is_special = True
@@ -160,7 +194,7 @@ def build_manifest_entries(
                 else:
                     special_tag = matched_ep.special_tag
                 ep_number = matched_ep.number
-                episode_name = file_pm.episode_title or matched_ep.title_en
+                episode_name = episode_title or matched_ep.title_en
                 matched_special_tags.add(matched_ep.special_tag)
                 sf.parsed_episode = ep_number
                 sf.parsed_season = 0
@@ -171,8 +205,8 @@ def build_manifest_entries(
                 ep_number = hamatv_counters.get(bonus_type, range_start)
                 hamatv_counters[bonus_type] = ep_number + 1
                 episode_name = bonus_type
-                if file_pm.episode_title:
-                    episode_name = f"{bonus_type} - {file_pm.episode_title}"
+                if episode_title:
+                    episode_name = f"{bonus_type} - {episode_title}"
                 season = 0
                 is_unmatched_special = True
                 sf.parsed_episode = ep_number
