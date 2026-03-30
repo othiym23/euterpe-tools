@@ -63,6 +63,7 @@ from etp_lib.types import (
     Episode,  # noqa: F401 (re-export for tests)
     GroupDefaults,
     MediaInfo,  # noqa: F401 (re-export for tests)
+    ParsedMetadata,
     SourceFile,
 )
 
@@ -241,24 +242,27 @@ def parse_source_filename(filename: str) -> SourceFile:
     Delegates to media_parser for tokenization and classification.
     """
     pm = media_parser.parse_component(filename)
-    sf = SourceFile(path=Path(filename))
-    sf.release_group = pm.release_group
-    sf.source_type = pm.source_type
-    sf.is_remux = pm.is_remux
-    sf.hash_code = pm.hash_code
-    sf.parsed_episode = pm.episode
-    sf.parsed_season = pm.season
-    sf.version = pm.version
-    sf.bonus_type = pm.bonus_type
-    sf.is_special = pm.is_special
-    sf.special_tag = pm.special_tag
-    sf.episode_title = pm.episode_title
-    sf.is_dual_audio = pm.is_dual_audio
-    sf.is_uncensored = pm.is_uncensored
-    sf.series_name_alt = pm.series_name_alt
-    sf.episodes = pm.episodes
-    sf.streaming_service = pm.streaming_service
-    return sf
+    return SourceFile(
+        path=Path(filename),
+        parsed=ParsedMetadata(
+            release_group=pm.release_group,
+            source_type=pm.source_type,
+            is_remux=pm.is_remux,
+            hash_code=pm.hash_code,
+            episode=pm.episode,
+            season=pm.season,
+            version=pm.version,
+            bonus_type=pm.bonus_type,
+            is_special=pm.is_special,
+            special_tag=pm.special_tag,
+            episode_title=pm.episode_title,
+            is_dual_audio=pm.is_dual_audio,
+            is_uncensored=pm.is_uncensored,
+            series_name_alt=pm.series_name_alt,
+            episodes=pm.episodes,
+            streaming_service=pm.streaming_service,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
