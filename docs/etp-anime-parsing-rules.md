@@ -1,8 +1,15 @@
 # etp-anime parsing and matching rules
 
 Rules for filename parsing, download matching, and output construction in
-`etp-anime`. Parsing is handled by `etp_lib.media_parser`; the anime module
-consumes its output.
+`etp anime`. Parsing is handled by `etp_lib.media_parser`; the anime module
+consumes its output via `ParsedMetadata` and `MatchedFile`.
+
+**Related ADRs:**
+
+- `docs/adrs/2026-03-30-01-parsy-primitives-for-token-recognition.md` — parsy
+  recognizer architecture
+- `docs/adrs/2026-03-30-02-heuristic-media-filename-parsing.md` — heuristic
+  parsing strategy and accepted false positives
 
 ## Configuration
 
@@ -35,59 +42,186 @@ series "Chained Soldier (2024)" {
 
 ## Media path parser (`etp_lib.media_parser`)
 
-A two-phase pipeline: structural tokenizer → semantic classifier.
+A three-phase pipeline: structural tokenization, semantic classification,
+assembly. Each phase adds structure without destroying information from the
+previous phase.
 
-### Tokenizer
+### Phase 1: Structural tokenization (`tokenize_component`)
 
-Walks input character-by-character, extracting:
+Character-by-character scan identifies delimited groups and bare text:
 
-- `[content]` — square brackets (release groups, metadata, CRC32 hashes)
-- `(content)` — parentheses with depth-tracked nesting
-- `「content」` — Japanese lenticular quotes (episode titles)
-- `-` — dash separators
-- Dot-separated scene names (2+ dots, no spaces): split on `.` preserving
-  compound tokens (`H.264`, `AAC2.0`, `WEB-DL`, `DTS-HD`)
+| Structural token | Delimiter | Examples                                      |
+| ---------------- | --------- | --------------------------------------------- |
+| BRACKET          | `[…]`     | `[Cyan]`, `[1080p x265]`, `[D98B31F3]`        |
+| PAREN            | `(…)`     | `(BD 1080p)`, `(S01E01)`, `(Uncensored)`      |
+| LENTICULAR       | `「…」`   | `「Episode Title」`                           |
+| TEXT             | bare      | `Show Title`, `08`, `MLLSD`                   |
+| DOT_TEXT         | `.`-split | `Title`, `S01E05`, `1080p` (from scene names) |
+| SEPARATOR        | `-`       | fansub-style title/episode delimiter          |
+| EXTENSION        | suffix    | `.mkv`, `.mp4`, `.flac`                       |
+
+Scene-style dot-separated text (2+ dots, no spaces) is handled by
+`scan_dot_segments`, which tries parsy-based recognizers at each position to
+identify compound tokens across dot boundaries. For example, `H` + `264` →
+`H.264`, and `AAC2` + `0` → `AAC2.0`. Trailing `-GROUP` suffixes are detected
+and split into a metadata token + release group.
 
 Full paths are split on `/`; each component is tokenized independently.
 
-### Classifier
+### Phase 2: Semantic classification (`classify`)
 
-Reclassifies structural tokens against vocabularies:
+Walks the structural token list and reclassifies content using typed
+recognizers, vocabulary sets, and positional state.
 
-| Token kind    | Examples                                             |
-| ------------- | ---------------------------------------------------- |
-| RELEASE_GROUP | `[Cyan]`, trailing `-VARYG`, Sonarr `[GROUP QUAL-…]` |
-| CRC32         | `[D98B31F3]` (8 hex chars in brackets)               |
-| EPISODE       | `S01E05`, ` - 08`, `第01話`, `EP05`, `SP1`, `OVA`    |
-| SEASON        | `S01`, `(第1期)`, `4th Season`                       |
-| VERSION       | `v2`, `v3`                                           |
-| RESOLUTION    | `1080p`, `720p`, `1920x1080`                         |
-| VIDEO_CODEC   | `HEVC`, `AVC`, `x265`, `H.264`                       |
-| AUDIO_CODEC   | `AAC`, `FLAC`, `DTS-HD`, `AAC2.0`                    |
-| SOURCE        | `BD`, `BluRay`, `WEB-DL`, `CR`, `AMZN`               |
-| YEAR          | 4-digit number 1900–2099                             |
-| EPISODE_TITLE | content of `「…」`                                   |
-| BONUS         | `映像特典`, `ノンテロップOP`                         |
+#### Refutable matching with parsy recognizers
 
-For scene-style names with multiple dash-separated groups (e.g.
-`10-Bit.x265-iAHD`), the **last** group is taken as the release group.
+Each recognizer is a parsy `Parser` object — a function
+`(stream, index) → Result` that returns either a typed success (frozen
+dataclass) or a failure. This is **refutable matching**: if `audio_codec`
+matches `AAC2.0` as a 5-character span, that match is committed and the `.0` is
+not available to confuse later patterns. If the match fails, the next recognizer
+is tried.
 
-### Title extraction
+The `_RECOGNIZERS` list orders recognizers from most specific to most general.
+Order matters — a recognizer earlier in the list takes priority:
 
-Residual approach: everything not classified as metadata = series title. Three
-strategies by naming style:
+```
+Episode markers (most distinctive):
+  episode_multi_se    S01E01-E06, S01E01-06, S01E01E02E03
+  episode_se          S01E05, s1e1, S03E13v2
+  episode_jp          第01話
+  batch_range         01~26
+  season_special      S01OVA, S02SP1, S03OP, S03ED
+  special             SP1, OVA, OAD, ONA
+  season_jp           第1期
+  season_word         4th Season, Season 01
+  season_only         S01 (after episode_se to avoid S01E05 → S01)
+  episode_final       05 END, 05v2 END
+  episode_ep          EP05, E5
+  episode_bare        08, 12v2 (after season_only to avoid S01 → ep 1)
 
-- **Fansub** (`[Group] Title - Ep [meta]`): title = text between group and last
-  separator before the episode number
-- **Scene** (`Title.S01E05.meta.codec-Group`): title = dot-text tokens before
-  the episode marker, joined with spaces
-- **Japanese** (`[Group] Title(第N期) 第XX話「EpTitle」(specs)`): title = text
-  between group and season/episode markers
+Bonus keywords:
+  bonus_en            NCOP, NC OP1, Creditless ED
+
+Technical metadata (compound before simple):
+  audio_codec         AAC2.0, DTS-HD MA, FLAC, DD+2.0
+  resolution          1080p, 720p, 1920x1080
+  video_codec         HEVC, x265, H.264, AVC
+  source              BluRay, WEB-DL, BD, AMZN, CR
+  remux               REMUX
+
+Identifiers:
+  crc32               ABCD1234 (8 hex chars)
+  year                1940–current+1 (after episode to avoid false positives)
+  version             v2, v3
+
+Context (dual_audio before language — "DUAL" must match as dual-audio):
+  dual_audio          Dual Audio, Dual-Audio, Dual.Audio, DUAL
+  language            jpn, eng, chi, dual
+  subtitle_info       multisub, msubs, sub, subs, ESub
+  hdr_info            HDR, HDR10, DoVi
+  bit_depth           10bit, 10-Bit, Hi10
+  uncensored          Uncensored
+  edition             Criterion, Remastered, Uncut
+  repack              REPACK, REPACK2
+  site_prefix         www.example.com
+```
+
+Each recognizer returns a frozen dataclass on success:
+
+| Result type      | Fields                                      | TokenKind   |
+| ---------------- | ------------------------------------------- | ----------- |
+| `Resolution`     | `value: str`                                | RESOLUTION  |
+| `VideoCodec`     | `value: str`                                | VIDEO_CODEC |
+| `AudioCodec`     | `value: str`                                | AUDIO_CODEC |
+| `Source`         | `value: str`, `source_type: str`            | SOURCE      |
+| `Remux`          | (none)                                      | REMUX       |
+| `EpisodeSE`      | `season`, `episode`, `version?`             | EPISODE     |
+| `EpisodeMultiSE` | `season`, `episodes: list[int]`             | EPISODE     |
+| `EpisodeBare`    | `episode`, `version?`, `is_decimal_special` | EPISODE     |
+| `EpisodeJP`      | `episode`                                   | EPISODE     |
+| `SeasonJP`       | `season`                                    | SEASON      |
+| `SeasonWord`     | `season`                                    | SEASON      |
+| `SeasonOnly`     | `season`                                    | SEASON      |
+| `SeasonSpecial`  | `season`, `tag`, `number?`                  | EPISODE     |
+| `Special`        | `tag`, `number?`                            | EPISODE     |
+| `BatchRange`     | `start`, `end`                              | BATCH_RANGE |
+| `Version`        | `number`                                    | VERSION     |
+| `Year`           | `value`                                     | YEAR        |
+| `CRC32`          | `value`                                     | CRC32       |
+| `Language`       | `value`                                     | LANGUAGE    |
+| `BonusKeyword`   | `bonus_type`, `raw`                         | BONUS       |
+| `DualAudio`      | (none)                                      | DUAL_AUDIO  |
+| `Edition`        | `value`                                     | EDITION     |
+| `Uncensored`     | (none)                                      | UNCENSORED  |
+| `BitDepth`       | `value`                                     | UNKNOWN     |
+| `HDRInfo`        | `value`                                     | UNKNOWN     |
+| `Repack`         | (none)                                      | UNKNOWN     |
+
+The `_TYPE_TO_KIND` mapping converts result types to `TokenKind` values. Types
+mapped to `UNKNOWN` are still recognized as metadata (they appear in
+`_METADATA_KINDS`) but have no dedicated kind — they prevent metadata from
+leaking into series titles.
+
+#### Classification strategies by token type
+
+**BRACKET tokens** — first bracket is treated as release group (unless it
+contains metadata). Subsequent brackets are expanded via `scan_words` if they
+contain 2+ metadata words. CRC32 (8 hex chars) is detected directly.
+Redistributor brackets (`[TGx]`, `[EZTV]`) are not treated as release groups.
+
+**PAREN tokens** — checked against recognizers for YEAR, SEASON, EPISODE,
+DUAL_AUDIO, UNCENSORED, and EDITION. If the paren contains 2+ metadata words, it
+is expanded via `scan_words` into multiple tokens. Two-letter alpha content is
+treated as a language/region code.
+
+**TEXT tokens** — tried as: episode/season → year → known metadata keyword →
+split on embedded episode markers → scan for trailing metadata after episode
+marker. When `is_decimal_special` format (e.g. `01.5`) is detected, it is only
+matched in non-dot-separated contexts to avoid false positives.
+
+**DOT_TEXT tokens** — tried as: episode/season → year → known metadata keyword →
+embedded episode marker → scene trailing group (`codec-GROUP` splitting).
+
+#### Two scanning functions
+
+`scan_words(text)` — for space/comma-separated text (bracket/paren content, bare
+text). First pass tries multi-word recognizers across the full text, resolving
+overlaps by position then longest match. Gaps between matches are classified
+word-by-word. Handles dash-compound splitting (`DTS-HD MA`, `WEB-DL`).
+
+`scan_dot_segments(text)` — for dot-separated scene-style names. Tries 3-segment
+then 2-segment then 1-segment compounds at each position. Handles trailing
+`-GROUP` suffixes. Unmatched segments become DOT_TEXT.
+
+Both functions use the same `_RECOGNIZERS` list via `_try_recognize(text)`,
+which requires a full-text match (the recognizer must consume the entire input).
+
+### Phase 3: Assembly (`_build_parsed_media`)
+
+Iterates classified tokens to populate `ParsedMedia`:
+
+- **Series name**: TEXT/DOT_TEXT tokens before the first EPISODE marker
+- **Episode title**: TEXT tokens after EPISODE but before metadata
+- **Bilingual titles**: `/` or `|` in series name splits into `series_name` and
+  `series_name_alt` (only when one side has CJK and the other doesn't, to avoid
+  breaking titles like "Fate/stay night")
+- **Special detection** (`_check_special`): season 0, decimal episodes, SP/OVA
+  tags, S##OP/S##ED season-special patterns
+- **Multi-episode expansion**: `EpisodeMultiSE` populates `episodes: list[int]`
+  with the expanded range (capped at 100 episodes)
+- **Season upgrade**: when a bare episode (no season) is followed by an
+  `(S01E01)` paren, the season is adopted from the paren (LoliHouse format)
+- **Release group prefix stripping**: when a directory provides the release
+  group and the filename series name starts with it, the prefix is removed
+- **Directory metadata merging** (`parse_media_path`): directories provide
+  `path_series_name` and fill metadata gaps via `_merge_scanned_metadata`
 
 ### Normalization
 
-`normalize_for_matching`: lowercase, strip non-alphanumeric, **preserve CJK
-characters** (hiragana, katakana, kanji, fullwidth forms).
+`normalize_for_matching`: NFC unicode normalization, lowercase, strip
+non-alphanumeric, **preserve CJK characters** (hiragana, katakana, kanji,
+fullwidth forms).
 
 ### Name variants
 
@@ -95,71 +229,170 @@ characters** (hiragana, katakana, kanji, fullwidth forms).
 
 1. Raw normalized name
 2. Parser-extracted name (strips years, quality tags)
-3. Metadata-truncated name via `clean_series_title` (truncates at first metadata
-   keyword like `S01`, `BDRip`, `1080p` — handles both space-separated and
-   dot-separated directory names)
+3. Alternate-language title (if present)
+4. Metadata-truncated name via `clean_series_title` (truncates at first metadata
+   keyword like `S01`, `BDRip`, `1080p`; strips trailing `[bracket]` content)
 
-## Download matching (`etp anime series`)
+## From parser to anime commands
 
-### Index construction
+### ParsedMetadata
+
+`parse_source_filename(filename)` calls `parse_component()` and maps the
+`ParsedMedia` result into a `ParsedMetadata` dataclass on a `SourceFile`:
+
+```
+ParsedMedia (parser)          →  ParsedMetadata (anime)
+  .release_group                   .release_group
+  .source_type                     .source_type
+  .is_remux                        .is_remux
+  .hash_code                       .hash_code
+  .episode                         .episode
+  .season                          .season
+  .version                         .version
+  .bonus_type                      .bonus_type
+  .is_special                      .is_special
+  .special_tag                     .special_tag
+  .episode_title                   .episode_title
+  .is_dual_audio                   .is_dual_audio
+  .is_uncensored                   .is_uncensored
+  .series_name_alt                 .series_name_alt
+  .episodes                        .episodes
+  .streaming_service               .streaming_service
+```
+
+Fields not carried over (used only within the parser): `series_name`,
+`resolution`, `video_codec`, `audio_codecs`, `year`, `extension`, `batch_range`,
+`is_criterion`, `path_series_name`, `path_is_batch`.
+
+### MatchedFile (non-mutating overrides)
+
+`_match_files_to_season` returns `list[MatchedFile]` — wrappers around the
+original `SourceFile` with overridden episode/season values. The original pool
+data is never mutated, so multi-cour processing works correctly.
+
+`MatchedFile` provides `effective_*` properties that return the override value
+if set, otherwise the original `source.parsed.*` value. Batch-level overrides
+(release group, dual-audio, uncensored) are applied via MatchedFile fields.
+
+Before passing to the manifest workflow, `to_source_snapshot()` bakes all
+effective values into a `SourceFile` copy.
+
+### Download matching (`etp anime series`)
+
+#### Index construction
 
 `_build_download_index` walks the downloads directory recursively and indexes
 each media file under all `name_variants` of its series name, plus
-`clean_series_title` applied to raw directory components. Results are cached per
-`(series_name, directory)` to avoid redundant parsing.
+`clean_series_title` applied to raw directory components.
 
-### Matching algorithm
+#### Matching algorithm
 
 For each source file, `_match_to_downloads` collects download entries from all
 keys returned by `TitleAliasIndex.matching_keys(series_name, index_keys)`:
 
-1. Direct name variants (raw, parsed, cleaned)
+1. Direct name variants (raw, parsed, cleaned, alt-title)
 2. Alias expansion from cached AniDB/TVDB metadata
 3. Prefix matching: if a candidate key is a prefix of an index key or vice versa
-   (handles short vs long title variants)
 
 Then two matching passes:
 
 **Pass 1 — exact (season, episode):** Find download entries with the same
 `(season, episode)` tuple. Pick the closest file size. Reject if both files have
-release groups and the first word differs (different encodes).
+release groups and the first word differs.
 
 **Pass 2 — size + release group fallback:** When pass 1 fails, search all series
 entries for an exact file-size match with the same release group. Handles
-DVD-to-aired order renumbering where episode numbers differ but file contents
-are identical. **Skipped for season 0** (TVDB specials).
+DVD-to-aired order renumbering. **Skipped for season 0** (TVDB specials).
 
-The matched download's release group, CRC32, version, and source type replace
-the Sonarr-reformatted values on the source file.
+The matched download's release group, CRC32, version, source type, dual-audio,
+uncensored, and streaming service enrich the source file.
 
-### Title alias index
+#### Title alias index
 
 Built at startup from cached AniDB XML and TVDB JSON in `$XDG_CACHE_HOME/etp/`.
-AniDB titles of type `main`, `official`, and `synonym` are indexed; TVDB aliases
-and canonical translations are indexed. Concise names from the anime config are
-also fed in, linking directory names to clean parser-extracted names.
-
-The index is updated incrementally after each metadata fetch so that newly
-learned title mappings improve matching within the same session.
+Parser-detected alt titles (`series_name_alt`) and config concise names are fed
+into the index. Updated incrementally after each metadata fetch.
 
 ## AniDB per-season handling
 
 AniDB assigns separate IDs per season. Files are processed one ID at a time
 against a shrinking pool:
 
-1. Group pool files by parsed season number
-2. User picks which season maps to this AniDB ID
-3. If more files than AniDB episodes, take first N; rest goes to next ID
-4. **Renumber only for multi-cour splits**: episodes are renumbered to start at
-   1 only when the last episode exceeds the AniDB entry's episode count (e.g.
-   S01E13–S01E24 → ep 1–12). Single-season files are not renumbered (e.g. ep 12
-   of a 12-episode entry stays as 12).
+1. Filter pool by sub-series title similarity (normalized title comparison)
+2. Group remaining files by parsed season number
+3. User picks which season maps to this AniDB ID
+4. Separate regular episodes from specials/bonus files (files with `is_special`
+   or `bonus_type` are not counted against the regular episode limit)
+5. If more regular episode files than AniDB episodes, take first N; rest goes to
+   next ID
+6. **Non-mutating renumbering**: episodes are renumbered via `MatchedFile`
+   wrappers (e.g. S01E13-S01E24 → ep 1-12 for the second AniDB ID). The original
+   pool data is preserved for subsequent passes.
 
 ### Specials
 
-Season 0 in TVDB indicates specials. Specials may use AniDB naming (`S1`,
-`NCOP1a`), TVDB naming (`S00EYY`), or have no clear numbering. Ambiguous files
-are tagged `(todo)`.
+Special detection sources (combined):
+
+- **Parser**: `is_special` flag (season 0, SP/OVA tags, decimal episodes)
+- **Parser**: `bonus_type` ("NCOP", "NCED", "PV", "CM", "Preview", "Menu",
+  "Bonus") from English keywords and Japanese metadata
+  (映像特典, ノンテロップOP)
+- **Parser**: `special_tag` ("SP1", "S01OVA", "S03OP") from season-special
+  patterns
+
+`build_manifest_entries` classifies each file through four branches:
+
+1. **Special without bonus type**: look up by episode number in specials pool
+   (TVDB `s0eNN` or parser-detected specials)
+2. **Regular episode**: look up episode title from metadata
+3. **Special with bonus type**: try `_match_bonus_to_anidb_special()` against
+   available AniDB specials (NCOP → credit episodes with "Opening" in title,
+   NCED → credit episodes with "Ending", others → normalized title comparison).
+   Falls back to parser's special tag if no AniDB match.
+4. **Bonus type only** (no episode number): try AniDB matching, then assign
+   HamaTV-compatible s0e number if unmatched
+
+#### HamaTV episode number ranges
+
+For bonus files that cannot be matched to AniDB specials:
+
+| Bonus type | Range start | HamaTV category |
+| ---------- | ----------- | --------------- |
+| NCOP       | 171         | s0e151+         |
+| NCED       | 191         | s0e171+         |
+| PV         | 321         | s0e301+         |
+| Preview    | 321         | s0e301+         |
+| CM         | 521         | s0e501+         |
+| Bonus      | 521         | s0e501+         |
+| Menu       | 921         | s0e901+         |
+
+When using TVDB, ranges start after the highest existing TVDB special number
+(+20 buffer) to avoid collisions in the single `Specials/` directory.
+
+Unmatched bonus files are tagged `(todo)` in the manifest for user review.
+
+## ManifestWorkflow
+
+The `ManifestWorkflow` class in `manifest.py` orchestrates the full batch
+processing sequence:
+
+1. **Build** (`build_manifest_entries`): analyze each file with mediainfo,
+   verify CRC32 hashes, match episodes to metadata, construct destination paths
+2. **Write**: generate a KDL manifest file
+3. **Edit loop**: open `$EDITOR`, parse the result, retry on errors
+4. **Execute**: copy files to destinations using Btrfs COW reflinks
+5. **Cleanup**: remove the temp manifest file
+
+### Manifest validation
+
+`parse_manifest` validates user edits with error reporting:
+
+- Missing `source` or `dest` fields: reported with episode label
+- Non-integer season numbers: caught (previously crashed)
+- Unknown source paths: hints at available source paths
+- `(todo)` entries: must be resolved or deleted before execution
+- Extras with missing fields: reported (previously silently dropped)
+- KDL parse errors: reported with parser error message
 
 ## Output formats
 
@@ -174,6 +407,12 @@ are tagged `(todo)`.
 
 ```
 {name} - s{season}e{ep:02d} - {title} [{metadata}] [{hash}].{ext}
+```
+
+Specials use the special tag instead of `sXeYY`:
+
+```
+{name} - {special_tag} - {title} [{metadata}] [{hash}].{ext}
 ```
 
 ### Metadata block
@@ -208,3 +447,15 @@ fuzzy episode match via `sXeYY` parsing):
 - **Same metadata + same CRC32**: auto-replace (fixing naming)
 - **Same metadata + different CRC32**: prompt user
 - **Different metadata**: show comparison, prompt `[k]eep / [r]eplace / [s]kip`
+
+## Type safety
+
+StrEnum types in `types.py` replace raw string comparisons:
+
+- `EpisodeType`: REGULAR, SPECIAL, CREDIT, TRAILER, PARODY, OTHER
+- `BonusType`: NCOP, NCED, PV, PREVIEW, CM, MENU, BONUS
+- `MetadataProvider`: ANIDB, TVDB
+
+These are backwards-compatible with string equality
+(`EpisodeType.REGULAR == "regular"` is True) but provide IDE autocompletion and
+pyright validation.
