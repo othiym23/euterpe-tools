@@ -1367,6 +1367,36 @@ class TestQARegression:
         assert "AAC" in pm.audio_codecs
         assert pm.hash_code == "BD056DD6"
 
+    def test_hdr_detected_scene(self):
+        """HDR in scene-style filename should populate hdr field."""
+        pm = mp.parse_media_path(
+            "Confess.Fletch.2022.2160p.WEB-DL.DD5.1.HDR.H.265-EVO[TGx]/"
+            "Confess.Fletch.2022.2160p.WEB-DL.DD5.1.HDR.H.265-EVO.mkv"
+        )
+        assert pm.hdr == "HDR"
+        assert pm.resolution == "2160p"
+        assert pm.release_group == "EVO"
+
+    def test_hdr10_detected(self):
+        """HDR10 should be recognized."""
+        pm = mp.parse_component("Movie.2022.2160p.BluRay.HDR10.x265-GROUP.mkv")
+        assert pm.hdr == "HDR10"
+
+    def test_uhd_detected(self):
+        """UHD should be recognized as HDR metadata."""
+        pm = mp.parse_component("Movie.2022.2160p.UHD.BluRay.x265-GROUP.mkv")
+        assert pm.hdr == "UHD"
+
+    def test_dolby_vision_detected(self):
+        """DoVi / DV should be recognized as HDR."""
+        pm = mp.parse_component("Movie.2022.2160p.BluRay.DoVi.x265-GROUP.mkv")
+        assert pm.hdr == "DoVi"
+
+    def test_hdr_not_in_series_name(self):
+        """HDR keywords should not appear in series name."""
+        pm = mp.parse_component("Movie.2022.2160p.HDR.BluRay.x265-GROUP.mkv")
+        assert "HDR" not in pm.series_name
+
     def test_dual_standalone_scene(self):
         """Scene-style DUAL (without Audio) should set is_dual_audio."""
         pm = mp.parse_component(

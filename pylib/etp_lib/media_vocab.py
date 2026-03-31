@@ -46,6 +46,7 @@ class TokenKind(Enum):
     DUAL_AUDIO = auto()
     UNCENSORED = auto()
     EDITION = auto()  # Criterion, Remastered, etc.
+    HDR = auto()  # HDR, HDR10, DoVi, DV, UHD
     UNKNOWN = auto()
 
 
@@ -278,8 +279,11 @@ _HDR_KEYWORDS = frozenset(
         "hdr",
         "hdr10",
         "hdr10+",
+        "dv",
         "dovi",
         "dolby vision",
+        "uhd",
+        "ultrahd",
     }
 )
 
@@ -306,6 +310,7 @@ _METADATA_KINDS = frozenset(
         TokenKind.DUAL_AUDIO,
         TokenKind.UNCENSORED,
         TokenKind.EDITION,
+        TokenKind.HDR,
         TokenKind.UNKNOWN,
         TokenKind.EXTENSION,
         TokenKind.PATH_SEP,

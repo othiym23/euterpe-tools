@@ -625,7 +625,7 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     Language: TokenKind.LANGUAGE,
     BonusKeyword: TokenKind.BONUS,
     SubtitleInfo: TokenKind.SUBTITLE_INFO,
-    HDRInfo: TokenKind.UNKNOWN,  # HDR stored as UNKNOWN (no dedicated kind yet)
+    HDRInfo: TokenKind.HDR,
     Repack: TokenKind.UNKNOWN,
     SitePrefix: TokenKind.SITE_PREFIX,
     BitDepth: TokenKind.UNKNOWN,  # Metadata, not title — no dedicated kind
@@ -1555,6 +1555,7 @@ class ParsedMedia:
     is_dual_audio: bool = False
     is_criterion: bool = False
     is_uncensored: bool = False
+    hdr: str = ""  # "HDR", "HDR10", "HDR10+", "DoVi", "DV", "UHD"
     hash_code: str = ""
     resolution: str = ""
     video_codec: str = ""
@@ -1777,6 +1778,9 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
             bt = classify_bonus_type(token.text)
             if bt and (not pm.bonus_type or pm.bonus_type == "Bonus"):
                 pm.bonus_type = bt
+        elif token.kind == TokenKind.HDR:
+            if not pm.hdr:
+                pm.hdr = token.text
         elif token.kind == TokenKind.DUAL_AUDIO:
             pm.is_dual_audio = True
         elif token.kind == TokenKind.UNCENSORED:
@@ -1827,6 +1831,8 @@ def _merge_scanned_metadata(tokens: list[Token], pm: ParsedMedia) -> None:
             pm.video_codec = t.text
         elif t.kind == TokenKind.AUDIO_CODEC:
             pm.audio_codecs.append(t.text)
+        elif t.kind == TokenKind.HDR and not pm.hdr:
+            pm.hdr = t.text
         elif t.kind == TokenKind.RELEASE_GROUP and not pm.release_group:
             pm.release_group = t.text
         elif t.kind == TokenKind.DUAL_AUDIO:
@@ -1918,6 +1924,10 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
     # Audio codec fallback
     if not result.audio_codecs and dir_pm.audio_codecs:
         result.audio_codecs = dir_pm.audio_codecs
+
+    # HDR fallback
+    if not result.hdr and dir_pm.hdr:
+        result.hdr = dir_pm.hdr
 
     # Streaming service fallback
     if not result.streaming_service and dir_pm.streaming_service:
