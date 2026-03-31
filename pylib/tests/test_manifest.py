@@ -17,6 +17,7 @@ from etp_lib.manifest import _match_bonus_to_anidb_special
 from etp_lib.types import (
     AnimeInfo,
     Episode,
+    EpisodeType,
     ManifestEntry,
     MediaInfo,
     ParsedMetadata,
@@ -65,8 +66,8 @@ class TestBuildManifestEntries:
             title_en="Test",
             year=2020,
             episodes=[
-                Episode(1, "regular", "Pilot", "", ""),
-                Episode(2, "regular", "Second", "", ""),
+                Episode(1, EpisodeType.REGULAR, "Pilot", "", ""),
+                Episode(2, EpisodeType.REGULAR, "Second", "", ""),
             ],
         )
         entries = build_manifest_entries(
@@ -425,6 +426,69 @@ class TestParseManifest:
         assert len(entries) == 1
         assert entries[0][1] == series_dir / "Specials" / "special.mkv"
 
+    def test_invalid_season_number(self, tmp_path):
+        """Non-integer season number should produce an error, not crash."""
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'season "abc" {\n  episode 1 {\n    source "a.mkv"\n'
+            '    dest "dst.mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        assert len(entries) == 0
+        assert any("invalid season" in e for e in errors)
+
+    def test_missing_dest_reports_episode(self, tmp_path):
+        """Missing dest field should report which episode has the issue."""
+        sf = SourceFile(path=Path("/src/a.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'season 1 {\n  episode 5 {\n    source "a.mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        entries, errors, _extras = parse_manifest(manifest, {"a.mkv": sf}, tmp_path)
+        assert len(entries) == 0
+        assert any("episode 5" in e and "missing dest" in e for e in errors)
+
+    def test_missing_source_reports_error(self, tmp_path):
+        """Missing source field should report an error."""
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'season 1 {\n  episode 1 {\n    dest "dst.mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        assert len(entries) == 0
+        assert any("missing source" in e for e in errors)
+
+    def test_unknown_source_shows_available(self, tmp_path):
+        """Unknown source error should hint at available sources."""
+        sf = SourceFile(path=Path("/src/real.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(self._make_kdl(1, "wrong.mkv", "dst.mkv"), encoding="utf-8")
+        entries, errors, _extras = parse_manifest(manifest, {"real.mkv": sf}, tmp_path)
+        assert len(entries) == 0
+        assert any("unknown source" in e and "real.mkv" in e for e in errors)
+
+    def test_extras_missing_dest_reports_error(self, tmp_path):
+        """Extras with missing dest should report an error."""
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'extras {\n  file "/src/art.zip" {\n  }\n}\n',
+            encoding="utf-8",
+        )
+        entries, errors, extras = parse_manifest(manifest, {}, tmp_path)
+        assert len(extras) == 0
+        assert any("extras" in e and "missing dest" in e for e in errors)
+
+    def test_malformed_kdl_reports_parse_error(self, tmp_path):
+        """Malformed KDL should return a parse error, not crash."""
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text("season 1 { unclosed", encoding="utf-8")
+        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        assert len(entries) == 0
+        assert any("parse error" in e.lower() for e in errors)
+
 
 class TestOpenEditor:
     """Tests for editor invocation."""
@@ -531,9 +595,9 @@ class TestBonusToAnidbMatching:
 
     def test_ncop_matches_opening_credit(self):
         specials = [
-            Episode(1, "credit", "Opening 1", "", "C1"),
-            Episode(1, "credit", "Ending 1", "", "C2"),
-            Episode(1, "special", "Special 1", "", "S1"),
+            Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1"),
+            Episode(1, EpisodeType.CREDIT, "Ending 1", "", "C2"),
+            Episode(1, EpisodeType.SPECIAL, "Special 1", "", "S1"),
         ]
         ep = _match_bonus_to_anidb_special("NCOP", "", specials)
         assert ep is not None
@@ -541,8 +605,8 @@ class TestBonusToAnidbMatching:
 
     def test_nced_matches_ending_credit(self):
         specials = [
-            Episode(1, "credit", "Opening 1", "", "C1"),
-            Episode(1, "credit", "Ending 1", "", "C2"),
+            Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1"),
+            Episode(1, EpisodeType.CREDIT, "Ending 1", "", "C2"),
         ]
         ep = _match_bonus_to_anidb_special("NCED", "", specials)
         assert ep is not None
@@ -550,7 +614,7 @@ class TestBonusToAnidbMatching:
 
     def test_no_match_returns_none(self):
         specials = [
-            Episode(1, "special", "Special 1", "", "S1"),
+            Episode(1, EpisodeType.SPECIAL, "Special 1", "", "S1"),
         ]
         ep = _match_bonus_to_anidb_special("PV", "", specials)
         assert ep is None
@@ -560,7 +624,7 @@ class TestBonusToAnidbMatching:
 
     def test_title_match(self):
         specials = [
-            Episode(1, "special", "Preview", "", "S1"),
+            Episode(1, EpisodeType.SPECIAL, "Preview", "", "S1"),
         ]
         ep = _match_bonus_to_anidb_special("Preview", "Preview", specials)
         assert ep is not None
@@ -588,9 +652,9 @@ class TestNcopNcedManifestOutput:
             title_en="Show",
             year=2020,
             episodes=[
-                Episode(1, "regular", "Ep 1", "", ""),
-                Episode(1, "credit", "Opening 1", "", "C1"),
-                Episode(1, "credit", "Ending 1", "", "C2"),
+                Episode(1, EpisodeType.REGULAR, "Ep 1", "", ""),
+                Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1"),
+                Episode(1, EpisodeType.CREDIT, "Ending 1", "", "C2"),
             ],
         )
         entries = build_manifest_entries(
@@ -619,8 +683,8 @@ class TestNcopNcedManifestOutput:
             title_en="Show",
             year=2020,
             episodes=[
-                Episode(1, "credit", "Opening 1", "", "C1"),
-                Episode(1, "credit", "Ending 1", "", "C2"),
+                Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1"),
+                Episode(1, EpisodeType.CREDIT, "Ending 1", "", "C2"),
             ],
         )
         entries = build_manifest_entries(
@@ -650,7 +714,7 @@ class TestHamatvNumbering:
             title_ja="Show",
             title_en="Show",
             year=2020,
-            episodes=[Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         entries = build_manifest_entries(
             [sf], info, "Show", tmp_path / "dest", verbose=False
@@ -680,7 +744,7 @@ class TestHamatvNumbering:
             title_ja="Show",
             title_en="Show",
             year=2020,
-            episodes=[Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         entries = build_manifest_entries(
             files, info, "Show", tmp_path / "dest", verbose=False
@@ -704,7 +768,7 @@ class TestHamatvNumbering:
             title_ja="Show",
             title_en="Show",
             year=2020,
-            episodes=[Episode(1, "credit", "Opening 1", "", "C1")],
+            episodes=[Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1")],
         )
         entries = build_manifest_entries(
             [sf], info, "Show", tmp_path / "dest", verbose=False

@@ -37,14 +37,7 @@ from etp_lib.conflicts import (
     prompt_value,
     verify_hash,
 )
-from etp_lib.manifest import (
-    build_manifest_entries,
-    escape_kdl,
-    execute_manifest,
-    open_editor,
-    parse_manifest,
-    write_manifest,
-)
+from etp_lib.manifest import ManifestWorkflow, escape_kdl
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
@@ -61,8 +54,11 @@ from etp_lib.types import (
     DEFAULT_DOWNLOADS_DIR,  # noqa: F401 (re-export for tests)
     DownloadIndex,
     Episode,  # noqa: F401 (re-export for tests)
+    EpisodeType,
     GroupDefaults,
+    MatchedFile,
     MediaInfo,  # noqa: F401 (re-export for tests)
+    MetadataProvider,
     ParsedMetadata,
     SourceFile,
 )
@@ -135,11 +131,11 @@ def load_anime_config(path: Path | None = None) -> AnimeConfig:
         ids: list[tuple[str, int]] = config.series_mappings.setdefault(name, [])
         for child in node.nodes:
             if child.name == "anidb" and child.args:
-                entry = ("anidb", int(child.args[0]))
+                entry = (MetadataProvider.ANIDB, int(child.args[0]))
                 if entry not in ids:
                     ids.append(entry)
             elif child.name == "tvdb" and child.args:
-                entry = ("tvdb", int(child.args[0]))
+                entry = (MetadataProvider.TVDB, int(child.args[0]))
                 if entry not in ids:
                     ids.append(entry)
             elif child.name == "concise" and child.args:
@@ -283,7 +279,10 @@ def scan_dest_ids(dest: Path) -> dict[tuple[str, int], Path]:
     for entry in dest.iterdir():
         if not entry.is_dir():
             continue
-        for id_filename, provider in (("anidb.id", "anidb"), ("tvdb.id", "tvdb")):
+        for id_filename, provider in (
+            ("anidb.id", MetadataProvider.ANIDB),
+            ("tvdb.id", MetadataProvider.TVDB),
+        ):
             id_file = entry / id_filename
             if id_file.is_file():
                 try:
@@ -367,13 +366,13 @@ def resolve_series_directory(
     # Step 1: ID match
     if id_map:
         if info.anidb_id is not None:
-            match = id_map.get(("anidb", info.anidb_id))
+            match = id_map.get((MetadataProvider.ANIDB, info.anidb_id))
             if match is not None:
                 print(f"  Found existing directory by AniDB ID: {match.name}")
                 _ensure_subdirs(match, seasons, dry_run)
                 return match
         if info.tvdb_id is not None:
-            match = id_map.get(("tvdb", info.tvdb_id))
+            match = id_map.get((MetadataProvider.TVDB, info.tvdb_id))
             if match is not None:
                 print(f"  Found existing directory by TheTVDB ID: {match.name}")
                 _ensure_subdirs(match, seasons, dry_run)
@@ -854,8 +853,8 @@ def _confirm_anime_info(info: AnimeInfo) -> AnimeInfo:
     print(f"  English title:  {info.title_en}")
     print(f"  Year:           {info.year}")
 
-    regular_eps = [e for e in info.episodes if e.ep_type == "regular"]
-    special_eps = [e for e in info.episodes if e.ep_type != "regular"]
+    regular_eps = [e for e in info.episodes if e.ep_type == EpisodeType.REGULAR]
+    special_eps = [e for e in info.episodes if e.ep_type != EpisodeType.REGULAR]
     print(f"  Episodes:       {len(regular_eps)} regular, {len(special_eps)} special")
 
     if not prompt_confirm("\nUse these values?"):
@@ -1020,20 +1019,20 @@ def _process_file(
 def _match_files_to_season(
     pool: list[SourceFile],
     info: AnimeInfo,
-) -> tuple[list[SourceFile], list[SourceFile]]:
+) -> tuple[list[MatchedFile], list[SourceFile]]:
     """Match files from the pool against an AniDB season.
 
     Groups pool files by their parsed season number, then asks the user
     which detected season corresponds to this AniDB entry.  When a season
     has more files than the AniDB entry has regular episodes (e.g., a
     multi-cour season split across two AniDB IDs), only the first N files
-    by episode number are matched.  Their episode numbers are renumbered
-    to start at 1 so they map correctly to the AniDB episode list.
+    by episode number are matched.
 
-    Returns ``(matched, remaining)`` where matched files are removed from
-    the pool.
+    Returns ``(matched, remaining)`` where matched files are wrapped in
+    MatchedFile (with renumbered episodes if needed) and remaining files
+    keep their original SourceFile state intact.
     """
-    regular_count = sum(1 for ep in info.episodes if ep.ep_type == "regular")
+    regular_count = sum(1 for ep in info.episodes if ep.ep_type == EpisodeType.REGULAR)
 
     # Filter pool by sub-series title similarity against AniDB entry.
     # This prevents files from other sub-series in a batch from being
@@ -1153,32 +1152,39 @@ def _match_files_to_season(
         matched_eps = episode_files
         leftover = []
 
-    matched = matched_eps + bonus_files
+    consumed = matched_eps + bonus_files
 
-    # Renumber episodes to start at 1 only for multi-cour splits where
+    # Determine renumbering offset for multi-cour splits where
     # e.g. S01E13 needs to become ep 1 of the second AniDB entry.
-    # Skip renumbering when the episode range already fits within the
-    # AniDB entry (e.g. a single ep 12 of a 12-episode season).
-    if matched:
-        first_ep = matched[0].parsed.episode or 1
-        last_ep = matched[-1].parsed.episode or first_ep
+    renumber_offset = 0
+    if consumed:
+        first_ep = consumed[0].parsed.episode or 1
+        last_ep = consumed[-1].parsed.episode or first_ep
         needs_renumber = first_ep != 1 and (
             regular_count > 0 and last_ep > regular_count
         )
         if needs_renumber:
+            renumber_offset = first_ep - 1
             print(f"  Renumbering: ep {first_ep}+ → ep 1+")
-            for sf in matched:
-                if sf.parsed.episode is not None:
-                    sf.parsed.episode = sf.parsed.episode - first_ep + 1
+
+    # Wrap matched files in MatchedFile (non-mutating)
+    matched: list[MatchedFile] = []
+    for sf in consumed:
+        ep = sf.parsed.episode
+        if ep is not None and renumber_offset:
+            ep = ep - renumber_offset
+        matched.append(MatchedFile(source=sf, episode=ep, season=sf.parsed.season))
 
     # Include unseasoned files as (todo) entries
-    matched_with_extras = matched + no_season
+    for sf in no_season:
+        matched.append(MatchedFile(source=sf))
 
     # Build remaining pool (everything not matched, leftover already included)
-    matched_set = set(id(sf) for sf in matched_with_extras)
+    consumed_with_extras = consumed + no_season
+    matched_set = set(id(sf) for sf in consumed_with_extras)
     remaining = [sf for sf in pool if id(sf) not in matched_set]
 
-    return matched_with_extras, remaining
+    return matched, remaining
 
 
 _RE_TRAILING_YEAR = re.compile(r"\s*\(\d{4}\)\s*$")
@@ -1197,6 +1203,7 @@ def _process_group_batch(
     dry_run: bool,
     verbose: bool,
     default_concise_name: str = "",
+    pre_matched: list[MatchedFile] | None = None,
     pre_parsed: list[SourceFile] | None = None,
     season_override: int | None = None,
     extras: list[Path] | None = None,
@@ -1204,156 +1211,96 @@ def _process_group_batch(
 ) -> tuple[int, int, list[Path]]:
     """Batch-process a group of files via an editable manifest.
 
-    Same interface as ``_process_group`` but uses a vidir-style workflow:
-    build all source->destination mappings, open in $EDITOR, then execute.
+    Uses a vidir-style workflow: build all source->destination mappings,
+    open in $EDITOR, then execute.
 
-    If *pre_parsed* is provided, uses those SourceFiles instead of parsing
-    *files*. If *season_override* is set, all episodes are renumbered as
-    that season (e.g., ``season_override=1`` forces ``s1eYY``).
+    If *pre_matched* is provided (from _match_files_to_season), uses those
+    MatchedFile objects directly. If *pre_parsed* is provided, wraps them
+    in MatchedFile. Otherwise parses *files* from scratch.
+
+    If *season_override* is set, all files get that season value
+    (e.g., ``season_override=1`` forces ``s1eYY`` for AniDB).
     """
-    parsed = pre_parsed if pre_parsed is not None else _parse_files(files)
+    # Build MatchedFile list from whichever input was provided
+    if pre_matched is not None:
+        matched = pre_matched
+    elif pre_parsed is not None:
+        matched = [MatchedFile(source=sf) for sf in pre_parsed]
+    else:
+        matched = [MatchedFile(source=sf) for sf in _parse_files(files)]
 
     # Apply season override (for AniDB per-season processing)
     if season_override is not None:
-        for sf in parsed:
-            sf.parsed.season = season_override
+        for mf in matched:
+            mf.season = season_override
 
-    # Resolve concise name default: saved config > extracted > directory name
+    # Resolve concise name
     saved_concise = ""
     if config is not None and default_concise_name:
         saved_concise = config.concise_names.get(default_concise_name, "")
     if saved_concise:
         default_concise_name = saved_concise
     elif not default_concise_name:
-        default_concise_name = _extract_concise_name(parsed)
+        sources = [mf.source for mf in matched]
+        default_concise_name = _extract_concise_name(sources)
     default_concise_name = _strip_year(default_concise_name)
     concise_name = prompt_value(
         "Concise series name for filenames", default_concise_name
     )
 
-    seasons_needed = {sf.parsed.season or 1 for sf in parsed}
+    seasons_needed = {mf.effective_season or 1 for mf in matched}
     seasons_list = sorted(seasons_needed)
 
     series_dir = resolve_series_directory(
-        dest,
-        info,
-        id_map=id_map,
-        seasons=seasons_list,
-        dry_run=dry_run,
+        dest, info, id_map=id_map, seasons=seasons_list, dry_run=dry_run
     )
     print(f"\nSeries directory: {series_dir}")
 
     if info.anidb_id is not None:
-        id_map[("anidb", info.anidb_id)] = series_dir
+        id_map[(MetadataProvider.ANIDB, info.anidb_id)] = series_dir
     if info.tvdb_id is not None:
-        id_map[("tvdb", info.tvdb_id)] = series_dir
+        id_map[(MetadataProvider.TVDB, info.tvdb_id)] = series_dir
 
-    # Always prompt for release group so the user can override
-    # auto-detected values (e.g. "アニメ BD" is a content description,
-    # not a release group name)
+    # Prompt for release group — applied as batch override, not mutation
     detected = next(
-        (sf.parsed.release_group for sf in parsed if sf.parsed.release_group), ""
+        (
+            mf.source.parsed.release_group
+            for mf in matched
+            if mf.source.parsed.release_group
+        ),
+        "",
     )
     group = prompt_value("Release group", detected)
-    if group != detected:
-        for sf in parsed:
-            sf.parsed.release_group = group
-    elif not detected:
-        pass  # no group detected, user left it empty
-    else:
-        # Fill in any files that were missing a group
-        for sf in parsed:
-            if not sf.parsed.release_group:
-                sf.parsed.release_group = group
+    for mf in matched:
+        mf.release_group = group
 
-    # Detect batch-level traits from parser data.
-    # If most files in the batch share a trait, propagate it to all files.
-    dual_count = sum(1 for sf in parsed if sf.parsed.is_dual_audio)
-    if dual_count > len(parsed) // 2:
-        for sf in parsed:
-            sf.parsed.is_dual_audio = True
+    # Detect batch-level traits (majority vote)
+    dual_count = sum(1 for mf in matched if mf.source.parsed.is_dual_audio)
+    if dual_count > len(matched) // 2:
+        for mf in matched:
+            mf.is_dual_audio = True
 
-    uncensored_count = sum(1 for sf in parsed if sf.parsed.is_uncensored)
-    if uncensored_count > len(parsed) // 2:
-        for sf in parsed:
-            sf.parsed.is_uncensored = True
+    uncensored_count = sum(1 for mf in matched if mf.source.parsed.is_uncensored)
+    if uncensored_count > len(matched) // 2:
+        for mf in matched:
+            mf.is_uncensored = True
 
-    # Build manifest entries (mediainfo + CRC32 verification)
-    print()
-    entries = build_manifest_entries(
-        parsed,
+    # Snapshot MatchedFile overrides into SourceFile copies for the workflow
+    snapshot_parsed = [mf.to_source_snapshot() for mf in matched]
+
+    workflow = ManifestWorkflow(
+        snapshot_parsed,
         info,
         concise_name,
         series_dir,
-        verbose,
+        verbose=verbose,
         analyze_file_fn=analyze_file,
     )
-
-    # Write manifest to temp file
-    manifest_path = write_manifest(
-        entries, info, concise_name, series_dir, extras=extras or []
+    return workflow.run(
+        dry_run=dry_run,
+        extras=extras,
+        parse_source_filename_fn=parse_source_filename,
     )
-
-    # Build source lookup by full path for parsing back
-    known_sources: dict[str, SourceFile] = {
-        str(e.source.path): e.source for e in entries
-    }
-
-    file_count = len(parsed)
-
-    # Edit -> parse -> re-edit loop
-    try:
-        while True:
-            if not open_editor(manifest_path):
-                print("  Editor failed. Skipping group.")
-                return 0, file_count, []
-
-            parsed_entries, errors, extra_entries = parse_manifest(
-                manifest_path, known_sources, series_dir
-            )
-
-            if errors:
-                print(f"\n  Manifest has {len(errors)} error(s):")
-                for err in errors:
-                    print(err)
-                if prompt_confirm("\n  Re-open editor to fix?"):
-                    continue
-                else:
-                    print("  Skipping group.")
-                    return 0, file_count, []
-
-            if not parsed_entries:
-                print(
-                    "  Manifest is empty (all lines deleted or commented). Skipping group."
-                )
-                return 0, file_count, []
-
-            break
-
-        # Execute the manifest
-        print(f"\n  Copying {len(parsed_entries)} file(s)...")
-        result = execute_manifest(
-            parsed_entries,
-            dry_run,
-            verbose,
-            parse_source_filename_fn=parse_source_filename,
-            analyze_file_fn=analyze_file,
-        )
-
-        # Copy extras (non-video files) if any remained in the manifest
-        if extra_entries:
-            print(f"  Copying {len(extra_entries)} extra(s)...")
-            for src, dst in extra_entries:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                copy_reflink(src, dst, dry_run=dry_run)
-
-        return result
-
-    finally:
-        try:
-            manifest_path.unlink()
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1421,7 +1368,7 @@ def _process_pool(
             )
             if raw in ("", "y", "yes"):
                 id_queue.pop(0)
-                if provider == "anidb":
+                if provider == MetadataProvider.ANIDB:
                     anidb_id = sid
                 else:
                     tvdb_id = sid
@@ -1467,7 +1414,11 @@ def _process_pool(
             if anidb_id is None and tvdb_id is None:
                 print(f"  Invalid ID '{raw}', try again.")
                 continue
-            provider = "anidb" if anidb_id is not None else "tvdb"
+            provider = (
+                MetadataProvider.ANIDB
+                if anidb_id is not None
+                else MetadataProvider.TVDB
+            )
             pid = anidb_id if anidb_id is not None else tvdb_id
             assert pid is not None
             _maybe_save_mapping(
@@ -1518,7 +1469,7 @@ def _process_pool(
                 dry_run,
                 verbose,
                 default_concise_name=group_name,
-                pre_parsed=matched,
+                pre_matched=matched,
                 season_override=1,
                 extras=extras,
                 config=config,
@@ -1642,12 +1593,16 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
         tvdb_file = series_path / "tvdb.id"
         if anidb_file.is_file():
             try:
-                id_queue.append(("anidb", int(anidb_file.read_text().strip())))
+                id_queue.append(
+                    (MetadataProvider.ANIDB, int(anidb_file.read_text().strip()))
+                )
             except ValueError:
                 pass
         if tvdb_file.is_file():
             try:
-                id_queue.append(("tvdb", int(tvdb_file.read_text().strip())))
+                id_queue.append(
+                    (MetadataProvider.TVDB, int(tvdb_file.read_text().strip()))
+                )
             except ValueError:
                 pass
 
@@ -1740,9 +1695,9 @@ def run_episode(args: argparse.Namespace, config: AnimeConfig) -> int:
     series_dir: Path | None = None
     if id_map:
         if info.anidb_id is not None:
-            series_dir = id_map.get(("anidb", info.anidb_id))
+            series_dir = id_map.get((MetadataProvider.ANIDB, info.anidb_id))
         if series_dir is None and info.tvdb_id is not None:
-            series_dir = id_map.get(("tvdb", info.tvdb_id))
+            series_dir = id_map.get((MetadataProvider.TVDB, info.tvdb_id))
     if series_dir is None and conventional.is_dir():
         series_dir = conventional
 

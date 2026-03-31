@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from etp_commands import anime
+from etp_lib.types import EpisodeType
 
 
 # ===================================================================
@@ -671,7 +672,7 @@ class TestConciseNameFromConfig:
             title_ja="ゴールデンカムイ",
             title_en="Golden Kamuy",
             year=2018,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         parsed = [
             anime.SourceFile(
@@ -713,7 +714,7 @@ class TestConciseNameFromConfig:
             title_ja="ゴールデンカムイ",
             title_en="Golden Kamuy",
             year=2018,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         parsed = [
             anime.SourceFile(
@@ -1147,7 +1148,7 @@ class TestSubSeriesTitleFiltering:
             title_ja="探偵オペラ ミルキィホームズ",
             title_en="Detective Opera Milky Holmes",
             year=2010,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 1
@@ -1183,12 +1184,12 @@ class TestSubSeriesTitleFiltering:
             title_ja="探偵オペラ ミルキィホームズ",
             title_en="Detective Opera Milky Holmes",
             year=2010,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         # Only the S1 file should match; S2 and Alternative stay in pool
         assert len(matched) == 1
-        assert matched[0].parsed.season == 1
+        assert matched[0].effective_season == 1
         assert len(remaining) == 2
 
     def test_different_series_title_excluded(self, monkeypatch):
@@ -1222,7 +1223,7 @@ class TestSubSeriesTitleFiltering:
             title_ja="探偵オペラ ミルキィホームズ",
             title_en="Detective Opera Milky Holmes",
             year=2010,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 1
@@ -1246,7 +1247,7 @@ class TestSubSeriesTitleFiltering:
             title_ja="全然マッチしない",
             title_en="No Match",
             year=2020,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 1
@@ -1272,7 +1273,7 @@ class TestSubSeriesTitleFiltering:
             title_ja="テスト",
             title_en="Test",
             year=2020,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         # Both unseasoned files should be included (promoted to season 1)
@@ -1316,12 +1317,13 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             title_en="Test",
             year=2020,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
-        eps = [sf for sf in matched if sf.parsed.episode is not None]
-        bonus = [sf for sf in matched if sf.parsed.episode is None]
+        eps = [mf for mf in matched if mf.effective_episode is not None]
+        bonus = [mf for mf in matched if mf.effective_episode is None]
         assert len(eps) == 12
         assert len(bonus) == 7
         assert len(matched) == 19
@@ -1358,12 +1360,13 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             title_en="Test",
             year=2020,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
-        eps = [sf for sf in matched if sf.parsed.episode is not None]
-        bonus = [sf for sf in matched if sf.parsed.episode is None]
+        eps = [mf for mf in matched if mf.effective_episode is not None]
+        bonus = [mf for mf in matched if mf.effective_episode is None]
         assert len(eps) == 12
         assert len(bonus) == 3
         # Remaining should be ep 13-24 (no bonus)
@@ -1394,7 +1397,8 @@ class TestMatchFilesToSeason:
             title_en="Test",
             year=2020,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
@@ -1421,12 +1425,13 @@ class TestMatchFilesToSeason:
             title_en="Test",
             year=2021,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 12
-        assert all(sf.parsed.season == 2 for sf in matched)
+        assert all(mf.effective_season == 2 for mf in matched)
         assert len(remaining) == 12
 
     def test_unseasoned_files_included(self, monkeypatch):
@@ -1445,7 +1450,7 @@ class TestMatchFilesToSeason:
             title_ja="テスト",
             title_en="Test",
             year=2020,
-            episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
+            episodes=[anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", "")],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 2  # ep1 + special
@@ -1470,15 +1475,16 @@ class TestMatchFilesToSeason:
             title_en="Test",
             year=2024,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 12
         assert len(remaining) == 12
         # First 12 episodes matched, episodes 1-12
-        assert matched[0].parsed.episode == 1
-        assert matched[-1].parsed.episode == 12
+        assert matched[0].effective_episode == 1
+        assert matched[-1].effective_episode == 12
 
     def test_multi_cour_renumbers_second_half(self, monkeypatch):
         """Second cour (ep 13-24) gets renumbered to 1-12."""
@@ -1500,15 +1506,19 @@ class TestMatchFilesToSeason:
             title_en="Test Part 2",
             year=2025,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 12
         assert len(remaining) == 0
         # Episodes renumbered: 13→1, 14→2, ..., 24→12
-        assert matched[0].parsed.episode == 1
-        assert matched[-1].parsed.episode == 12
+        assert matched[0].effective_episode == 1
+        assert matched[-1].effective_episode == 12
+        # Original pool data is preserved (not mutated)
+        assert pool[0].parsed.episode == 13
+        assert pool[-1].parsed.episode == 24
 
     def test_no_renumber_when_eps_fit(self, monkeypatch):
         """Ep 12 of a 12-episode entry stays as 12, not renumbered to 1."""
@@ -1528,12 +1538,13 @@ class TestMatchFilesToSeason:
             title_en="Test Season 2",
             year=2026,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 1
-        assert matched[0].parsed.episode == 12  # NOT renumbered to 1
+        assert matched[0].effective_episode == 12  # NOT renumbered to 1
 
     def test_multi_cour_leftover_back_in_pool(self, monkeypatch):
         """Leftover files from a multi-cour split go back in the pool."""
@@ -1555,7 +1566,8 @@ class TestMatchFilesToSeason:
             title_en="Test",
             year=2024,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 13)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
@@ -1582,7 +1594,8 @@ class TestMatchFilesToSeason:
             title_en="Journal with Witch",
             year=2026,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 14)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 14)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
@@ -1608,7 +1621,8 @@ class TestMatchFilesToSeason:
             title_en="Journal with Witch",
             year=2026,
             episodes=[
-                anime.Episode(i, "regular", f"Ep {i}", "", "") for i in range(1, 14)
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 14)
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
