@@ -85,7 +85,7 @@ is tried.
 The `_RECOGNIZERS` list orders recognizers from most specific to most general.
 Order matters — a recognizer earlier in the list takes priority:
 
-```
+```text
 Episode markers (most distinctive):
   episode_multi_se    S01E01-E06, S01E01-06, S01E01E02E03
   episode_se          S01E05, s1e1, S03E13v2
@@ -243,7 +243,7 @@ fullwidth forms).
 `parse_source_filename(filename)` calls `parse_component()` and maps the
 `ParsedMedia` result into a `ParsedMetadata` dataclass on a `SourceFile`:
 
-```
+```text
 ParsedMedia (parser)          →  ParsedMetadata (anime)
   .release_group                   .release_group
   .source_type                     .source_type
@@ -401,20 +401,20 @@ processing sequence:
 
 ### Directory name
 
-```
+```text
 {title_ja} [{title_en}] ({year})    # when ja has kanji/kana and en differs
 {title} ({year})                     # otherwise
 ```
 
 ### Episode filename
 
-```
+```text
 {name} - s{season}e{ep:02d} - {title} [{metadata}] [{hash}].{ext}
 ```
 
 Specials use the special tag instead of `sXeYY`:
 
-```
+```text
 {name} - {special_tag} - {title} [{metadata}] [{hash}].{ext}
 ```
 
