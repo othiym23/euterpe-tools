@@ -47,6 +47,7 @@ class TokenKind(Enum):
     UNCENSORED = auto()
     EDITION = auto()  # Criterion, Remastered, etc.
     HDR = auto()  # HDR, HDR10, DoVi, DV, UHD
+    BIT_DEPTH = auto()  # 10bit, 8bit, Hi10, Hi10P
     UNKNOWN = auto()
 
 
@@ -311,6 +312,7 @@ _METADATA_KINDS = frozenset(
         TokenKind.UNCENSORED,
         TokenKind.EDITION,
         TokenKind.HDR,
+        TokenKind.BIT_DEPTH,
         TokenKind.UNKNOWN,
         TokenKind.EXTENSION,
         TokenKind.PATH_SEP,

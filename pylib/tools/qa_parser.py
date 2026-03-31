@@ -72,6 +72,7 @@ def _format_pm(pm: ParsedMedia) -> str:
         ("criterion", pm.is_criterion if pm.is_criterion else None),
         ("uncensored", pm.is_uncensored if pm.is_uncensored else None),
         ("res", pm.resolution),
+        ("bit_depth", f"{pm.bit_depth}bit" if pm.bit_depth else None),
         ("hdr", pm.hdr if pm.hdr else None),
         ("video", pm.video_codec),
         ("audio", ", ".join(pm.audio_codecs) if pm.audio_codecs else None),

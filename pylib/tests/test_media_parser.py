@@ -1397,6 +1397,33 @@ class TestQARegression:
         pm = mp.parse_component("Movie.2022.2160p.HDR.BluRay.x265-GROUP.mkv")
         assert "HDR" not in pm.series_name
 
+    def test_bit_depth_hi10p(self):
+        """Hi10P should be recognized as 10-bit."""
+        pm = mp.parse_component(
+            "Fullmetal.Alchemist.Brotherhood.53.v2.1080p.BluRay."
+            "Dual-Audio.FLAC2.0.Hi10P.x264-JySzE.mkv"
+        )
+        assert pm.bit_depth == 10
+        assert pm.episode == 53
+        assert pm.version == 2
+        assert "Hi10" not in pm.series_name
+
+    def test_bit_depth_10bit(self):
+        """10bit should be recognized."""
+        pm = mp.parse_component("Movie.2022.1080p.BluRay.10bit.x265-GROUP.mkv")
+        assert pm.bit_depth == 10
+
+    def test_bit_depth_8bit(self):
+        """8bit should be recognized."""
+        pm = mp.parse_component("Movie.2022.1080p.BluRay.8bit.x264-GROUP.mkv")
+        assert pm.bit_depth == 8
+
+    def test_bit_depth_not_in_series_name(self):
+        """Bit depth should not appear in series name."""
+        pm = mp.parse_component("Movie.2022.1080p.10bit.BluRay.x265-GROUP.mkv")
+        assert "10bit" not in pm.series_name
+        assert pm.bit_depth == 10
+
     def test_dual_standalone_scene(self):
         """Scene-style DUAL (without Audio) should set is_dual_audio."""
         pm = mp.parse_component(

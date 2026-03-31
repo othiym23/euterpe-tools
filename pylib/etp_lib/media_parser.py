@@ -509,8 +509,8 @@ site_prefix: Parser = regex(r"www\.\w+\.\w+", re.IGNORECASE).map(
     lambda s: SitePrefix(s)
 )
 
-# Bit depth: 10bit, 10-Bit, Hi10, 8bit
-_RE_BIT_DEPTH = re.compile(r"(?:Hi)?(\d+)[- ]?[Bb]it|Hi(\d+)", re.IGNORECASE)
+# Bit depth: 10bit, 10-Bit, Hi10, Hi10P, 8bit
+_RE_BIT_DEPTH = re.compile(r"(?:Hi)?(\d+)[- ]?[Bb]it|Hi(\d+)P?", re.IGNORECASE)
 
 
 def _bit_depth_parser(stream: str, index: int):
@@ -628,7 +628,7 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     HDRInfo: TokenKind.HDR,
     Repack: TokenKind.UNKNOWN,
     SitePrefix: TokenKind.SITE_PREFIX,
-    BitDepth: TokenKind.UNKNOWN,  # Metadata, not title — no dedicated kind
+    BitDepth: TokenKind.BIT_DEPTH,
     DualAudio: TokenKind.DUAL_AUDIO,
     Edition: TokenKind.EDITION,
     Uncensored: TokenKind.UNCENSORED,
@@ -1555,6 +1555,7 @@ class ParsedMedia:
     is_dual_audio: bool = False
     is_criterion: bool = False
     is_uncensored: bool = False
+    bit_depth: int | None = None  # 8, 10, etc.
     hdr: str = ""  # "HDR", "HDR10", "HDR10+", "DoVi", "DV", "UHD"
     hash_code: str = ""
     resolution: str = ""
@@ -1778,6 +1779,11 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
             bt = classify_bonus_type(token.text)
             if bt and (not pm.bonus_type or pm.bonus_type == "Bonus"):
                 pm.bonus_type = bt
+        elif token.kind == TokenKind.BIT_DEPTH:
+            if pm.bit_depth is None:
+                m = _RE_BIT_DEPTH.match(token.text)
+                if m:
+                    pm.bit_depth = int(m.group(1) or m.group(2))
         elif token.kind == TokenKind.HDR:
             if not pm.hdr:
                 pm.hdr = token.text
@@ -1833,6 +1839,10 @@ def _merge_scanned_metadata(tokens: list[Token], pm: ParsedMedia) -> None:
             pm.audio_codecs.append(t.text)
         elif t.kind == TokenKind.HDR and not pm.hdr:
             pm.hdr = t.text
+        elif t.kind == TokenKind.BIT_DEPTH and pm.bit_depth is None:
+            m = _RE_BIT_DEPTH.match(t.text)
+            if m:
+                pm.bit_depth = int(m.group(1) or m.group(2))
         elif t.kind == TokenKind.RELEASE_GROUP and not pm.release_group:
             pm.release_group = t.text
         elif t.kind == TokenKind.DUAL_AUDIO:
@@ -1928,6 +1938,10 @@ def parse_media_path(rel_path: str) -> ParsedMedia:
     # HDR fallback
     if not result.hdr and dir_pm.hdr:
         result.hdr = dir_pm.hdr
+
+    # Bit depth fallback
+    if result.bit_depth is None and dir_pm.bit_depth is not None:
+        result.bit_depth = dir_pm.bit_depth
 
     # Streaming service fallback
     if not result.streaming_service and dir_pm.streaming_service:
