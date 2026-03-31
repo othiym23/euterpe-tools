@@ -332,9 +332,9 @@ class TestClassifyEpisode:
 
     def test_special_sp1(self):
         tokens = _classify("[Group] Show - SP1 [1080p].mkv")
-        eps = [t for t in tokens if t.kind == mp.TokenKind.EPISODE]
-        assert len(eps) == 1
-        assert eps[0].episode == 1
+        specials = [t for t in tokens if t.kind == mp.TokenKind.SPECIAL]
+        assert len(specials) == 1
+        assert specials[0].episode == 1
 
     def test_ep_end(self):
         tokens = _classify("[Group] Show - 14 END [1080p].mkv")
@@ -1152,7 +1152,7 @@ class TestTryRecognize:
             ("WEB-DL", mp.TokenKind.SOURCE),
             ("REMUX", mp.TokenKind.REMUX),
             ("S01E05", mp.TokenKind.EPISODE),
-            ("OVA", mp.TokenKind.EPISODE),
+            ("OVA", mp.TokenKind.SPECIAL),
             ("v2", mp.TokenKind.VERSION),
             ("2019", mp.TokenKind.YEAR),
             ("D98B31F3", mp.TokenKind.CRC32),

@@ -244,7 +244,6 @@ _RE_BATCH_SPLIT = re.compile(r"\s*[~～]\s*")
 _RE_WORD_SPLIT = re.compile(r"[\s,]+")
 _RE_DASH_SUFFIX = re.compile(r"-[A-Za-z].*$")
 _RE_DASH_GROUP = re.compile(r"^(.+)-([A-Za-z][A-Za-z0-9]+)$")
-_RE_LEADING_BARE_EP = re.compile(r"^(\d{1,4})(?:v(\d+))?\s")
 
 # Audio codec (compound forms like AAC2.0, DTS-HD MA)
 _RE_AC = re.compile(
@@ -564,6 +563,41 @@ def _bonus_parser(stream: str, index: int):
 
 bonus_en: Parser = Parser(_bonus_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
+# Japanese bonus keywords — matched as substring within text since
+# Japanese bonus content often includes titles: 「ノンテロップED「Title」」
+_BONUS_JP_MAP: dict[str, str] = {
+    "ノンテロップOP": "NCOP",
+    "ノンテロップED": "NCED",
+    "ノンテロップ": "NCOP",  # fallback when OP/ED not specified
+    "PV": "PV",
+    "予告": "Preview",
+    "告知CM": "CM",
+    "メニュー画面集": "Menu",
+    "メニュー画面": "Menu",
+    "映像特典": "Bonus",
+    "特典": "Bonus",
+}
+# Sort by length descending so longer matches take priority
+_BONUS_JP_KEYS: list[str] = sorted(_BONUS_JP_MAP, key=len, reverse=True)  # ty: ignore[invalid-assignment]
+
+
+def _bonus_jp_parser(stream: str, index: int):
+    for keyword in _BONUS_JP_KEYS:
+        if stream[index:].startswith(keyword):
+            bonus_type = _BONUS_JP_MAP[keyword]
+            # Distinguish NCOP vs NCED when ノンテロップ alone matches
+            if keyword == "ノンテロップ":
+                rest = stream[index + len(keyword) :]
+                if rest.startswith("ED") or rest.startswith("ed"):
+                    bonus_type = "NCED"
+            return Result.success(
+                index + len(keyword), BonusKeyword(bonus_type, keyword)
+            )
+    return Result.failure(index, frozenset({"bonus_jp"}))
+
+
+bonus_jp: Parser = Parser(_bonus_jp_parser)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
 
 # ---------------------------------------------------------------------------
 # Result type → TokenKind mapping
@@ -582,8 +616,8 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
     SeasonJP: TokenKind.SEASON,
     SeasonWord: TokenKind.SEASON,
     SeasonOnly: TokenKind.SEASON,
-    Special: TokenKind.EPISODE,
-    SeasonSpecial: TokenKind.EPISODE,
+    Special: TokenKind.SPECIAL,
+    SeasonSpecial: TokenKind.SPECIAL,
     BatchRange: TokenKind.BATCH_RANGE,
     Version: TokenKind.VERSION,
     Year: TokenKind.YEAR,
@@ -671,6 +705,7 @@ _RECOGNIZERS: list[Parser] = [
     episode_bare,  # 08, 12v2 (after season_only to avoid S01 → ep 1)
     # Bonus keywords
     bonus_en,  # NCOP, NC OP1, Creditless ED
+    bonus_jp,  # 映像特典, ノンテロップOP, PV, 予告
     # Technical metadata (ordered: compound before simple)
     audio_codec,  # AAC2.0, DTS-HD MA, FLAC — compound first
     resolution,  # 1080p, 1920x1080
@@ -895,14 +930,16 @@ def scan_dot_segments(text: str) -> list[Token]:
     return tokens
 
 
-def find_episode_in_text(text: str) -> tuple[int, int, Token] | None:
-    """Search for an episode/season+special marker at any position in text.
+def _find_recognizer_in_text(
+    text: str, recognizers: tuple[Parser, ...]
+) -> tuple[int, int, Token] | None:
+    """Search for the first recognizer match at any position in text.
 
-    Tries SxxExx first, then S##OVA/S##SP patterns.
-    Returns (start, end, token) or None.
+    Tries each recognizer at each position, returning the first match.
+    Returns ``(start, end, token)`` or None.
     """
     for pos in range(len(text)):
-        for recognizer in (episode_multi_se, episode_se, season_special):
+        for recognizer in recognizers:
             result = recognizer(text, pos)
             if result.status:
                 return (
@@ -911,6 +948,29 @@ def find_episode_in_text(text: str) -> tuple[int, int, Token] | None:
                     _result_to_token(result.value, text[pos : result.index]),
                 )
     return None
+
+
+# Recognizers safe for finding markers embedded *within* text.
+# Only recognizers with distinctive prefixes (S##E##, 第N話, etc.) — bare
+# numbers and patterns that match too broadly (episode_bare, season_word)
+# are excluded to avoid false positives on title content.
+_EMBEDDED_RECOGNIZERS = (
+    episode_multi_se,  # S01E01-E06
+    episode_se,  # S01E05
+    season_special,  # S01OVA, S03OP
+    episode_jp,  # 第01話
+    season_jp,  # 第1期
+    season_word,  # 4th Season, Season 01
+    episode_ep,  # EP05, E5
+)
+
+
+def find_episode_in_text(text: str) -> tuple[int, int, Token] | None:
+    """Search for an episode/season+special marker at any position in text.
+
+    Returns (start, end, token) or None.
+    """
+    return _find_recognizer_in_text(text, _EMBEDDED_RECOGNIZERS)
 
 
 def _try_recognize(text: str) -> Token | None:
@@ -1118,58 +1178,21 @@ _RE_CRC32 = re.compile(r"^[0-9A-Fa-f]{8}$")
 
 _RE_YEAR = re.compile(r"^(19[4-9]\d|20[0-9]{2})$")  # 1940-2099 structural match
 
-_RE_SPECIAL = re.compile(r"^(SP|OVA|OAD|ONA)(\d*)$", re.IGNORECASE)
 # Release group detection
 _RE_SCENE_TRAILING_GROUP = re.compile(r"^(.*)-([A-Za-z][A-Za-z0-9]{1,})$")
 
-# Japanese bonus content markers
-_BONUS_KEYWORDS = frozenset(
-    {
-        "映像特典",
-        "ノンテロップ",
-        "メニュー画面集",
-        "メニュー画面",
-        "予告",
-        "特典",
-        "告知cm",
-    }
-)
-
-_RE_BONUS_KEYWORD = re.compile(
-    "|".join(re.escape(k) for k in _BONUS_KEYWORDS),
-    re.IGNORECASE,
-)
-
-# Japanese bonus type → English abbreviation for HamaTV naming
-_BONUS_TYPE_MAP: dict[str, str] = {
-    "ノンテロップOP": "NCOP",
-    "ノンテロップED": "NCED",
-    "ノンテロップ": "NCOP",  # fallback when OP/ED not specified
-    "PV": "PV",
-    "予告": "Preview",
-    "告知CM": "CM",
-    "メニュー画面集": "Menu",
-    "メニュー画面": "Menu",
-    "映像特典": "Bonus",  # generic bonus marker
-    "特典": "Bonus",
-}
-
 
 def classify_bonus_type(text: str) -> str:
-    """Extract a bonus type abbreviation from Japanese bonus content text.
+    """Extract a bonus type abbreviation from bonus content text.
 
-    Checks for known Japanese bonus keywords and returns the English
-    abbreviation. Handles compound content like ``ノンテロップED「Title」``.
+    Uses the bonus_jp and bonus_en recognizers to classify Japanese
+    keywords (映像特典, ノンテロップOP) and English keywords (NCOP, NCED).
     """
-    for jp, en in _BONUS_TYPE_MAP.items():
-        if jp in text:
-            # Distinguish NCOP vs NCED when ノンテロップ is present
-            if jp == "ノンテロップ":
-                if "OP" in text or "op" in text:
-                    return "NCOP"
-                if "ED" in text or "ed" in text:
-                    return "NCED"
-            return en
+    for pos in range(len(text)):
+        for recognizer in (bonus_jp, bonus_en):
+            r = recognizer(text, pos)
+            if r.status and isinstance(r.value, BonusKeyword):
+                return r.value.bonus_type
     return ""
 
 
@@ -1187,6 +1210,7 @@ def _classify_episode_text(text: str) -> Token | None:
     token = _try_recognize(text)
     if token is not None and token.kind in (
         TokenKind.EPISODE,
+        TokenKind.SPECIAL,
         TokenKind.SEASON,
         TokenKind.BATCH_RANGE,
     ):
@@ -1194,97 +1218,55 @@ def _classify_episode_text(text: str) -> Token | None:
     return None
 
 
-# Patterns for searching *within* a TEXT token for embedded episodes/seasons
-_RE_EP_JP_SEARCH = re.compile(r"第(\d{1,4})話")
-_RE_SEASON_WORD_SEARCH = re.compile(r"(\d+)(?:st|nd|rd|th)\s+Season", re.IGNORECASE)
-
-
 def _split_text_with_embedded(token: Token) -> list[Token]:
     """Split a TEXT token that contains embedded episode/season markers.
 
-    E.g. "探偵オペラ 第01話" → [TEXT("探偵オペラ"), EPISODE("第01話")]
-    E.g. "Golden Kamuy 4th Season" → [TEXT("Golden Kamuy"), SEASON("4th Season")]
+    Uses the same recognizers as ``find_episode_in_text`` to find the first
+    embedded marker, then splits into before/match/after tokens.
 
-    Returns a list of 1+ tokens.
+    E.g. ``"探偵オペラ 第01話"`` → ``[TEXT("探偵オペラ"), EPISODE("第01話")]``
+    E.g. ``"Golden Kamuy 4th Season"`` → ``[TEXT("Golden Kamuy"), SEASON("4th Season")]``
     """
     text = token.text
+    match = _find_recognizer_in_text(text, _EMBEDDED_RECOGNIZERS)
 
-    # Try Japanese episode: 第XX話
-    m = _RE_EP_JP_SEARCH.search(text)
-    if m:
-        before = text[: m.start()].strip()
-        matched = text[m.start() : m.end()]
-        after = text[m.end() :].strip()
-        result: list[Token] = []
-        if before:
-            result.append(Token(kind=TokenKind.TEXT, text=before))
-        # Check for 終 (final episode marker) after 話
-        ep_text = matched
-        if after.startswith("(終)") or after.startswith("（終）"):
-            ep_text = matched
-            after = after[3:].strip()
-        result.append(
-            Token(
-                kind=TokenKind.EPISODE,
-                text=ep_text,
-                episode=int(m.group(1)),
-            )
-        )
-        if after:
-            result.append(Token(kind=TokenKind.TEXT, text=after))
-        return result
-
-    # Try SxxExx embedded in text with spaces
-    ep_match = find_episode_in_text(text)
-    if ep_match:
-        start, end, ep_token = ep_match
-        before = text[:start].strip()
-        after = text[end:].lstrip(" -")
-        result = []
-        if before:
-            result.append(Token(kind=TokenKind.TEXT, text=before))
-        result.append(ep_token)
-        if after:
-            result.append(Token(kind=TokenKind.TEXT, text=after))
-        return result
-
-    # Try "Nth Season"
-    m = _RE_SEASON_WORD_SEARCH.search(text)
-    if m:
-        before = text[: m.start()].strip()
-        after = text[m.end() :].strip()
-        result = []
-        if before:
-            result.append(Token(kind=TokenKind.TEXT, text=before))
-        result.append(
-            Token(
-                kind=TokenKind.SEASON,
-                text=m.group(0),
-                season=int(m.group(1)),
-            )
-        )
-        if after:
-            result.append(Token(kind=TokenKind.TEXT, text=after))
-        return result
-
-    # Try leading bare number: "01 Shiroi Koibito-tachi" → EPISODE + TEXT
-    m = _RE_LEADING_BARE_EP.match(text)
-    if m and not _RE_YEAR.match(m.group(1)):
-        ep_text = m.group(0).strip()
-        after = text[m.end() :].strip()
-        if after:
-            result = [
-                Token(
-                    kind=TokenKind.EPISODE,
-                    text=ep_text,
-                    episode=int(m.group(1)),
-                    version=int(m.group(2)) if m.group(2) else None,
+    # Fallback: leading bare number ("01 Title" → EPISODE + TEXT).
+    # episode_bare is too greedy for general embedded search, but a
+    # leading number followed by a space is a strong signal.
+    if match is None:
+        bare_result = _bare_episode_parser(text, 0)
+        if (
+            bare_result.status
+            and bare_result.index < len(text)
+            and text[bare_result.index] == " "
+        ):
+            ep_val = bare_result.value
+            # Reject if the number looks like a year
+            if not (1940 <= (ep_val.episode or 0) <= 2099):
+                match = (
+                    0,
+                    bare_result.index,
+                    _result_to_token(ep_val, text[: bare_result.index]),
                 )
-            ]
-            result.append(Token(kind=TokenKind.TEXT, text=after))
-            return result
 
-    return [token]
+    if match is None:
+        return [token]
+
+    start, end, matched_token = match
+    before = text[:start].strip()
+    after = text[end:].lstrip(" -")
+
+    # Strip Japanese final-episode marker 「(終)」/「（終）」 after 第XX話
+    if after.startswith("(終)") or after.startswith("（終）"):
+        after = after[3:].strip()
+
+    result: list[Token] = []
+    if before:
+        result.append(Token(kind=TokenKind.TEXT, text=before))
+    result.append(matched_token)
+    if after:
+        result.append(Token(kind=TokenKind.TEXT, text=after))
+    return result
 
 
 def _classify_paren(token: Token) -> Token | list[Token]:
@@ -1301,6 +1283,7 @@ def _classify_paren(token: Token) -> Token | list[Token]:
         TokenKind.YEAR,
         TokenKind.SEASON,
         TokenKind.EPISODE,
+        TokenKind.SPECIAL,
         TokenKind.DUAL_AUDIO,
         TokenKind.UNCENSORED,
         TokenKind.EDITION,
@@ -1332,7 +1315,7 @@ def classify(tokens: list[Token]) -> list[Token]:
     seen_episode = False
 
     for i, token in enumerate(tokens):
-        if token.kind == TokenKind.EPISODE:
+        if token.kind in (TokenKind.EPISODE, TokenKind.SPECIAL):
             seen_episode = True
 
         if token.kind == TokenKind.EXTENSION:
@@ -1448,7 +1431,10 @@ def classify(tokens: list[Token]) -> list[Token]:
 
         if token.kind == TokenKind.LENTICULAR:
             # 「content」 is episode title, or bonus content
-            if _RE_BONUS_KEYWORD.search(token.text):
+            bonus_match = _find_recognizer_in_text(token.text, (bonus_jp, bonus_en))
+            if bonus_match is not None:
+                _, _, bonus_token = bonus_match
+                # Use the BonusKeyword's bonus_type but keep the full text
                 result.append(Token(kind=TokenKind.BONUS, text=token.text))
             else:
                 result.append(Token(kind=TokenKind.EPISODE_TITLE, text=token.text))
@@ -1510,7 +1496,7 @@ def classify(tokens: list[Token]) -> list[Token]:
                 if ep_match:
                     _, _, ep_token = ep_match
                     result.append(ep_token)
-                    if ep_token.kind == TokenKind.EPISODE:
+                    if ep_token.kind in (TokenKind.EPISODE, TokenKind.SPECIAL):
                         seen_episode = True
                     continue
 
@@ -1529,7 +1515,7 @@ def classify(tokens: list[Token]) -> list[Token]:
                         continue
 
             # Bonus content in text
-            if _RE_BONUS_KEYWORD.search(text):
+            if _find_recognizer_in_text(text, (bonus_jp, bonus_en)):
                 result.append(Token(kind=TokenKind.BONUS, text=text))
                 continue
 
@@ -1613,7 +1599,7 @@ def _extract_title_from_tokens(tokens: list[Token]) -> tuple[str, str, str]:
             ep_title_parts.append(token.text)
             continue
 
-        if token.kind == TokenKind.EPISODE:
+        if token.kind in (TokenKind.EPISODE, TokenKind.SPECIAL):
             seen_episode = True
             continue
 
@@ -1675,22 +1661,15 @@ def _extract_title_from_tokens(tokens: list[Token]) -> tuple[str, str, str]:
 
 
 def _check_special(token: Token, pm: ParsedMedia) -> None:
-    """Check if an EPISODE token represents a special episode and update pm."""
-    stripped = token.text.strip().upper()
+    """Check if an EPISODE token represents a special episode and update pm.
+
+    Only handles season-0 and decimal specials — typed Special/SeasonSpecial
+    results are now routed through TokenKind.SPECIAL instead.
+    """
     if token.season == 0:
         pm.is_special = True
     if token.is_decimal_special:
         pm.is_special = True
-    m_ss = _RE_SEASON_SPECIAL.match(stripped)
-    if _RE_SPECIAL.match(stripped) or m_ss:
-        pm.is_special = True
-        pm.special_tag = token.text.strip()
-        if m_ss:
-            tag = m_ss.group(2).upper()
-            if tag == "OP":
-                pm.bonus_type = "NCOP"
-            elif tag == "ED":
-                pm.bonus_type = "NCED"
 
 
 def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
@@ -1733,6 +1712,19 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
                 # Upgrade with the season; keep original episode number.
                 pm.season = token.season
                 _check_special(token, pm)
+        elif token.kind == TokenKind.SPECIAL:
+            pm.is_special = True
+            pm.special_tag = token.text.strip()
+            if token.episode is not None:
+                pm.episode = token.episode
+            if token.season is not None:
+                pm.season = token.season
+            # S03OP/S03ED → set bonus_type for credit specials
+            tag_upper = pm.special_tag.upper()
+            if "OP" in tag_upper and "OP" == tag_upper[-2:]:
+                pm.bonus_type = "NCOP"
+            elif "ED" in tag_upper and "ED" == tag_upper[-2:]:
+                pm.bonus_type = "NCED"
         elif token.kind == TokenKind.SEASON:
             if pm.season is None:
                 pm.season = token.season

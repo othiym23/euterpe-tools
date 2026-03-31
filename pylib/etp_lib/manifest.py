@@ -20,7 +20,7 @@ from etp_lib.conflicts import (
     prompt_value,
     verify_hash,
 )
-from etp_lib.media_parser import normalize_for_matching, parse_component
+from etp_lib.media_parser import normalize_for_matching
 from etp_lib.naming import format_episode_filename, format_series_dirname
 from etp_lib.types import (
     AnimeInfo,
@@ -146,13 +146,8 @@ def build_manifest_entries(
         episode_name = ""
         is_unmatched_special = False
 
-        # Use parser-detected bonus_type; fall back to re-parsing only if needed
         bonus_type = sf.parsed.bonus_type
         episode_title = sf.parsed.episode_title
-        if not bonus_type and not episode_title:
-            file_pm = parse_component(sf.path.name)
-            bonus_type = file_pm.bonus_type
-            episode_title = file_pm.episode_title
 
         if ep_number is not None and is_special and not bonus_type:
             ep = specials_by_num.get(ep_number)

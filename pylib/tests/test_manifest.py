@@ -641,7 +641,9 @@ class TestNcopNcedManifestOutput:
         sf = SourceFile(
             path=tmp_path
             / "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「Song Title」(specs).mkv",
-            parsed=ParsedMetadata(season=1, episode=None),
+            parsed=ParsedMetadata(
+                season=1, episode=None, bonus_type="NCOP", episode_title="Song Title"
+            ),
         )
         monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
 
@@ -672,7 +674,9 @@ class TestNcopNcedManifestOutput:
         sf = SourceFile(
             path=tmp_path
             / "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「Song」(specs).mkv",
-            parsed=ParsedMetadata(season=1, episode=None),
+            parsed=ParsedMetadata(
+                season=1, episode=None, bonus_type="NCED", episode_title="Song"
+            ),
         )
         monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
 
@@ -705,8 +709,8 @@ class TestHamatvNumbering:
         sf = SourceFile(
             path=tmp_path
             / "[アニメ BD] Show(第1期) 映像特典「PV1」(1920x1080 HEVC 10bit FLAC).mkv",
+            parsed=ParsedMetadata(season=1, bonus_type="PV", episode_title="PV1"),
         )
-        sf.parsed.season = 1
 
         info = AnimeInfo(
             anidb_id=100,
@@ -734,8 +738,8 @@ class TestHamatvNumbering:
         for label in ["PV1", "PV2"]:
             sf = SourceFile(
                 path=tmp_path / f"[G] Show(第1期) 映像特典「{label}」(specs).mkv",
+                parsed=ParsedMetadata(season=1, bonus_type="PV", episode_title=label),
             )
-            sf.parsed.season = 1
             files.append(sf)
 
         info = AnimeInfo(
@@ -758,7 +762,9 @@ class TestHamatvNumbering:
         sf = SourceFile(
             path=tmp_path
             / "[G] Show(第1期) 映像特典「ノンテロップOP「Song」(specs).mkv",
-            parsed=ParsedMetadata(season=1, episode=None),
+            parsed=ParsedMetadata(
+                season=1, episode=None, bonus_type="NCOP", episode_title="Song"
+            ),
         )
         monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
 

@@ -42,6 +42,7 @@ class TokenKind(Enum):
     LANGUAGE = auto()
     SITE_PREFIX = auto()
     BONUS = auto()  # 映像特典, ノンテロップOP, etc.
+    SPECIAL = auto()  # SP1, OVA, S01OVA, S03OP — typed result preserved
     DUAL_AUDIO = auto()
     UNCENSORED = auto()
     EDITION = auto()  # Criterion, Remastered, etc.
@@ -300,6 +301,7 @@ _METADATA_KINDS = frozenset(
         TokenKind.LANGUAGE,
         TokenKind.SITE_PREFIX,
         TokenKind.BONUS,
+        TokenKind.SPECIAL,
         TokenKind.DUAL_AUDIO,
         TokenKind.UNCENSORED,
         TokenKind.EDITION,
