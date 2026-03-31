@@ -14,7 +14,14 @@ from etp_lib.manifest import (
     write_manifest,
 )
 from etp_lib.manifest import _match_bonus_to_anidb_special
-from etp_lib.types import AnimeInfo, Episode, ManifestEntry, MediaInfo, SourceFile
+from etp_lib.types import (
+    AnimeInfo,
+    Episode,
+    ManifestEntry,
+    MediaInfo,
+    ParsedMetadata,
+    SourceFile,
+)
 
 
 def _mock_media():  # type: ignore[no-untyped-def]
@@ -109,7 +116,7 @@ class TestBuildManifestEntries:
             _parse_files([f]), info, "Show", tmp_path / "dest", verbose=False
         )
         assert entries[0].hash_failed
-        assert entries[0].source.hash_code == ""
+        assert entries[0].source.parsed.hash_code == ""
         assert "DEADBEEF" not in str(entries[0].dest_path)
 
     def test_default_release_group_applied(self, tmp_path, monkeypatch):
@@ -132,14 +139,16 @@ class TestBuildManifestEntries:
             _parse_files([f1, f2]), info, "Show", tmp_path / "dest", verbose=False
         )
         # No sticky defaults -- f2 has no group, stays empty
-        assert entries[1].source.release_group == ""
+        assert entries[1].source.parsed.release_group == ""
 
 
 class TestWriteManifest:
     """Tests for KDL manifest file writing."""
 
     def test_basic_format(self, tmp_path):
-        sf = SourceFile(path=tmp_path / "src.mkv", parsed_episode=1, parsed_season=1)
+        sf = SourceFile(
+            path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
+        )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
         entry = ManifestEntry(source=sf, dest_path=dest_path)
         info = AnimeInfo(
@@ -162,7 +171,9 @@ class TestWriteManifest:
             path.unlink(missing_ok=True)
 
     def test_todo_tag(self, tmp_path):
-        sf = SourceFile(path=tmp_path / "src.mkv", parsed_episode=0, parsed_season=1)
+        sf = SourceFile(
+            path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=0, season=1)
+        )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
         entry = ManifestEntry(source=sf, dest_path=dest_path, is_todo=True)
         info = AnimeInfo(
@@ -181,7 +192,9 @@ class TestWriteManifest:
             path.unlink(missing_ok=True)
 
     def test_hash_mismatch_comment(self, tmp_path):
-        sf = SourceFile(path=tmp_path / "src.mkv", parsed_episode=1, parsed_season=1)
+        sf = SourceFile(
+            path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
+        )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
         entry = ManifestEntry(source=sf, dest_path=dest_path, hash_failed=True)
         info = AnimeInfo(
@@ -200,8 +213,12 @@ class TestWriteManifest:
             path.unlink(missing_ok=True)
 
     def test_grouped_by_season(self, tmp_path):
-        sf1 = SourceFile(path=tmp_path / "s1e01.mkv", parsed_episode=1, parsed_season=1)
-        sf2 = SourceFile(path=tmp_path / "s2e01.mkv", parsed_episode=1, parsed_season=2)
+        sf1 = SourceFile(
+            path=tmp_path / "s1e01.mkv", parsed=ParsedMetadata(episode=1, season=1)
+        )
+        sf2 = SourceFile(
+            path=tmp_path / "s2e01.mkv", parsed=ParsedMetadata(episode=1, season=2)
+        )
         entries = [
             ManifestEntry(
                 source=sf1, dest_path=tmp_path / "series" / "Season 01" / "ep1.mkv"
@@ -228,9 +245,15 @@ class TestWriteManifest:
 
     def test_entries_sorted_by_episode(self, tmp_path):
         """Episodes within a season are sorted by episode number."""
-        sf9 = SourceFile(path=tmp_path / "ep09.mkv", parsed_episode=9, parsed_season=1)
-        sf2 = SourceFile(path=tmp_path / "ep02.mkv", parsed_episode=2, parsed_season=1)
-        sf5 = SourceFile(path=tmp_path / "ep05.mkv", parsed_episode=5, parsed_season=1)
+        sf9 = SourceFile(
+            path=tmp_path / "ep09.mkv", parsed=ParsedMetadata(episode=9, season=1)
+        )
+        sf2 = SourceFile(
+            path=tmp_path / "ep02.mkv", parsed=ParsedMetadata(episode=2, season=1)
+        )
+        sf5 = SourceFile(
+            path=tmp_path / "ep05.mkv", parsed=ParsedMetadata(episode=5, season=1)
+        )
         # Deliberately out of order
         entries = [
             ManifestEntry(
@@ -264,7 +287,9 @@ class TestWriteManifest:
 
     def test_quotes_in_episode_title(self, tmp_path):
         """Regression: quotes in episode titles must be escaped in KDL output."""
-        sf = SourceFile(path=tmp_path / "src.mkv", parsed_episode=8, parsed_season=2)
+        sf = SourceFile(
+            path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=8, season=2)
+        )
         # Dest filename contains double quotes (from TVDB episode title)
         dest_path = (
             tmp_path
@@ -295,7 +320,9 @@ class TestWriteManifest:
 
     def test_quotes_roundtrip(self, tmp_path):
         """Manifest with quoted episode titles survives write->parse roundtrip."""
-        sf = SourceFile(path=tmp_path / "src.mkv", parsed_episode=1, parsed_season=1)
+        sf = SourceFile(
+            path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
+        )
         dest_name = 'Show - s1e01 - "Hello" World [G Web].mkv'
         dest_path = tmp_path / "series" / "Season 01" / dest_name
         entry = ManifestEntry(source=sf, dest_path=dest_path)
@@ -550,8 +577,7 @@ class TestNcopNcedManifestOutput:
         sf = SourceFile(
             path=tmp_path
             / "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「Song Title」(specs).mkv",
-            parsed_season=1,
-            parsed_episode=None,
+            parsed=ParsedMetadata(season=1, episode=None),
         )
         monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
 
@@ -582,8 +608,7 @@ class TestNcopNcedManifestOutput:
         sf = SourceFile(
             path=tmp_path
             / "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「Song」(specs).mkv",
-            parsed_season=1,
-            parsed_episode=None,
+            parsed=ParsedMetadata(season=1, episode=None),
         )
         monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
 
@@ -617,7 +642,7 @@ class TestHamatvNumbering:
             path=tmp_path
             / "[アニメ BD] Show(第1期) 映像特典「PV1」(1920x1080 HEVC 10bit FLAC).mkv",
         )
-        sf.parsed_season = 1
+        sf.parsed.season = 1
 
         info = AnimeInfo(
             anidb_id=100,
@@ -635,18 +660,18 @@ class TestHamatvNumbering:
         assert "Specials" in str(entries[0].dest_path)
         assert entries[0].is_todo  # tagged as todo
         # Episode number should be written back to SourceFile
-        assert entries[0].source.parsed_episode == 321  # PV range start
-        assert entries[0].source.parsed_season == 0
+        assert entries[0].source.parsed.episode == 321  # PV range start
+        assert entries[0].source.parsed.season == 0
 
     def test_hamatv_numbers_written_to_sourcefile(self, tmp_path):
-        """Regression: HamaTV numbers must be written back to sf.parsed_episode
+        """Regression: HamaTV numbers must be written back to sf.parsed.episode
         so write_manifest produces 'episode 321' instead of 'episode 0'."""
         files = []
         for label in ["PV1", "PV2"]:
             sf = SourceFile(
                 path=tmp_path / f"[G] Show(第1期) 映像特典「{label}」(specs).mkv",
             )
-            sf.parsed_season = 1
+            sf.parsed.season = 1
             files.append(sf)
 
         info = AnimeInfo(
@@ -660,17 +685,16 @@ class TestHamatvNumbering:
         entries = build_manifest_entries(
             files, info, "Show", tmp_path / "dest", verbose=False
         )
-        ep_nums = sorted(e.source.parsed_episode or 0 for e in entries)
+        ep_nums = sorted(e.source.parsed.episode or 0 for e in entries)
         assert ep_nums == [321, 322]  # sequential HamaTV PV numbers
-        assert all(e.source.parsed_season == 0 for e in entries)
+        assert all(e.source.parsed.season == 0 for e in entries)
 
     def test_anidb_matched_special_writes_episode_number(self, tmp_path, monkeypatch):
         """AniDB-matched specials should also write ep number back."""
         sf = SourceFile(
             path=tmp_path
             / "[G] Show(第1期) 映像特典「ノンテロップOP「Song」(specs).mkv",
-            parsed_season=1,
-            parsed_episode=None,
+            parsed=ParsedMetadata(season=1, episode=None),
         )
         monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
 
@@ -685,5 +709,5 @@ class TestHamatvNumbering:
         entries = build_manifest_entries(
             [sf], info, "Show", tmp_path / "dest", verbose=False
         )
-        assert entries[0].source.parsed_episode == 1
-        assert entries[0].source.parsed_season == 0
+        assert entries[0].source.parsed.episode == 1
+        assert entries[0].source.parsed.season == 0

@@ -9,7 +9,7 @@ from etp_lib.naming import (
     format_episode_filename,
     format_series_dirname,
 )
-from etp_lib.types import AudioTrack, MediaInfo, SourceFile
+from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
 
 
 class TestMetadataBlock:
@@ -18,11 +18,11 @@ class TestMetadataBlock:
     def _make_source(self, **overrides: object) -> SourceFile:
         sf = SourceFile(
             path=Path("test.mkv"),
-            release_group="SubGroup",
-            source_type="BD",
-            is_remux=False,
-            hash_code="",
-            parsed_episode=1,
+            parsed=ParsedMetadata(
+                release_group="SubGroup",
+                source_type="BD",
+                episode=1,
+            ),
             media=MediaInfo(
                 video_codec="HEVC",
                 resolution="1080p",
@@ -38,7 +38,10 @@ class TestMetadataBlock:
             ),
         )
         for key, value in overrides.items():
-            setattr(sf, key, value)
+            if hasattr(sf.parsed, key):
+                setattr(sf.parsed, key, value)
+            else:
+                setattr(sf, key, value)
         return sf
 
     def test_full_metadata_block(self):
@@ -127,10 +130,11 @@ class TestFormatEpisodeFilename:
     def _make_source(self):  # type: ignore[no-untyped-def]
         return SourceFile(
             path=Path("test.mkv"),
-            release_group="NH",
-            source_type="BD",
-            hash_code="",
-            parsed_episode=1,
+            parsed=ParsedMetadata(
+                release_group="NH",
+                source_type="BD",
+                episode=1,
+            ),
             media=MediaInfo(
                 video_codec="AVC",
                 resolution="1080p",
@@ -218,7 +222,7 @@ class TestFormatEpisodeFilename:
 
     def test_hash_preserved(self):
         sf = self._make_source()
-        sf.hash_code = "ABCD1234"
+        sf.parsed.hash_code = "ABCD1234"
         result = format_episode_filename(
             concise_name="Show",
             season=1,

@@ -580,7 +580,7 @@ def _match_to_downloads(
         if sf.matched_download is not None:
             enriched.append(sf)
             continue
-        if sf.parsed_season is None or sf.parsed_episode is None:
+        if sf.parsed.season is None or sf.parsed.episode is None:
             enriched.append(sf)
             continue
 
@@ -590,27 +590,37 @@ def _match_to_downloads(
             enriched.append(sf)
             continue
 
-        src_group = sf.release_group.split()[0] if sf.release_group else ""
+        src_group = (
+            sf.parsed.release_group.split()[0] if sf.parsed.release_group else ""
+        )
         best: Path | None = None
         best_sf: SourceFile | None = None
 
         # Pass 1: exact (season, episode) match.
-        key = (sf.parsed_season, sf.parsed_episode)
+        key = (sf.parsed.season, sf.parsed.episode)
         candidates = series_by_ep.get(key, [])
         ep_best = _best_size_match(candidates, src_size) if candidates else None
         if ep_best is not None:
             dl_sf = parse_source_filename(ep_best.name)
-            dl_group = dl_sf.release_group.split()[0] if dl_sf.release_group else ""
+            dl_group = (
+                dl_sf.parsed.release_group.split()[0]
+                if dl_sf.parsed.release_group
+                else ""
+            )
             if not src_group or not dl_group or src_group == dl_group:
                 best = ep_best
                 best_sf = dl_sf
 
         # Pass 2: exact-size + matching release group across all entries.
-        if best is None and src_group and sf.parsed_season != 0:
+        if best is None and src_group and sf.parsed.season != 0:
             size_candidates = series_by_size.get(src_size, [])
             for dl_path, _dl_season, _dl_ep in size_candidates:
                 dl_sf = parse_source_filename(dl_path.name)
-                dl_group = dl_sf.release_group.split()[0] if dl_sf.release_group else ""
+                dl_group = (
+                    dl_sf.parsed.release_group.split()[0]
+                    if dl_sf.parsed.release_group
+                    else ""
+                )
                 if dl_group == src_group:
                     best = dl_path
                     best_sf = dl_sf
@@ -622,20 +632,20 @@ def _match_to_downloads(
 
         # Enrich: use download's metadata but keep source path
         sf.matched_download = best
-        if best_sf.release_group:
-            sf.release_group = best_sf.release_group
-        if best_sf.hash_code:
-            sf.hash_code = best_sf.hash_code
-        if best_sf.version is not None:
-            sf.version = best_sf.version
-        if best_sf.source_type:
-            sf.source_type = best_sf.source_type
-        if best_sf.is_dual_audio:
-            sf.is_dual_audio = True
-        if best_sf.is_uncensored:
-            sf.is_uncensored = True
-        if best_sf.streaming_service and not sf.streaming_service:
-            sf.streaming_service = best_sf.streaming_service
+        if best_sf.parsed.release_group:
+            sf.parsed.release_group = best_sf.parsed.release_group
+        if best_sf.parsed.hash_code:
+            sf.parsed.hash_code = best_sf.parsed.hash_code
+        if best_sf.parsed.version is not None:
+            sf.parsed.version = best_sf.parsed.version
+        if best_sf.parsed.source_type:
+            sf.parsed.source_type = best_sf.parsed.source_type
+        if best_sf.parsed.is_dual_audio:
+            sf.parsed.is_dual_audio = True
+        if best_sf.parsed.is_uncensored:
+            sf.parsed.is_uncensored = True
+        if best_sf.parsed.streaming_service and not sf.parsed.streaming_service:
+            sf.parsed.streaming_service = best_sf.parsed.streaming_service
 
         enriched.append(sf)
 
@@ -880,13 +890,13 @@ def _process_file(
     print(f"\n--- {source.path.name} ---")
 
     # Prompt for release group if not parsed from filename
-    if not source.release_group:
+    if not source.parsed.release_group:
         default_group = defaults.release_group if defaults else ""
-        source.release_group = prompt_value("Release group", default_group)
+        source.parsed.release_group = prompt_value("Release group", default_group)
 
     # Update sticky defaults
-    if defaults is not None and source.release_group:
-        defaults.release_group = source.release_group
+    if defaults is not None and source.parsed.release_group:
+        defaults.release_group = source.parsed.release_group
 
     # Analyze with mediainfo
     try:
@@ -907,8 +917,8 @@ def _process_file(
         return False
 
     # Determine episode type and number
-    ep_number = source.parsed_episode
-    season = source.parsed_season or 1
+    ep_number = source.parsed.episode
+    season = source.parsed.season or 1
     is_special = False
     special_tag = ""
     episode_name = ""
@@ -954,14 +964,14 @@ def _process_file(
     if hash_result is not None:
         ok, actual = hash_result
         if ok:
-            print(f"  CRC32 verified: {source.hash_code}")
+            print(f"  CRC32 verified: {source.parsed.hash_code}")
         else:
             print(
-                f"  WARNING: CRC32 mismatch! expected {source.hash_code}, got {actual}"
+                f"  WARNING: CRC32 mismatch! expected {source.parsed.hash_code}, got {actual}"
             )
             if not prompt_confirm("  Hash mismatch — copy anyway?", default=False):
                 return False
-            source.hash_code = ""
+            source.parsed.hash_code = ""
 
     # Build filename
     filename = format_episode_filename(
@@ -1056,9 +1066,9 @@ def _match_files_to_season(
         by: dict[int, list[SourceFile]] = {}
         unseasoned: list[SourceFile] = []
         for sf in files:
-            if sf.parsed_season is not None:
-                by.setdefault(sf.parsed_season, []).append(sf)
-            elif sf.parsed_episode is not None:
+            if sf.parsed.season is not None:
+                by.setdefault(sf.parsed.season, []).append(sf)
+            elif sf.parsed.episode is not None:
                 by.setdefault(1, []).append(sf)
             else:
                 unseasoned.append(sf)
@@ -1119,14 +1129,16 @@ def _match_files_to_season(
         [
             sf
             for sf in by_season[chosen]
-            if sf.parsed_episode is not None and not sf.is_special and not sf.bonus_type
+            if sf.parsed.episode is not None
+            and not sf.parsed.is_special
+            and not sf.parsed.bonus_type
         ],
-        key=lambda sf: sf.parsed_episode or 0,
+        key=lambda sf: sf.parsed.episode or 0,
     )
     bonus_files = [
         sf
         for sf in by_season[chosen]
-        if sf.parsed_episode is None or sf.is_special or sf.bonus_type
+        if sf.parsed.episode is None or sf.parsed.is_special or sf.parsed.bonus_type
     ]
 
     if len(episode_files) > regular_count > 0:
@@ -1148,16 +1160,16 @@ def _match_files_to_season(
     # Skip renumbering when the episode range already fits within the
     # AniDB entry (e.g. a single ep 12 of a 12-episode season).
     if matched:
-        first_ep = matched[0].parsed_episode or 1
-        last_ep = matched[-1].parsed_episode or first_ep
+        first_ep = matched[0].parsed.episode or 1
+        last_ep = matched[-1].parsed.episode or first_ep
         needs_renumber = first_ep != 1 and (
             regular_count > 0 and last_ep > regular_count
         )
         if needs_renumber:
             print(f"  Renumbering: ep {first_ep}+ → ep 1+")
             for sf in matched:
-                if sf.parsed_episode is not None:
-                    sf.parsed_episode = sf.parsed_episode - first_ep + 1
+                if sf.parsed.episode is not None:
+                    sf.parsed.episode = sf.parsed.episode - first_ep + 1
 
     # Include unseasoned files as (todo) entries
     matched_with_extras = matched + no_season
@@ -1204,7 +1216,7 @@ def _process_group_batch(
     # Apply season override (for AniDB per-season processing)
     if season_override is not None:
         for sf in parsed:
-            sf.parsed_season = season_override
+            sf.parsed.season = season_override
 
     # Resolve concise name default: saved config > extracted > directory name
     saved_concise = ""
@@ -1219,7 +1231,7 @@ def _process_group_batch(
         "Concise series name for filenames", default_concise_name
     )
 
-    seasons_needed = {sf.parsed_season or 1 for sf in parsed}
+    seasons_needed = {sf.parsed.season or 1 for sf in parsed}
     seasons_list = sorted(seasons_needed)
 
     series_dir = resolve_series_directory(
@@ -1239,30 +1251,32 @@ def _process_group_batch(
     # Always prompt for release group so the user can override
     # auto-detected values (e.g. "アニメ BD" is a content description,
     # not a release group name)
-    detected = next((sf.release_group for sf in parsed if sf.release_group), "")
+    detected = next(
+        (sf.parsed.release_group for sf in parsed if sf.parsed.release_group), ""
+    )
     group = prompt_value("Release group", detected)
     if group != detected:
         for sf in parsed:
-            sf.release_group = group
+            sf.parsed.release_group = group
     elif not detected:
         pass  # no group detected, user left it empty
     else:
         # Fill in any files that were missing a group
         for sf in parsed:
-            if not sf.release_group:
-                sf.release_group = group
+            if not sf.parsed.release_group:
+                sf.parsed.release_group = group
 
     # Detect batch-level traits from parser data.
     # If most files in the batch share a trait, propagate it to all files.
-    dual_count = sum(1 for sf in parsed if sf.is_dual_audio)
+    dual_count = sum(1 for sf in parsed if sf.parsed.is_dual_audio)
     if dual_count > len(parsed) // 2:
         for sf in parsed:
-            sf.is_dual_audio = True
+            sf.parsed.is_dual_audio = True
 
-    uncensored_count = sum(1 for sf in parsed if sf.is_uncensored)
+    uncensored_count = sum(1 for sf in parsed if sf.parsed.is_uncensored)
     if uncensored_count > len(parsed) // 2:
         for sf in parsed:
-            sf.is_uncensored = True
+            sf.parsed.is_uncensored = True
 
     # Build manifest entries (mediainfo + CRC32 verification)
     print()
@@ -1650,7 +1664,9 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
 
         # Feed parser-detected alt titles into the title alias index
         # to improve download matching for bilingual releases
-        alt_titles = {sf.series_name_alt for sf in pool if sf.series_name_alt}
+        alt_titles = {
+            sf.parsed.series_name_alt for sf in pool if sf.parsed.series_name_alt
+        }
         for alt in alt_titles:
             title_index.add_series([series_path.name, alt])
 

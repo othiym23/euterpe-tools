@@ -21,68 +21,68 @@ class TestParseSourceFilename:
         sf = anime.parse_source_filename(
             "[Cyan] Champignon no Majo - 08 [WEB 1080p x265][AAC][D98B31F3].mkv"
         )
-        assert sf.release_group == "Cyan"
-        assert sf.parsed_episode == 8
-        assert sf.hash_code == "D98B31F3"
+        assert sf.parsed.release_group == "Cyan"
+        assert sf.parsed.episode == 8
+        assert sf.parsed.hash_code == "D98B31F3"
 
     def test_scene_format_with_s_e(self):
         sf = anime.parse_source_filename("BEASTARS.S01E05.1080p.BluRay.x264-GROUP.mkv")
-        assert sf.parsed_season == 1
-        assert sf.parsed_episode == 5
-        assert sf.source_type == "BD"
+        assert sf.parsed.season == 1
+        assert sf.parsed.episode == 5
+        assert sf.parsed.source_type == "BD"
 
     def test_erai_raws_format(self):
         sf = anime.parse_source_filename(
             "[Erai-raws] Champignon no Majo - 11 "
             "[1080p CR WEB-DL AVC AAC][MultiSub][0A021911].mkv"
         )
-        assert sf.release_group == "Erai-raws"
-        assert sf.parsed_episode == 11
-        assert sf.source_type == "Web"
-        assert sf.hash_code == "0A021911"
+        assert sf.parsed.release_group == "Erai-raws"
+        assert sf.parsed.episode == 11
+        assert sf.parsed.source_type == "Web"
+        assert sf.parsed.hash_code == "0A021911"
 
     def test_no_group_no_hash(self):
         sf = anime.parse_source_filename("My Anime - 03 (1080p).mkv")
-        assert sf.release_group == ""
-        assert sf.parsed_episode == 3
-        assert sf.hash_code == ""
+        assert sf.parsed.release_group == ""
+        assert sf.parsed.episode == 3
+        assert sf.parsed.hash_code == ""
 
     def test_bd_remux_detection(self):
         sf = anime.parse_source_filename("[Group] Anime - 01 [BDREMUX 1080p HEVC].mkv")
-        assert sf.source_type == "BD"
-        assert sf.is_remux is True
+        assert sf.parsed.source_type == "BD"
+        assert sf.parsed.is_remux is True
 
     def test_web_sources(self):
         sf = anime.parse_source_filename(
             "[Erai-raws] Show - 01 [1080p CR WEB-DL AVC].mkv"
         )
-        assert sf.source_type == "Web"
+        assert sf.parsed.source_type == "Web"
 
     def test_sonarr_format(self):
         sf = anime.parse_source_filename(
             "BEASTARS - s1e01 - The Moon and the Beast "
             "[NH Bluray-1080p,10bit,x264,AAC].mkv"
         )
-        assert sf.parsed_season == 1
-        assert sf.parsed_episode == 1
-        assert sf.source_type == "BD"
+        assert sf.parsed.season == 1
+        assert sf.parsed.episode == 1
+        assert sf.parsed.source_type == "BD"
 
     def test_no_episode_number(self):
         sf = anime.parse_source_filename("[Group] Movie Title [BD 1080p].mkv")
-        assert sf.parsed_episode is None
+        assert sf.parsed.episode is None
 
     def test_scene_trailing_group(self):
         sf = anime.parse_source_filename(
             "Re.ZERO.Starting.Life.in.Another.World.S03E09.1080p.CR.WEB-DL.AAC2.0.H.264.DUAL-VARYG.mkv"
         )
-        assert sf.release_group == "VARYG"
-        assert sf.parsed_season == 3
-        assert sf.parsed_episode == 9
+        assert sf.parsed.release_group == "VARYG"
+        assert sf.parsed.season == 3
+        assert sf.parsed.episode == 9
 
     def test_scene_group_not_overridden_by_bracket(self):
         """Bracket group takes priority over scene trailing group."""
         sf = anime.parse_source_filename("[FLE] Show - 01 [1080p]-GROUP.mkv")
-        assert sf.release_group == "FLE"
+        assert sf.parsed.release_group == "FLE"
 
     def test_bracket_group_fallback(self):
         """Short bracketed tag like [PMR] at end is picked up as release group."""
@@ -90,10 +90,10 @@ class TestParseSourceFilename:
             "Re ZERO Starting Life in Another World - S03E01v2 "
             "(BD Remux 1080p AVC FLAC E-AC-3) [Dual Audio] [PMR].mkv"
         )
-        assert sf.release_group == "PMR"
-        assert sf.parsed_season == 3
-        assert sf.parsed_episode == 1
-        assert sf.version == 2
+        assert sf.parsed.release_group == "PMR"
+        assert sf.parsed.season == 3
+        assert sf.parsed.episode == 1
+        assert sf.parsed.version == 2
 
     def test_sonarr_metadata_block_group(self):
         """Sonarr-style metadata block '[GROUP QUALITY-res,...]' extracts group."""
@@ -101,43 +101,45 @@ class TestParseSourceFilename:
             "You and I Are Polar Opposites - s01e01 - You, My Polar Opposite "
             "[VARYG WEBDL-1080p,8bit,x264,AAC].mkv"
         )
-        assert sf.release_group == "VARYG"
+        assert sf.parsed.release_group == "VARYG"
 
     def test_sonarr_metadata_block_erai_raws(self):
         """Sonarr metadata block with hyphenated group name."""
         sf = anime.parse_source_filename(
             "Show - s01e11 - Title [Erai-raws WEBDL-1080p,8bit,x264,AAC].mkv"
         )
-        assert sf.release_group == "Erai-raws"
+        assert sf.parsed.release_group == "Erai-raws"
 
     def test_bracket_group_not_crc32(self):
         """8-char hex in brackets is a CRC32 hash, not a release group."""
         sf = anime.parse_source_filename("[FLE] Show - 01 [4CC4766E].mkv")
-        assert sf.release_group == "FLE"
-        assert sf.hash_code == "4CC4766E"
+        assert sf.parsed.release_group == "FLE"
+        assert sf.parsed.hash_code == "4CC4766E"
 
     def test_version_dash_format(self):
         sf = anime.parse_source_filename("[MTBB] Title - 05v2 [hash1234].mkv")
-        assert sf.release_group == "MTBB"
-        assert sf.parsed_episode == 5
-        assert sf.version == 2
+        assert sf.parsed.release_group == "MTBB"
+        assert sf.parsed.episode == 5
+        assert sf.parsed.version == 2
 
     def test_version_s_e_format(self):
         sf = anime.parse_source_filename("Show.S01E05v3.1080p.BluRay.mkv")
-        assert sf.parsed_season == 1
-        assert sf.parsed_episode == 5
-        assert sf.version == 3
+        assert sf.parsed.season == 1
+        assert sf.parsed.episode == 5
+        assert sf.parsed.version == 3
 
     def test_no_version(self):
         sf = anime.parse_source_filename("[Group] Title - 05 [hash1234].mkv")
-        assert sf.parsed_episode == 5
-        assert sf.version is None
+        assert sf.parsed.episode == 5
+        assert sf.parsed.version is None
 
     def test_version_in_metadata_block(self):
         sf = anime.SourceFile(
             path=Path("test.mkv"),
-            release_group="MTBB",
-            version=2,
+            parsed=anime.ParsedMetadata(
+                release_group="MTBB",
+                version=2,
+            ),
             media=anime.MediaInfo(
                 video_codec="HEVC",
                 resolution="1080p",
@@ -153,7 +155,7 @@ class TestParseSourceFilename:
     def test_no_version_in_metadata_block(self):
         sf = anime.SourceFile(
             path=Path("test.mkv"),
-            release_group="MTBB",
+            parsed=anime.ParsedMetadata(release_group="MTBB"),
             media=anime.MediaInfo(
                 video_codec="HEVC",
                 resolution="1080p",
@@ -672,7 +674,9 @@ class TestConciseNameFromConfig:
             episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
         )
         parsed = [
-            anime.SourceFile(path=Path("ep1.mkv"), parsed_season=1, parsed_episode=1),
+            anime.SourceFile(
+                path=Path("ep1.mkv"), parsed=anime.ParsedMetadata(season=1, episode=1)
+            ),
         ]
         with pytest.raises(_Done):
             anime._process_group_batch(
@@ -712,7 +716,9 @@ class TestConciseNameFromConfig:
             episodes=[anime.Episode(1, "regular", "Ep 1", "", "")],
         )
         parsed = [
-            anime.SourceFile(path=Path("ep1.mkv"), parsed_season=1, parsed_episode=1),
+            anime.SourceFile(
+                path=Path("ep1.mkv"), parsed=anime.ParsedMetadata(season=1, episode=1)
+            ),
         ]
         with pytest.raises(_Done):
             anime._process_group_batch(
@@ -772,7 +778,7 @@ class TestGroupDefaults:
             verbose=False,
             defaults=defaults,
         )
-        assert sf.release_group == "MTBB"
+        assert sf.parsed.release_group == "MTBB"
         assert defaults.release_group == "MTBB"
 
     def test_defaults_carry_to_next_file(self, monkeypatch):
@@ -822,7 +828,9 @@ class TestGroupDefaults:
         )
         defaults = anime.GroupDefaults()
 
-        sf1 = anime.SourceFile(path=Path("/tmp/ep01.mkv"), parsed_episode=1)
+        sf1 = anime.SourceFile(
+            path=Path("/tmp/ep01.mkv"), parsed=anime.ParsedMetadata(episode=1)
+        )
         anime._process_file(
             sf1,
             info,
@@ -834,7 +842,9 @@ class TestGroupDefaults:
         )
         assert defaults.release_group == "MTBB"
 
-        sf2 = anime.SourceFile(path=Path("/tmp/ep02.mkv"), parsed_episode=2)
+        sf2 = anime.SourceFile(
+            path=Path("/tmp/ep02.mkv"), parsed=anime.ParsedMetadata(episode=2)
+        )
         anime._process_file(
             sf2,
             info,
@@ -845,7 +855,7 @@ class TestGroupDefaults:
             defaults=defaults,
         )
         # Second file should have picked up the default
-        assert sf2.release_group == "MTBB"
+        assert sf2.parsed.release_group == "MTBB"
 
     def test_no_prompt_when_group_present(self, monkeypatch):
         """No release group prompt when filename already has one."""
@@ -881,8 +891,10 @@ class TestGroupDefaults:
         )
         sf = anime.SourceFile(
             path=Path("/tmp/test.mkv"),
-            release_group="Cyan",
-            parsed_episode=1,
+            parsed=anime.ParsedMetadata(
+                release_group="Cyan",
+                episode=1,
+            ),
         )
         anime._process_file(
             sf,
@@ -951,8 +963,8 @@ class TestMatchToDownloads:
         enriched = anime._match_to_downloads(parsed, index, series_name="Show")
 
         assert len(enriched) == 1
-        assert enriched[0].release_group == "FLE"
-        assert enriched[0].hash_code == "ABCD1234"
+        assert enriched[0].parsed.release_group == "FLE"
+        assert enriched[0].parsed.hash_code == "ABCD1234"
         assert enriched[0].path == src
 
     def test_mismatched_group_rejects_match(self, tmp_path):
@@ -971,7 +983,9 @@ class TestMatchToDownloads:
 
         assert len(enriched) == 1
         assert enriched[0].matched_download is None
-        assert enriched[0].release_group == "VARYG"  # metadata parsed out of bracket
+        assert (
+            enriched[0].parsed.release_group == "VARYG"
+        )  # metadata parsed out of bracket
 
     def test_picks_closest_size(self, tmp_path):
         src = tmp_path / "source" / "Show - s01e01 - Title.mkv"
@@ -990,17 +1004,17 @@ class TestMatchToDownloads:
         parsed = anime._parse_files([src])
         enriched = anime._match_to_downloads(parsed, index, series_name="Show")
 
-        assert enriched[0].release_group == "B"
+        assert enriched[0].parsed.release_group == "B"
 
     def test_no_match_preserves_original(self, tmp_path):
         src = tmp_path / "Show - s01e05 - Title.mkv"
         src.write_bytes(b"data")
 
         parsed = anime._parse_files([src])
-        original_group = parsed[0].release_group
+        original_group = parsed[0].parsed.release_group
         enriched = anime._match_to_downloads(parsed, anime.DownloadIndex())
 
-        assert enriched[0].release_group == original_group
+        assert enriched[0].parsed.release_group == original_group
         assert enriched[0].path == src
 
     def test_build_download_index(self, tmp_path):
@@ -1038,7 +1052,7 @@ class TestMatchToDownloads:
         index = anime._build_download_index(tmp_path / "dl")
         parsed = anime._parse_files([src])
         enriched = anime._match_to_downloads(parsed, index, series_name="ShowA")
-        assert enriched[0].release_group == "GroupA"
+        assert enriched[0].parsed.release_group == "GroupA"
 
     def test_no_cross_series_match(self, tmp_path):
         """Regression: downloads from a different series must not match."""
@@ -1055,7 +1069,7 @@ class TestMatchToDownloads:
         parsed = anime._parse_files([src])
         enriched = anime._match_to_downloads(parsed, index, series_name="ShowA")
         # Should NOT pick up ShowB's release group
-        assert enriched[0].release_group != "Group"
+        assert enriched[0].parsed.release_group != "Group"
         assert enriched[0].matched_download is None
 
     def test_season_zero_does_not_match_regular(self, tmp_path):
@@ -1124,8 +1138,7 @@ class TestSubSeriesTitleFiltering:
                 path=Path(
                     "[アニメ BD] 探偵オペラミルキィホームズ(第1期) 第01話「Test」.mkv"
                 ),
-                parsed_season=1,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=1, episode=1),
             ),
         ]
         info = anime.AnimeInfo(
@@ -1149,22 +1162,19 @@ class TestSubSeriesTitleFiltering:
                 path=Path(
                     "[アニメ BD] 探偵オペラミルキィホームズ(第1期) 第01話「S1」.mkv"
                 ),
-                parsed_season=1,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=1, episode=1),
             ),
             anime.SourceFile(
                 path=Path(
                     "[アニメ BD] 探偵オペラミルキィホームズ 第2幕(第2期) 第01話「S2」.mkv"
                 ),
-                parsed_season=2,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=2, episode=1),
             ),
             anime.SourceFile(
                 path=Path(
                     "[アニメ BD] 探偵オペラミルキィホームズ Alternative(OVA) 第01話「OVA」.mkv"
                 ),
-                parsed_season=None,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=None, episode=1),
             ),
         ]
         info = anime.AnimeInfo(
@@ -1178,7 +1188,7 @@ class TestSubSeriesTitleFiltering:
         matched, remaining = anime._match_files_to_season(pool, info)
         # Only the S1 file should match; S2 and Alternative stay in pool
         assert len(matched) == 1
-        assert matched[0].parsed_season == 1
+        assert matched[0].parsed.season == 1
         assert len(remaining) == 2
 
     def test_different_series_title_excluded(self, monkeypatch):
@@ -1191,22 +1201,19 @@ class TestSubSeriesTitleFiltering:
                 path=Path(
                     "[アニメ BD] 探偵オペラミルキィホームズ(第1期) 第01話「S1」.mkv"
                 ),
-                parsed_season=1,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=1, episode=1),
             ),
             anime.SourceFile(
                 path=Path(
                     "[アニメ BD] ふたりはミルキィホームズ(第3期) 第01話「S3」.mkv"
                 ),
-                parsed_season=3,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=3, episode=1),
             ),
             anime.SourceFile(
                 path=Path(
                     "[アニメ BD] 探偵歌劇ミルキィホームズTD(第4期) 第01話「S4」.mkv"
                 ),
-                parsed_season=4,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=4, episode=1),
             ),
         ]
         info = anime.AnimeInfo(
@@ -1230,8 +1237,7 @@ class TestSubSeriesTitleFiltering:
         pool = [
             anime.SourceFile(
                 path=Path("[G] 完全に違うタイトル(第1期) 第01話「Ep」.mkv"),
-                parsed_season=1,
-                parsed_episode=1,
+                parsed=anime.ParsedMetadata(season=1, episode=1),
             ),
         ]
         info = anime.AnimeInfo(
@@ -1253,13 +1259,11 @@ class TestSubSeriesTitleFiltering:
         pool = [
             anime.SourceFile(
                 path=Path("[G] テスト(OVA) 映像特典「PV」.mkv"),
-                parsed_season=None,
-                parsed_episode=None,
+                parsed=anime.ParsedMetadata(season=None, episode=None),
             ),
             anime.SourceFile(
                 path=Path("[G] テスト(OVA)「さようなら」.mkv"),
-                parsed_season=None,
-                parsed_episode=None,
+                parsed=anime.ParsedMetadata(season=None, episode=None),
             ),
         ]
         info = anime.AnimeInfo(
@@ -1293,8 +1297,7 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             pool.append(
                 anime.SourceFile(
                     path=Path(f"[アニメ BD] テスト(第1期) 第{i:02d}話「Title」.mkv"),
-                    parsed_season=1,
-                    parsed_episode=i,
+                    parsed=anime.ParsedMetadata(season=1, episode=i),
                 )
             )
         # 7 bonus files (no episode number)
@@ -1302,8 +1305,7 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             pool.append(
                 anime.SourceFile(
                     path=Path(f"[アニメ BD] テスト(第1期) 映像特典「{label}」.mkv"),
-                    parsed_season=1,
-                    parsed_episode=None,
+                    parsed=anime.ParsedMetadata(season=1, episode=None),
                 )
             )
 
@@ -1318,8 +1320,8 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
-        eps = [sf for sf in matched if sf.parsed_episode is not None]
-        bonus = [sf for sf in matched if sf.parsed_episode is None]
+        eps = [sf for sf in matched if sf.parsed.episode is not None]
+        bonus = [sf for sf in matched if sf.parsed.episode is None]
         assert len(eps) == 12
         assert len(bonus) == 7
         assert len(matched) == 19
@@ -1338,16 +1340,14 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             pool.append(
                 anime.SourceFile(
                     path=Path(f"ep{i}.mkv"),
-                    parsed_season=1,
-                    parsed_episode=i,
+                    parsed=anime.ParsedMetadata(season=1, episode=i),
                 )
             )
         for j in range(3):
             pool.append(
                 anime.SourceFile(
                     path=Path(f"[G] テスト(第1期) 映像特典「PV{j + 1}」.mkv"),
-                    parsed_season=1,
-                    parsed_episode=None,
+                    parsed=anime.ParsedMetadata(season=1, episode=None),
                 )
             )
 
@@ -1362,13 +1362,13 @@ class TestBonusFilesNotCountedAgainstEpisodeLimit:
             ],
         )
         matched, remaining = anime._match_files_to_season(pool, info)
-        eps = [sf for sf in matched if sf.parsed_episode is not None]
-        bonus = [sf for sf in matched if sf.parsed_episode is None]
+        eps = [sf for sf in matched if sf.parsed.episode is not None]
+        bonus = [sf for sf in matched if sf.parsed.episode is None]
         assert len(eps) == 12
         assert len(bonus) == 3
         # Remaining should be ep 13-24 (no bonus)
         remaining_eps = sorted(
-            sf.parsed_episode for sf in remaining if sf.parsed_episode is not None
+            sf.parsed.episode for sf in remaining if sf.parsed.episode is not None
         )
         assert remaining_eps == list(range(13, 25))
 
@@ -1381,7 +1381,10 @@ class TestMatchFilesToSeason:
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         pool = [
-            anime.SourceFile(path=Path(f"ep{i}.mkv"), parsed_season=1, parsed_episode=i)
+            anime.SourceFile(
+                path=Path(f"ep{i}.mkv"),
+                parsed=anime.ParsedMetadata(season=1, episode=i),
+            )
             for i in range(1, 13)
         ]
         info = anime.AnimeInfo(
@@ -1408,8 +1411,7 @@ class TestMatchFilesToSeason:
                 pool.append(
                     anime.SourceFile(
                         path=Path(f"s{s}e{i:02d}.mkv"),
-                        parsed_season=s,
-                        parsed_episode=i,
+                        parsed=anime.ParsedMetadata(season=s, episode=i),
                     )
                 )
         info = anime.AnimeInfo(
@@ -1424,7 +1426,7 @@ class TestMatchFilesToSeason:
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 12
-        assert all(sf.parsed_season == 2 for sf in matched)
+        assert all(sf.parsed.season == 2 for sf in matched)
         assert len(remaining) == 12
 
     def test_unseasoned_files_included(self, monkeypatch):
@@ -1432,7 +1434,9 @@ class TestMatchFilesToSeason:
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         pool = [
-            anime.SourceFile(path=Path("ep1.mkv"), parsed_season=1, parsed_episode=1),
+            anime.SourceFile(
+                path=Path("ep1.mkv"), parsed=anime.ParsedMetadata(season=1, episode=1)
+            ),
             anime.SourceFile(path=Path("01.mkv")),  # no season, episode, or series name
         ]
         info = anime.AnimeInfo(
@@ -1454,7 +1458,8 @@ class TestMatchFilesToSeason:
 
         pool = [
             anime.SourceFile(
-                path=Path(f"s3e{i:02d}.mkv"), parsed_season=3, parsed_episode=i
+                path=Path(f"s3e{i:02d}.mkv"),
+                parsed=anime.ParsedMetadata(season=3, episode=i),
             )
             for i in range(1, 25)  # S03E01-S03E24
         ]
@@ -1472,8 +1477,8 @@ class TestMatchFilesToSeason:
         assert len(matched) == 12
         assert len(remaining) == 12
         # First 12 episodes matched, episodes 1-12
-        assert matched[0].parsed_episode == 1
-        assert matched[-1].parsed_episode == 12
+        assert matched[0].parsed.episode == 1
+        assert matched[-1].parsed.episode == 12
 
     def test_multi_cour_renumbers_second_half(self, monkeypatch):
         """Second cour (ep 13-24) gets renumbered to 1-12."""
@@ -1483,7 +1488,8 @@ class TestMatchFilesToSeason:
         # Pool only has the leftover second half (ep 13-24)
         pool = [
             anime.SourceFile(
-                path=Path(f"s3e{i:02d}.mkv"), parsed_season=3, parsed_episode=i
+                path=Path(f"s3e{i:02d}.mkv"),
+                parsed=anime.ParsedMetadata(season=3, episode=i),
             )
             for i in range(13, 25)
         ]
@@ -1501,8 +1507,8 @@ class TestMatchFilesToSeason:
         assert len(matched) == 12
         assert len(remaining) == 0
         # Episodes renumbered: 13→1, 14→2, ..., 24→12
-        assert matched[0].parsed_episode == 1
-        assert matched[-1].parsed_episode == 12
+        assert matched[0].parsed.episode == 1
+        assert matched[-1].parsed.episode == 12
 
     def test_no_renumber_when_eps_fit(self, monkeypatch):
         """Ep 12 of a 12-episode entry stays as 12, not renumbered to 1."""
@@ -1511,7 +1517,8 @@ class TestMatchFilesToSeason:
 
         pool = [
             anime.SourceFile(
-                path=Path("s2e12.mkv"), parsed_season=2, parsed_episode=12
+                path=Path("s2e12.mkv"),
+                parsed=anime.ParsedMetadata(season=2, episode=12),
             ),
         ]
         info = anime.AnimeInfo(
@@ -1526,7 +1533,7 @@ class TestMatchFilesToSeason:
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         assert len(matched) == 1
-        assert matched[0].parsed_episode == 12  # NOT renumbered to 1
+        assert matched[0].parsed.episode == 12  # NOT renumbered to 1
 
     def test_multi_cour_leftover_back_in_pool(self, monkeypatch):
         """Leftover files from a multi-cour split go back in the pool."""
@@ -1535,7 +1542,8 @@ class TestMatchFilesToSeason:
 
         pool = [
             anime.SourceFile(
-                path=Path(f"s3e{i:02d}.mkv"), parsed_season=3, parsed_episode=i
+                path=Path(f"s3e{i:02d}.mkv"),
+                parsed=anime.ParsedMetadata(season=3, episode=i),
             )
             for i in range(1, 25)
         ]
@@ -1552,7 +1560,7 @@ class TestMatchFilesToSeason:
         )
         matched, remaining = anime._match_files_to_season(pool, info)
         # Remaining should have ep 13-24 still with original numbering
-        remaining_eps = sorted(sf.parsed_episode or 0 for sf in remaining)
+        remaining_eps = sorted(sf.parsed.episode or 0 for sf in remaining)
         assert remaining_eps == list(range(13, 25))
 
     def test_title_filter_matches_english_name(self, monkeypatch):
@@ -1563,7 +1571,7 @@ class TestMatchFilesToSeason:
         pool = [
             anime.SourceFile(
                 path=Path(f"[SubGroup] Journal with Witch - {i:02d}.mkv"),
-                parsed_episode=i,
+                parsed=anime.ParsedMetadata(episode=i),
             )
             for i in range(1, 4)
         ]
@@ -1589,7 +1597,7 @@ class TestMatchFilesToSeason:
         pool = [
             anime.SourceFile(
                 path=Path(f"[SubGroup] 違国日記 - {i:02d}.mkv"),
-                parsed_episode=i,
+                parsed=anime.ParsedMetadata(episode=i),
             )
             for i in range(1, 4)
         ]

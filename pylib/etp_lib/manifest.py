@@ -123,22 +123,24 @@ def build_manifest_entries(
         if hash_result is not None:
             ok, actual = hash_result
             if not ok:
-                print(f"    CRC32 MISMATCH: expected {sf.hash_code}, got {actual}")
-                sf.hash_code = ""
+                print(
+                    f"    CRC32 MISMATCH: expected {sf.parsed.hash_code}, got {actual}"
+                )
+                sf.parsed.hash_code = ""
                 hash_failed = True
             elif verbose:
-                print(f"    CRC32 verified: {sf.hash_code}")
+                print(f"    CRC32 verified: {sf.parsed.hash_code}")
 
-        ep_number = sf.parsed_episode
-        season = sf.parsed_season if sf.parsed_season is not None else 1
-        is_special = season == 0 or sf.is_special
+        ep_number = sf.parsed.episode
+        season = sf.parsed.season if sf.parsed.season is not None else 1
+        is_special = season == 0 or sf.parsed.is_special
         special_tag = ""
         episode_name = ""
         is_unmatched_special = False
 
         # Use parser-detected bonus_type; fall back to re-parsing only if needed
-        bonus_type = sf.bonus_type
-        episode_title = sf.episode_title
+        bonus_type = sf.parsed.bonus_type
+        episode_title = sf.parsed.episode_title
         if not bonus_type and not episode_title:
             file_pm = parse_component(sf.path.name)
             bonus_type = file_pm.bonus_type
@@ -162,16 +164,16 @@ def build_manifest_entries(
                 bonus_type, episode_title, available
             )
             if matched_ep is not None:
-                special_tag = sf.special_tag or matched_ep.special_tag
+                special_tag = sf.parsed.special_tag or matched_ep.special_tag
                 episode_name = episode_title or matched_ep.title_en
                 matched_special_tags.add(matched_ep.special_tag)
-                sf.parsed_episode = matched_ep.number
-                sf.parsed_season = 0
+                sf.parsed.episode = matched_ep.number
+                sf.parsed.season = 0
                 ep_number = matched_ep.number
                 season = 0
             else:
                 # Use parser special tag directly (e.g. S03OP, S01OVA)
-                special_tag = sf.special_tag
+                special_tag = sf.parsed.special_tag
                 episode_name = episode_title
                 season = 0
         elif bonus_type:
@@ -196,8 +198,8 @@ def build_manifest_entries(
                 ep_number = matched_ep.number
                 episode_name = episode_title or matched_ep.title_en
                 matched_special_tags.add(matched_ep.special_tag)
-                sf.parsed_episode = ep_number
-                sf.parsed_season = 0
+                sf.parsed.episode = ep_number
+                sf.parsed.season = 0
             else:
                 # Assign HamaTV-compatible s0e number, tagged (todo)
                 is_special = True
@@ -209,8 +211,8 @@ def build_manifest_entries(
                     episode_name = f"{bonus_type} - {episode_title}"
                 season = 0
                 is_unmatched_special = True
-                sf.parsed_episode = ep_number
-                sf.parsed_season = 0
+                sf.parsed.episode = ep_number
+                sf.parsed.season = 0
 
         # Build destination path
         if ep_number is None:
@@ -305,7 +307,7 @@ def write_manifest(
 
     for group_key in sorted(groups.keys()):
         group_entries = sorted(
-            groups[group_key], key=lambda e: e.source.parsed_episode or 0
+            groups[group_key], key=lambda e: e.source.parsed.episode or 0
         )
         if group_key == "specials":
             lines.append("specials {")
@@ -315,7 +317,7 @@ def write_manifest(
             lines.append(f"season {season_num} {{")
 
         for entry in group_entries:
-            ep_num = entry.source.parsed_episode or 0
+            ep_num = entry.source.parsed.episode or 0
             tag = "(todo)" if entry.is_todo else ""
             if entry.hash_failed:
                 lines.append("  // CRC32 MISMATCH — hash stripped from destination")

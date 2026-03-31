@@ -33,14 +33,14 @@ def build_metadata_block(source: SourceFile) -> str:
     # Prefix part: "group source" (space-separated)
     # Append version to release group: "MTBB" + v2 -> "MTBB(v2)"
     prefix_parts: list[str] = []
-    if source.release_group:
-        group = source.release_group
-        if source.version is not None:
-            group = f"{group}(v{source.version})"
+    if source.parsed.release_group:
+        group = source.parsed.release_group
+        if source.parsed.version is not None:
+            group = f"{group}(v{source.parsed.version})"
         prefix_parts.append(group)
     # Default to "Web" when no source type detected -- ensures the space
     # separator between group and tech fields is always present
-    source_type = source.source_type or "Web"
+    source_type = source.parsed.source_type or "Web"
     prefix_parts.append(source_type)
     prefix = " ".join(prefix_parts)
 
@@ -48,7 +48,7 @@ def build_metadata_block(source: SourceFile) -> str:
     tech: list[str] = []
 
     # REMUX
-    if source.is_remux:
+    if source.parsed.is_remux:
         tech.append("REMUX")
 
     # Resolution
@@ -120,7 +120,7 @@ def format_episode_filename(
     ext = source.path.suffix or ".mkv"
     metadata = build_metadata_block(source)
     meta_str = f" [{metadata}]" if metadata else ""
-    hash_str = f" [{source.hash_code}]" if source.hash_code else ""
+    hash_str = f" [{source.parsed.hash_code}]" if source.parsed.hash_code else ""
 
     concise_name = _sanitize_path(concise_name)
     episode_name = _sanitize_path(episode_name)

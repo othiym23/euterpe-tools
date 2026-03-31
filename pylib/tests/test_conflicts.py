@@ -12,7 +12,7 @@ from etp_lib.conflicts import (
     compute_crc32,
     verify_hash,
 )
-from etp_lib.types import AudioTrack, MediaInfo, SourceFile
+from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
 
 
 def _mock_media():  # type: ignore[no-untyped-def]
@@ -43,7 +43,7 @@ class TestCrc32Verification:
         import zlib
 
         crc = f"{zlib.crc32(b'test data') & 0xFFFFFFFF:08X}"
-        sf = SourceFile(path=f, hash_code=crc)
+        sf = SourceFile(path=f, parsed=ParsedMetadata(hash_code=crc))
         result = verify_hash(sf)
         assert result is not None
         ok, actual = result
@@ -53,7 +53,7 @@ class TestCrc32Verification:
     def test_verify_hash_mismatch(self, tmp_path):
         f = tmp_path / "test.mkv"
         f.write_bytes(b"test data")
-        sf = SourceFile(path=f, hash_code="00000000")
+        sf = SourceFile(path=f, parsed=ParsedMetadata(hash_code="00000000"))
         result = verify_hash(sf)
         assert result is not None
         ok, actual = result
@@ -61,7 +61,7 @@ class TestCrc32Verification:
         assert len(actual) == 8
 
     def test_verify_hash_no_hash(self):
-        sf = SourceFile(path=Path("/tmp/test.mkv"), hash_code="")
+        sf = SourceFile(path=Path("/tmp/test.mkv"))
         assert verify_hash(sf) is None
 
     def test_verify_hash_case_insensitive(self, tmp_path):
@@ -70,7 +70,7 @@ class TestCrc32Verification:
         import zlib
 
         crc = f"{zlib.crc32(b'test data') & 0xFFFFFFFF:08x}"  # lowercase
-        sf = SourceFile(path=f, hash_code=crc)
+        sf = SourceFile(path=f, parsed=ParsedMetadata(hash_code=crc))
         result = verify_hash(sf)
         assert result is not None
         assert result[0] is True
@@ -90,7 +90,9 @@ class TestConflictResolution:
         dst = tmp_path / "dst.mkv"
         dst.write_bytes(b"existing")
 
-        sf = SourceFile(path=src, release_group="FLE", source_type="BD")
+        sf = SourceFile(
+            path=src, parsed=ParsedMetadata(release_group="FLE", source_type="BD")
+        )
         sf.media = _mock_media()
 
         conflict = check_destination_conflict(sf, dst)
@@ -103,14 +105,19 @@ class TestConflictResolution:
         dst = tmp_path / "Show - s1e01 [FLE BD,1080p,HEVC].mkv"
         dst.write_bytes(b"existing")
 
-        sf = SourceFile(path=src, release_group="FLE", source_type="BD")
+        sf = SourceFile(
+            path=src, parsed=ParsedMetadata(release_group="FLE", source_type="BD")
+        )
         sf.media = _mock_media()
 
         conflict = check_destination_conflict(sf, dst)
         assert conflict is not None
 
     def test_extract_key_metadata(self):
-        sf = SourceFile(path=Path("test.mkv"), release_group="FLE", source_type="BD")
+        sf = SourceFile(
+            path=Path("test.mkv"),
+            parsed=ParsedMetadata(release_group="FLE", source_type="BD"),
+        )
         sf.media = MediaInfo(
             video_codec="HEVC",
             resolution="1080p",
