@@ -86,6 +86,11 @@ enforces.
 - **Anime management architecture**: see the "Anime Collection Manager" section
   in `docs/DESIGN_NOTES.md` for data flow, manifest workflow, and special
   episode handling.
+- **Media parser**: when working on the parser or investigating QA issues, read
+  `docs/etp-anime-parsing-rules.md` — especially the "Non-obvious parsing
+  behavior" section which documents edge cases and the reasoning behind them.
+  Design decisions for the anime management system are in the "Design decisions"
+  section of `docs/DESIGN_NOTES.md`.
 
 ## Git workflow
 

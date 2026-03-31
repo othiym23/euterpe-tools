@@ -189,6 +189,42 @@ StrEnum types (`EpisodeType`, `BonusType`, `MetadataProvider`) replace raw
 string comparisons throughout. These are backwards-compatible with string
 equality checks but provide IDE autocompletion and pyright validation.
 
+### Design decisions
+
+**SPECIAL tokens don't set episode number.** When the parser finds `OVA2E03`,
+`OVA2` is a SPECIAL token (number=2) and `E03` is an EPISODE token (episode=3).
+The SPECIAL's number is a series/group indicator ("OVA series 2"), not the
+episode. `_build_parsed_media` defers episode assignment from SPECIAL tokens —
+if a subsequent EPISODE token provides the real episode number, it takes
+priority. Only when no EPISODE follows does the SPECIAL's number become the
+episode (e.g., `SP1` alone → episode 1).
+
+**MatchedFile wraps, never mutates.** `_match_files_to_season` returns
+`MatchedFile` wrappers with overridden episode/season values. The original
+`SourceFile.parsed` is never modified during season matching or renumbering.
+This ensures multi-cour processing (where the same pool serves multiple AniDB
+IDs in sequence) sees the original episode numbers on each pass. Overrides are
+baked into `SourceFile` copies via `to_source_snapshot()` only when entering the
+manifest workflow.
+
+**ManifestWorkflow encapsulates the edit cycle.** The build → write → edit →
+parse → execute sequence is a single unit of work. `ManifestWorkflow.run()`
+handles the full cycle including error recovery (re-edit on parse errors) and
+cleanup (temp file removal). Callers should use `run()` rather than calling the
+individual manifest functions.
+
+**HamaTV ranges start after TVDB specials.** When using TVDB, unmatched bonus
+files get HamaTV-compatible episode numbers (NCOP=171+, NCED=191+, PV=321+,
+etc.). These ranges are adjusted to start after the highest existing TVDB
+special number (+20 buffer) to avoid collisions in the single `Specials/`
+directory.
+
+**Resolution uses height only.** Width is irrelevant for resolution tags —
+anamorphic encodes (1440x1080, 848x480) have non-standard widths but standard
+heights. The `normalize_resolution` function maps by height alone. Interlaced
+scan type comes from the filename (`1080i`) or from mediainfo's `ScanType`
+field; the default is progressive.
+
 ## Database
 
 SQLite with sqlx, WAL mode, single-threaded tokio (`current_thread`). The

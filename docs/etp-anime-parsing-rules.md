@@ -462,3 +462,89 @@ StrEnum types in `types.py` replace raw string comparisons:
 These are backwards-compatible with string equality
 (`EpisodeType.REGULAR == "regular"` is True) but provide IDE autocompletion and
 pyright validation.
+
+## Non-obvious parsing behavior
+
+Decisions and edge cases that aren't self-evident from reading the code. Read
+this section when investigating QA issues or modifying the parser.
+
+### SPECIAL token episode number is deferred
+
+When `OVA2E03` is parsed, `OVA2` becomes a SPECIAL token (number=2) and `E03`
+becomes an EPISODE token (episode=3). The SPECIAL's number is a series/group
+indicator ("OVA series 2"), not the episode number. `_build_parsed_media` does
+NOT set `pm.episode` from SPECIAL tokens — it waits for a subsequent EPISODE
+token. Only when no EPISODE follows does the SPECIAL's number become the episode
+as a fallback (e.g., `SP1` alone → episode 1).
+
+### `episode_bare` is excluded from embedded recognizers
+
+`_EMBEDDED_RECOGNIZERS` (used by `_find_recognizer_in_text` and
+`_split_text_with_embedded`) does NOT include `episode_bare`. Bare numbers match
+too broadly within text — `101 Dalmatians` would match `101` as episode.
+Instead, `_split_text_with_embedded` has a specific leading-bare-number fallback
+that only fires when a bare number at position 0 is followed by a space (strong
+structural signal).
+
+### `special` IS in embedded recognizers, with word boundary check
+
+`OVA`, `SP`, `OAD`, `ONA` are included in `_EMBEDDED_RECOGNIZERS` but
+`_find_recognizer_in_text` requires matches to start at a word boundary (start
+of string, or preceded by space/tab/dash/underscore). This prevents `OAD`
+matching inside `Road` or `ONA` inside `Conan`. CJK characters are NOT currently
+treated as word boundaries — a marker immediately following CJK text without a
+delimiter will be missed (rare in practice since fansub releases separate
+markers with delimiters).
+
+### Audio codec dot normalization
+
+`_RE_AC_DOT_NORM` replaces dots between a letter and a digit: `AAC.2.0` →
+`AAC 2.0`, `TrueHD.5.1` → `TrueHD 5.1`. The lookbehind `(?<=[a-zA-Z])` ensures
+`AAC2.0` (no separator dot — digit directly follows letters) is preserved as-is;
+the `2.0` internal dot sits between two digits and is not matched.
+
+### Underscore handling is context-dependent
+
+`_-_` (underscore-dash-underscore) is treated as a separator equivalent to `-`
+by `_split_separators`. After splitting, trailing underscores are stripped from
+parts. However, internal underscores within TEXT tokens are NOT converted to
+spaces — the parser preserves them since underscores may be significant in some
+naming conventions. Underscore-to-space conversion only happens in
+`_classify_paren` for metadata in parentheses (old fansub convention like
+`(10bit_BD1080p_x265)`), where a letter→digit boundary split is also applied
+before resolution-like patterns (`BD1080p` → `BD 1080p`).
+
+### Resolution normalization uses height only
+
+Width is irrelevant for resolution tags. Anamorphic encodes (1440x1080 BD,
+848x480 DVD, 720x480 NTSC) have non-standard widths but standard heights.
+`normalize_resolution` maps by height: `1440x1080` → `1080p`, `720x480` →
+`480p`. Interlaced scan type is preserved when explicitly stated in the filename
+(`1080i`) or detected by mediainfo's `ScanType` field. The default is
+progressive. `2160p` normalizes to `4K`.
+
+### Metadata-word scan requires title content before metadata
+
+When a TEXT token appears after an episode marker, the parser scans left-to-
+right for the first metadata keyword to split title from metadata. The split
+only fires when `meta_start > 0` — if the FIRST word is metadata (e.g., `E03`
+after being separated from `OVA2`), the text is not passed to `scan_words`
+(which would lose unrecognized words as UNKNOWN tokens). Instead it falls
+through to `_split_text_with_embedded` which properly separates the episode
+marker from the episode title.
+
+### 3-segment compound audio with dash suffix
+
+`scan_dot_segments` tries 3-segment compounds before 2-segment. For
+`TrueHD.5.1-Hinna`, the third segment `1-Hinna` has a dash suffix that must be
+stripped to try `TrueHD.5.1` as a compound. The `_try_compound_dash_strip`
+helper handles this for both 2-segment and 3-segment compounds, and tries to
+recognize the suffix (e.g., as a known codec) before falling back to
+RELEASE_GROUP.
+
+### `_RE_EP_PREFIX` uses lookahead, not end anchor
+
+The episode prefix regex (`E05`, `EP12`) uses `(?=\s|$|\.)` instead of `$` so it
+can match embedded within text (e.g., `E03 Shiton Animal Chronicles`). The `$`
+anchor would require the episode marker to be at the end of the entire string,
+which fails when `_find_recognizer_in_text` passes the full text as the stream.
