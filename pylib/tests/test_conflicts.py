@@ -242,6 +242,37 @@ class TestResolveConflict:
         monkeypatch.setattr("builtins.input", lambda _: "b")
         assert resolve_conflict(conflict) == "both"
 
+    def test_matching_metadata_crc_stashed_on_source(self, tmp_path):
+        """CRC32 computed during conflict resolution is stashed on source."""
+        src = tmp_path / "src.mkv"
+        dst = tmp_path / "dst.mkv"
+        src.write_bytes(b"content A")
+        dst.write_bytes(b"content B")
+
+        sf = SourceFile(
+            path=src,
+            parsed=ParsedMetadata(release_group="FLE", source_type="BD"),
+        )
+        sf.media = _mock_media()
+        assert sf.parsed.hash_code == ""
+
+        conflict = ConflictInfo(
+            existing_path=dst,
+            existing_size=dst.stat().st_size,
+            existing_media=_mock_media(),
+            incoming_source=sf,
+            incoming_dest=dst,
+            metadata_matches=True,
+        )
+        # Resolve — CRC gets computed and stashed
+        from unittest.mock import patch
+
+        with patch("builtins.input", return_value="k"):
+            resolve_conflict(conflict)
+
+        assert sf.parsed.hash_code != ""
+        assert len(sf.parsed.hash_code) == 8  # CRC32 is 8 hex chars
+
     def test_different_metadata_prompts(self, tmp_path, monkeypatch):
         """Different metadata → prompts user with comparison."""
         src = tmp_path / "src.mkv"

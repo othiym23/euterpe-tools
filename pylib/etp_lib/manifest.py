@@ -14,6 +14,7 @@ from pathlib import Path
 import kdl
 
 from etp_lib.conflicts import (
+    compute_crc32,
     copy_reflink,
     handle_conflict,
     prompt_confirm,
@@ -532,7 +533,17 @@ def execute_manifest(
                     success += 1
                 continue
             if action == "both":
-                pass  # keep existing, proceed with copy to dest_path as-is
+                # Keep existing. If dest already exists (same filename from
+                # matching metadata), disambiguate by appending the source
+                # file's CRC32 to the filename.
+                if dest_path.exists():
+                    crc = sf.parsed.hash_code
+                    if not crc:
+                        crc = compute_crc32(sf.path)
+                        sf.parsed.hash_code = crc
+                    stem = dest_path.stem
+                    ext = dest_path.suffix
+                    dest_path = dest_path.parent / f"{stem} [{crc}]{ext}"
 
         try:
             if copy_reflink(sf.path, dest_path, dry_run=dry_run):

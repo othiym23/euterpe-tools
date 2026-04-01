@@ -202,6 +202,9 @@ def resolve_conflict(conflict: ConflictInfo) -> str:
         incoming_size = conflict.incoming_source.path.stat().st_size
         if incoming_size == conflict.existing_size:
             src_crc = compute_crc32(conflict.incoming_source.path)
+            # Stash the computed CRC for later use (e.g., "both" disambiguation)
+            if not conflict.incoming_source.parsed.hash_code:
+                conflict.incoming_source.parsed.hash_code = src_crc
             dst_crc = compute_crc32(conflict.existing_path)
             if src_crc == dst_crc:
                 print(
