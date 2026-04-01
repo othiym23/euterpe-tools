@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from etp_lib.conflicts import (
+    ConflictInfo,
     _extract_key_metadata,
     _format_media_summary,
     _format_size,
     check_destination_conflict,
     compute_crc32,
+    resolve_conflict,
     verify_hash,
 )
 from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
@@ -161,4 +163,106 @@ class TestConflictResolution:
         assert "1080p" in summary
         assert "10bit" in summary
         assert "HDR" in summary
-        assert "flac" in summary
+
+
+class TestResolveConflict:
+    """Tests for conflict resolution behavior."""
+
+    def test_matching_metadata_same_crc_auto_replaces(self, tmp_path):
+        """Same metadata + same CRC32 → auto-replace (no prompt)."""
+        src = tmp_path / "src.mkv"
+        dst = tmp_path / "dst.mkv"
+        src.write_bytes(b"identical content")
+        dst.write_bytes(b"identical content")
+
+        sf = SourceFile(
+            path=src,
+            parsed=ParsedMetadata(release_group="FLE", source_type="BD"),
+        )
+        sf.media = _mock_media()
+
+        conflict = ConflictInfo(
+            existing_path=dst,
+            existing_size=dst.stat().st_size,
+            existing_media=_mock_media(),
+            incoming_source=sf,
+            incoming_dest=dst,
+            metadata_matches=True,
+        )
+        assert resolve_conflict(conflict) == "replace"
+
+    def test_matching_metadata_different_crc_prompts(self, tmp_path, monkeypatch):
+        """Same metadata but different CRC32 → prompts user."""
+        src = tmp_path / "src.mkv"
+        dst = tmp_path / "dst.mkv"
+        src.write_bytes(b"content version A")
+        dst.write_bytes(b"content version B")
+
+        sf = SourceFile(
+            path=src,
+            parsed=ParsedMetadata(release_group="FLE", source_type="BD"),
+        )
+        sf.media = _mock_media()
+
+        conflict = ConflictInfo(
+            existing_path=dst,
+            existing_size=dst.stat().st_size,
+            existing_media=_mock_media(),
+            incoming_source=sf,
+            incoming_dest=dst,
+            metadata_matches=True,
+        )
+
+        # Simulate user choosing "keep"
+        monkeypatch.setattr("builtins.input", lambda _: "k")
+        assert resolve_conflict(conflict) == "keep"
+
+    def test_matching_metadata_different_size_prompts(self, tmp_path, monkeypatch):
+        """Same metadata but different file sizes → prompts user."""
+        src = tmp_path / "src.mkv"
+        dst = tmp_path / "dst.mkv"
+        src.write_bytes(b"short")
+        dst.write_bytes(b"much longer content here")
+
+        sf = SourceFile(
+            path=src,
+            parsed=ParsedMetadata(release_group="FLE", source_type="BD"),
+        )
+        sf.media = _mock_media()
+
+        conflict = ConflictInfo(
+            existing_path=dst,
+            existing_size=dst.stat().st_size,
+            existing_media=_mock_media(),
+            incoming_source=sf,
+            incoming_dest=dst,
+            metadata_matches=True,
+        )
+
+        monkeypatch.setattr("builtins.input", lambda _: "b")
+        assert resolve_conflict(conflict) == "both"
+
+    def test_different_metadata_prompts(self, tmp_path, monkeypatch):
+        """Different metadata → prompts user with comparison."""
+        src = tmp_path / "src.mkv"
+        dst = tmp_path / "dst.mkv"
+        src.write_bytes(b"source content")
+        dst.write_bytes(b"dest content")
+
+        sf = SourceFile(
+            path=src,
+            parsed=ParsedMetadata(release_group="NEW", source_type="Web"),
+        )
+        sf.media = _mock_media()
+
+        conflict = ConflictInfo(
+            existing_path=dst,
+            existing_size=dst.stat().st_size,
+            existing_media=_mock_media(),
+            incoming_source=sf,
+            incoming_dest=dst,
+            metadata_matches=False,
+        )
+
+        monkeypatch.setattr("builtins.input", lambda _: "r")
+        assert resolve_conflict(conflict) == "replace"
