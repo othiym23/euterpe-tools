@@ -647,6 +647,10 @@ _TYPE_TO_KIND: dict[type, TokenKind] = {
 # Known redistributor site brackets — not release groups
 _REDISTRIBUTORS = frozenset({"tgx", "eztv", "eztvx.to", "rartv", "ettv", "ion10"})
 
+# Words that, when preceding a bare number, indicate the number is part
+# of the title (not an episode number): "Part 1", "Vol 2", "Chapter 3"
+_TITLE_NUMBER_PREFIXES = frozenset({"part", "vol", "volume", "chapter", "movie"})
+
 
 def _result_to_token(result: object, text: str) -> Token:
     """Convert a parsy primitive result to a Token for the existing pipeline."""
@@ -980,6 +984,18 @@ def _find_recognizer_in_text(
         for recognizer in recognizers:
             result = recognizer(text, pos)
             if result.status:
+                # End boundary: reject letter→letter continuation (mid-word).
+                # "Sp" in "Spring" is rejected (p→r, both letters), but
+                # "OVA2" before "E03" is allowed (2→E, digit→letter).
+                end = result.index
+                if (
+                    end < len(text)
+                    and end > pos
+                    and text[end - 1].isalpha()
+                    and text[end].isascii()
+                    and text[end].isalpha()
+                ):
+                    continue
                 return (
                     pos,
                     result.index,
@@ -1527,6 +1543,10 @@ def classify(tokens: list[Token]) -> list[Token]:
                 meta_start = None
                 for i, w in enumerate(words):
                     if is_metadata_word(w):
+                        # A bare number after Part/Vol/Chapter is a title
+                        # fragment, not metadata (e.g., "Part 1", "Vol 2")
+                        if i > 0 and words[i - 1].lower() in _TITLE_NUMBER_PREFIXES:
+                            continue
                         meta_start = i
                         break
                 if meta_start is not None and meta_start > 0:
@@ -1565,6 +1585,23 @@ def classify(tokens: list[Token]) -> list[Token]:
             if _find_recognizer_in_text(text, (bonus_jp, bonus_en)):
                 result.append(Token(kind=TokenKind.BONUS, text=text))
                 continue
+
+            # Short trailing DOT_TEXT after metadata = likely release group
+            # (scene convention: "Title.S01E01.1080p.BluRay.x265.group.mkv"
+            #  or movie: "Title.2022.1080p.BluRay.group.mkv")
+            if (
+                token.kind == TokenKind.DOT_TEXT
+                and 2 <= len(text) <= 8
+                and text.isalnum()
+                and any(r.kind in _METADATA_KINDS for r in result)
+            ):
+                remaining = tokens[i + 1 :]
+                if all(
+                    t.kind in (TokenKind.EXTENSION, TokenKind.PATH_SEP)
+                    for t in remaining
+                ):
+                    result.append(Token(kind=TokenKind.RELEASE_GROUP, text=text))
+                    continue
 
             # Keep as-is
             result.append(token)

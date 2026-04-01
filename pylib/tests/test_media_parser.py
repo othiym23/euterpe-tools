@@ -1507,6 +1507,24 @@ class TestQARegression:
         assert pm.special_tag == "OVA2"
         assert pm.episode_title == "Shiton Animal Chronicles"
 
+    def test_sp_in_spring_not_special(self):
+        """Sp inside 'Spring' should not match as special tag."""
+        pm = mp.parse_component("S03E04-Spring Prayer.mkv")
+        assert pm.is_special is False
+        assert pm.episode == 4
+        assert pm.episode_title == "Spring Prayer"
+
+    def test_part_number_not_episode(self):
+        """'Part 1' should be preserved as title, not consumed as episode."""
+        pm = mp.parse_component("S03SP01-Ascendance of a Bookworm   Part 1.mkv")
+        assert pm.episode_title == "Ascendance of a Bookworm Part 1"
+
+    def test_trailing_dot_segment_release_group(self):
+        """Short trailing dot-segment after metadata = release group."""
+        pm = mp.parse_component("Confess.Fletch.2022.BDRemux.1080p.pk.mkv")
+        assert pm.series_name == "Confess Fletch"
+        assert pm.release_group == "pk"
+
     def test_oad_in_road_not_special(self):
         """OAD inside 'Road' should not be matched as a special tag."""
         pm = mp.parse_component(
