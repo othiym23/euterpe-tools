@@ -1261,7 +1261,9 @@ def _process_group_batch(
     if info.tvdb_id is not None:
         id_map[(MetadataProvider.TVDB, info.tvdb_id)] = series_dir
 
-    # Prompt for release group — applied as batch override, not mutation
+    # Prompt for release group — applied only to files that lack one or
+    # that match the auto-detected default. Files with a different group
+    # (e.g., specials from a different release) keep their own.
     detected = next(
         (
             mf.source.parsed.release_group
@@ -1272,7 +1274,9 @@ def _process_group_batch(
     )
     group = prompt_value("Release group", detected)
     for mf in matched:
-        mf.release_group = group
+        existing = mf.source.parsed.release_group
+        if not existing or existing == detected:
+            mf.release_group = group
 
     # Detect batch-level traits (majority vote)
     dual_count = sum(1 for mf in matched if mf.source.parsed.is_dual_audio)
