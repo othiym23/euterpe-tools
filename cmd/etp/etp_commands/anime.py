@@ -1052,7 +1052,10 @@ def _match_files_to_season(
             if not sf_title_norm:
                 # Can't determine series name — include by default
                 title_matched.append(sf)
-            elif sf_title_norm in known_titles:
+            elif sf_title_norm in known_titles or any(
+                sf_title_norm.startswith(t) or t.startswith(sf_title_norm)
+                for t in known_titles
+            ):
                 title_matched.append(sf)
             else:
                 title_unmatched.append(sf)

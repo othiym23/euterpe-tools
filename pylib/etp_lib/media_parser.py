@@ -441,14 +441,21 @@ season_only: Parser = regex(r"[Ss](\d{1,2})(?!\d|[Ee])").map(
 )
 
 
-# Special: SP1, OVA, OAD, ONA
+# Special: SP1, OVA, OAD, ONA, Special
 def _parse_special(s: str) -> Special:
-    tag = _re_group(r"(SP|OVA|OAD|ONA)", s, flags=re.IGNORECASE).upper()
+    tag = _re_group(r"(SP|OVA|OAD|ONA|Special)", s, flags=re.IGNORECASE)
+    # Normalize "Special" → "SP" for consistency
+    if tag.lower() == "special":
+        tag = "SP"
+    else:
+        tag = tag.upper()
     m = _RE_TRAILING_DIGITS.search(s)
     return Special(tag=tag, number=int(m.group(1)) if m else None)
 
 
-special: Parser = regex(r"(SP|OVA|OAD|ONA)(\d*)", re.IGNORECASE).map(_parse_special)
+special: Parser = regex(r"(Special|SP|OVA|OAD|ONA)(\d*)", re.IGNORECASE).map(
+    _parse_special
+)
 
 # Season + special: S01OVA, S02SP1
 _RE_SEASON_SPECIAL = re.compile(
