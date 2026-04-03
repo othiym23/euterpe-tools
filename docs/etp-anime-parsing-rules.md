@@ -130,34 +130,35 @@ Context (dual_audio before language — "DUAL" must match as dual-audio):
 
 Each recognizer returns a frozen dataclass on success:
 
-| Result type      | Fields                                      | TokenKind   |
-| ---------------- | ------------------------------------------- | ----------- |
-| `Resolution`     | `value: str`                                | RESOLUTION  |
-| `VideoCodec`     | `value: str`                                | VIDEO_CODEC |
-| `AudioCodec`     | `value: str`                                | AUDIO_CODEC |
-| `Source`         | `value: str`, `source_type: str`            | SOURCE      |
-| `Remux`          | (none)                                      | REMUX       |
-| `EpisodeSE`      | `season`, `episode`, `version?`             | EPISODE     |
-| `EpisodeMultiSE` | `season`, `episodes: list[int]`             | EPISODE     |
-| `EpisodeBare`    | `episode`, `version?`, `is_decimal_special` | EPISODE     |
-| `EpisodeJP`      | `episode`                                   | EPISODE     |
-| `SeasonJP`       | `season`                                    | SEASON      |
-| `SeasonWord`     | `season`                                    | SEASON      |
-| `SeasonOnly`     | `season`                                    | SEASON      |
-| `SeasonSpecial`  | `season`, `tag`, `number?`                  | SPECIAL     |
-| `Special`        | `tag`, `number?`                            | SPECIAL     |
-| `BatchRange`     | `start`, `end`                              | BATCH_RANGE |
-| `Version`        | `number`                                    | VERSION     |
-| `Year`           | `value`                                     | YEAR        |
-| `CRC32`          | `value`                                     | CRC32       |
-| `Language`       | `value`                                     | LANGUAGE    |
-| `BonusKeyword`   | `bonus_type`, `raw`                         | BONUS       |
-| `DualAudio`      | (none)                                      | DUAL_AUDIO  |
-| `Edition`        | `value`                                     | EDITION     |
-| `Uncensored`     | (none)                                      | UNCENSORED  |
-| `BitDepth`       | `value`                                     | UNKNOWN     |
-| `HDRInfo`        | `value`                                     | UNKNOWN     |
-| `Repack`         | (none)                                      | UNKNOWN     |
+| Result type      | Fields                                      | TokenKind     |
+| ---------------- | ------------------------------------------- | ------------- |
+| `Resolution`     | `value: str`                                | RESOLUTION    |
+| `VideoCodec`     | `value: str`                                | VIDEO_CODEC   |
+| `AudioCodec`     | `value: str`                                | AUDIO_CODEC   |
+| `Source`         | `value: str`, `source_type: str`            | SOURCE        |
+| `Remux`          | (none)                                      | REMUX         |
+| `EpisodeSE`      | `season`, `episode`, `version?`             | EPISODE       |
+| `EpisodeMultiSE` | `season`, `episodes: list[int]`             | EPISODE       |
+| `EpisodeBare`    | `episode`, `version?`, `is_decimal_special` | EPISODE       |
+| `EpisodeJP`      | `episode`                                   | EPISODE       |
+| `SeasonJP`       | `season`                                    | SEASON        |
+| `SeasonWord`     | `season`                                    | SEASON        |
+| `SeasonOnly`     | `season`                                    | SEASON        |
+| `SeasonSpecial`  | `season`, `tag`, `number?`                  | SPECIAL       |
+| `Special`        | `tag`, `number?`                            | SPECIAL       |
+| `SubtitleInfo`   | `value: str`                                | SUBTITLE_INFO |
+| `BatchRange`     | `start`, `end`                              | BATCH_RANGE   |
+| `Version`        | `number`                                    | VERSION       |
+| `Year`           | `value`                                     | YEAR          |
+| `CRC32`          | `value`                                     | CRC32         |
+| `Language`       | `value`                                     | LANGUAGE      |
+| `BonusKeyword`   | `bonus_type`, `raw`                         | BONUS         |
+| `DualAudio`      | (none)                                      | DUAL_AUDIO    |
+| `Edition`        | `value`                                     | EDITION       |
+| `Uncensored`     | (none)                                      | UNCENSORED    |
+| `BitDepth`       | `value`                                     | UNKNOWN       |
+| `HDRInfo`        | `value`                                     | UNKNOWN       |
+| `Repack`         | (none)                                      | UNKNOWN       |
 
 The `_TYPE_TO_KIND` mapping converts result types to `TokenKind` values. Types
 mapped to `UNKNOWN` are still recognized as metadata (they appear in

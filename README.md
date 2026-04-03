@@ -64,11 +64,17 @@ etp-find <pattern> [-R <dir>]           # regex search with tree/CSV output
 etp-meta scan [-R <dir>] [--force]      # read audio metadata into DB
 etp-meta read <file>                    # dump file metadata as JSON
 etp-meta cue <file> [--audio-file ...]  # CUE sheet + disc ID display
-etp-query --db <path> stats             # collection statistics
-etp-query --db <path> find --tag genre --value Jazz
+etp-init [--force]                      # create default config file
+etp-query --db <path> files [dir]       # list files in a directory
+etp-query --db <path> tags <file>       # show metadata tags for a file
+etp-query --db <path> find --tag T --value V  # find files by tag
+etp-query --db <path> stats [--format]  # collection statistics
 etp-query --db <path> size [directory]  # directory size (replaces du)
+etp-query --db <path> sql <WHERE>       # custom SQL WHERE clause
 etp-cas store <file>                    # BLAKE3 hash + store in CAS
+etp-cas get <hash> [-o PATH]            # retrieve a blob by hash
 etp-cas gc --db <path>                  # remove unreferenced blobs
+etp-cas list                            # list all blob hashes
 ```
 
 ## Repository layout

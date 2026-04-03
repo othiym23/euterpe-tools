@@ -9,3 +9,5 @@ __pycache__/
 .coverage
 parser-problems.jsonl
 parser-problems.state
+test-data/
+pylib/tests/fixtures/

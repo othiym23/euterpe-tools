@@ -3,6 +3,8 @@
 - **Status**: Accepted
 - **Date**: 2026-03-28
 - **Supersedes**: Original SP2.2 plan (TagLib C++ FFI)
+- **Extended by**:
+  [2026-04-02-02 Video Metadata Support](2026-04-02-02-video-metadata-support.md)
 
 ## Context
 

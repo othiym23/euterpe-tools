@@ -55,6 +55,14 @@ test:
     cargo nextest run --workspace
     uv run pytest pylib/tests/ -q
 
+# Remove build artifacts, caches, and generated fixtures
+clean:
+    cargo clean
+    rm -rf pylib/tests/fixtures/
+    rm -rf test-data/
+    find . -type d -name __pycache__ -not -path './.venv/*' -exec rm -rf {} +
+    rm -rf .pytest_cache .ruff_cache .coverage
+
 nas_home := "/Volumes/home"
 nas_data := "/Volumes/data"
 nas_host := "euterpe.local"

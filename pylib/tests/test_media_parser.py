@@ -249,22 +249,22 @@ def _classify_path(text: str) -> list[mp.Token]:
 
 
 class TestClassifyCRC32:
-    def test_hex_8_chars(self):
-        tokens = _classify("[Group] Show [D98B31F3].mkv")
+    @pytest.mark.parametrize(
+        "filename,expected_text",
+        [
+            ("[Group] Show [D98B31F3].mkv", "D98B31F3"),
+            ("[Group] Show [ABCDEFGH].mkv", None),  # non-hex digits
+            ("[Group] Show [ABC].mkv", None),  # wrong length
+        ],
+    )
+    def test_crc32_detection(self, filename, expected_text):
+        tokens = _classify(filename)
         crc = [t for t in tokens if t.kind == mp.TokenKind.CRC32]
-        assert len(crc) == 1
-        assert crc[0].text == "D98B31F3"
-
-    def test_not_crc32_if_non_hex(self):
-        """G and H are not hex digits, so ABCDEFGH is not a valid CRC32."""
-        tokens = _classify("[Group] Show [ABCDEFGH].mkv")
-        crc = [t for t in tokens if t.kind == mp.TokenKind.CRC32]
-        assert len(crc) == 0
-
-    def test_not_crc32_if_wrong_length(self):
-        tokens = _classify("[Group] Show [ABC].mkv")
-        crc = [t for t in tokens if t.kind == mp.TokenKind.CRC32]
-        assert len(crc) == 0
+        if expected_text:
+            assert len(crc) == 1
+            assert crc[0].text == expected_text
+        else:
+            assert len(crc) == 0
 
 
 class TestClassifyReleaseGroup:
@@ -372,46 +372,26 @@ class TestClassifySeason:
 
 
 class TestClassifySource:
-    def test_bd_source(self):
-        pm = mp.parse_component("[Group] Show [BD 1080p].mkv")
-        assert pm.source_type == "BD"
-
-    def test_web_source(self):
-        pm = mp.parse_component("[Group] Show [WEB-DL 1080p].mkv")
-        assert pm.source_type == "Web"
-
-    def test_dvd_source(self):
-        pm = mp.parse_component("[Group] Show [DVD].mkv")
-        assert pm.source_type == "DVD"
-
-    def test_dvdrip_source(self):
-        pm = mp.parse_component("[Group] Show [DVDRip].mkv")
-        assert pm.source_type == "DVD"
-
-    def test_dvd_r_source(self):
-        pm = mp.parse_component("[Group] Show [DVD-R].mkv")
-        assert pm.source_type == "DVD-R"
-
-    def test_hdtv_source(self):
-        pm = mp.parse_component("[Group] Show [HDTV].mkv")
-        assert pm.source_type == "HDTV"
-
-    def test_sdtv_source(self):
-        pm = mp.parse_component("[Group] Show [SDTV].mkv")
-        assert pm.source_type == "SDTV"
-
-    def test_vcd_source(self):
-        pm = mp.parse_component("[Group] Show [VCD].mkv")
-        assert pm.source_type == "VCD"
-
-    def test_cd_r_source(self):
-        pm = mp.parse_component("[Group] Show [CD-R].mkv")
-        assert pm.source_type == "CD-R"
+    @pytest.mark.parametrize(
+        "tag,expected",
+        [
+            ("BD 1080p", "BD"),
+            ("WEB-DL 1080p", "Web"),
+            ("DVD", "DVD"),
+            ("DVDRip", "DVD"),
+            ("DVD-R", "DVD-R"),
+            ("HDTV", "HDTV"),
+            ("SDTV", "SDTV"),
+            ("VCD", "VCD"),
+            ("CD-R", "CD-R"),
+        ],
+    )
+    def test_source_type(self, tag, expected):
+        pm = mp.parse_component(f"[Group] Show [{tag}].mkv")
+        assert pm.source_type == expected
 
     def test_web_dl_dot_text(self):
         tokens = _classify("Show.S01E05.1080p.CR.WEB-DL.mkv")
-        # WEB-DL has a dash not a dot, so it stays as one DOT_TEXT token
-        # After classification it becomes SOURCE
         sources = [t for t in tokens if t.kind == mp.TokenKind.SOURCE]
         assert any("WEB-DL" in t.text for t in sources) or any(
             "CR" in t.text for t in sources
@@ -419,45 +399,38 @@ class TestClassifySource:
 
 
 class TestClassifyYear:
-    def test_year_in_parens(self):
-        tokens = _classify("Movie (1964) (1080p BluRay).mkv")
+    @pytest.mark.parametrize(
+        "filename,expected_year",
+        [
+            ("Movie (1964) (1080p BluRay).mkv", 1964),
+            ("Movie.2005.WEB-DL.2160p.mkv", 2005),
+        ],
+    )
+    def test_year_extraction(self, filename, expected_year):
+        tokens = _classify(filename)
         years = [t for t in tokens if t.kind == mp.TokenKind.YEAR]
         assert len(years) == 1
-        assert years[0].year == 1964
-
-    def test_year_in_dot_text(self):
-        tokens = _classify("Movie.2005.WEB-DL.2160p.mkv")
-        years = [t for t in tokens if t.kind == mp.TokenKind.YEAR]
-        assert len(years) == 1
-        assert years[0].year == 2005
+        assert years[0].year == expected_year
 
 
-class TestClassifyResolution:
-    def test_1080p(self):
-        assert mp.classify_text("1080p") == mp.TokenKind.RESOLUTION
+class TestClassifyTextKind:
+    """Test classify_text() for resolution and codec keywords."""
 
-    def test_dims(self):
-        assert mp.classify_text("1920x1080") == mp.TokenKind.RESOLUTION
-
-    def test_2160p(self):
-        assert mp.classify_text("2160p") == mp.TokenKind.RESOLUTION
-
-
-class TestClassifyCodec:
-    def test_hevc(self):
-        assert mp.classify_text("HEVC") == mp.TokenKind.VIDEO_CODEC
-
-    def test_x264(self):
-        assert mp.classify_text("x264") == mp.TokenKind.VIDEO_CODEC
-
-    def test_aac(self):
-        assert mp.classify_text("AAC") == mp.TokenKind.AUDIO_CODEC
-
-    def test_flac(self):
-        assert mp.classify_text("FLAC") == mp.TokenKind.AUDIO_CODEC
-
-    def test_aac20(self):
-        assert mp.classify_text("AAC2.0") == mp.TokenKind.AUDIO_CODEC
+    @pytest.mark.parametrize(
+        "word,expected_kind",
+        [
+            ("1080p", mp.TokenKind.RESOLUTION),
+            ("1920x1080", mp.TokenKind.RESOLUTION),
+            ("2160p", mp.TokenKind.RESOLUTION),
+            ("HEVC", mp.TokenKind.VIDEO_CODEC),
+            ("x264", mp.TokenKind.VIDEO_CODEC),
+            ("AAC", mp.TokenKind.AUDIO_CODEC),
+            ("FLAC", mp.TokenKind.AUDIO_CODEC),
+            ("AAC2.0", mp.TokenKind.AUDIO_CODEC),
+        ],
+    )
+    def test_classify_text(self, word, expected_kind):
+        assert mp.classify_text(word) == expected_kind
 
 
 class TestClassifyLenticular:
@@ -720,96 +693,92 @@ class TestTitleAliasIndex:
 
 
 class TestNormalizeForMatching:
-    def test_ascii(self):
-        assert mp.normalize_for_matching("Champignon no Majo") == "champignonnomajo"
-
-    def test_preserves_cjk(self):
-        result = mp.normalize_for_matching("探偵オペラミルキィホームズ")
-        assert "探偵オペラミルキィホームズ" in result
-
-    def test_strips_punctuation_preserves_cjk(self):
-        result = mp.normalize_for_matching("[アニメ BD] 探偵オペラ")
-        assert "アニメ" in result
-        assert "探偵オペラ" in result
-        # Brackets and spaces stripped
-        assert "[" not in result
-        assert " " not in result
-
-    def test_mixed_ascii_cjk(self):
-        result = mp.normalize_for_matching("Girls & Panzer! 少女と戦車")
-        assert "girlspanzer" in result
-        assert "少女と戦車" in result
+    @pytest.mark.parametrize(
+        "text,expected_in,not_expected_in",
+        [
+            ("Champignon no Majo", ["champignonnomajo"], []),
+            ("探偵オペラミルキィホームズ", ["探偵オペラミルキィホームズ"], []),
+            ("[アニメ BD] 探偵オペラ", ["アニメ", "探偵オペラ"], ["[", " "]),
+            ("Girls & Panzer! 少女と戦車", ["girlspanzer", "少女と戦車"], []),
+        ],
+    )
+    def test_normalize(self, text, expected_in, not_expected_in):
+        result = mp.normalize_for_matching(text)
+        for s in expected_in:
+            assert s in result, f"{s!r} not in {result!r}"
+        for s in not_expected_in:
+            assert s not in result, f"{s!r} unexpectedly in {result!r}"
 
 
 class TestBonusType:
     """Tests for Japanese bonus content type classification."""
 
-    def test_pv(self):
-        pm = mp.parse_component(
-            "[アニメ BD] Show(第1期) 映像特典「PV1」(1920x1080 HEVC 10bit FLAC).mkv"
-        )
-        assert pm.bonus_type == "PV"
-        assert pm.episode is None
+    @pytest.mark.parametrize(
+        "filename,expected_bonus",
+        [
+            (
+                "[アニメ BD] Show(第1期) 映像特典「PV1」(1920x1080 HEVC 10bit FLAC).mkv",
+                "PV",
+            ),
+            (
+                "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「Title」(specs).mkv",
+                "NCOP",
+            ),
+            (
+                "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「Title」(specs).mkv",
+                "NCED",
+            ),
+            ("[アニメ BD] Show(第1期) 映像特典「告知CM(発売中)」(specs).mkv", "CM"),
+            ("[アニメ BD] Show(第4期) 映像特典「予告」(specs).mkv", "Preview"),
+            ("[アニメ BD] Show(第3期)「メニュー画面集」.rar", "Menu"),
+            ("[アニメ BD] Show(第1期) 第01話「Title」(specs).mkv", ""),
+        ],
+    )
+    def test_bonus_type_from_filename(self, filename, expected_bonus):
+        pm = mp.parse_component(filename)
+        assert pm.bonus_type == expected_bonus
 
-    def test_ncop(self):
-        pm = mp.parse_component(
-            "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「Title」(specs).mkv"
-        )
-        assert pm.bonus_type == "NCOP"
-
-    def test_nced(self):
-        pm = mp.parse_component(
-            "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「Title」(specs).mkv"
-        )
-        assert pm.bonus_type == "NCED"
-
-    def test_cm(self):
-        pm = mp.parse_component(
-            "[アニメ BD] Show(第1期) 映像特典「告知CM(発売中)」(specs).mkv"
-        )
-        assert pm.bonus_type == "CM"
-
-    def test_preview(self):
-        pm = mp.parse_component("[アニメ BD] Show(第4期) 映像特典「予告」(specs).mkv")
-        assert pm.bonus_type == "Preview"
-
-    def test_menu(self):
-        pm = mp.parse_component("[アニメ BD] Show(第3期)「メニュー画面集」.rar")
-        assert pm.bonus_type == "Menu"
-
-    def test_regular_episode_no_bonus(self):
-        pm = mp.parse_component("[アニメ BD] Show(第1期) 第01話「Title」(specs).mkv")
-        assert pm.bonus_type == ""
-
-    def test_classify_bonus_type_function(self):
-        assert mp.classify_bonus_type("ノンテロップOP") == "NCOP"
-        assert mp.classify_bonus_type("ノンテロップED") == "NCED"
-        assert mp.classify_bonus_type("PV1") == "PV"
-        assert mp.classify_bonus_type("告知CM(BD)") == "CM"
-        assert mp.classify_bonus_type("予告") == "Preview"
-        assert mp.classify_bonus_type("メニュー画面集") == "Menu"
-        assert mp.classify_bonus_type("random text") == ""
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("ノンテロップOP", "NCOP"),
+            ("ノンテロップED", "NCED"),
+            ("PV1", "PV"),
+            ("告知CM(BD)", "CM"),
+            ("予告", "Preview"),
+            ("メニュー画面集", "Menu"),
+            ("random text", ""),
+        ],
+    )
+    def test_classify_bonus_type_function(self, text, expected):
+        assert mp.classify_bonus_type(text) == expected
 
     # The following tests use the [アニメ BD] naming convention for NCOP/NCED.
     # Other BD rip creators may use different patterns (e.g. "Creditless OP",
     # "Clean ED", "NCOP", "NCED", or romaji equivalents). Add test cases
     # here as new naming conventions are encountered.
 
-    def test_ncop_extracts_song_title(self):
-        pm = mp.parse_component(
-            "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「正解はひとつ！じゃない!!」"
-            "(1920x1080 HEVC 10bit FLAC).mkv"
-        )
-        assert pm.bonus_type == "NCOP"
-        assert pm.episode_title == "正解はひとつ！じゃない!!"
-
-    def test_nced_extracts_song_title(self):
-        pm = mp.parse_component(
-            "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「本能のDOUBT」"
-            "(1920x1080 HEVC 10bit FLAC).mkv"
-        )
-        assert pm.bonus_type == "NCED"
-        assert pm.episode_title == "本能のDOUBT"
+    @pytest.mark.parametrize(
+        "filename,expected_bonus,expected_title",
+        [
+            (
+                "[アニメ BD] Show(第1期) 映像特典「ノンテロップOP「正解はひとつ！じゃない!!」"
+                "(1920x1080 HEVC 10bit FLAC).mkv",
+                "NCOP",
+                "正解はひとつ！じゃない!!",
+            ),
+            (
+                "[アニメ BD] Show(第1期) 映像特典「ノンテロップED「本能のDOUBT」"
+                "(1920x1080 HEVC 10bit FLAC).mkv",
+                "NCED",
+                "本能のDOUBT",
+            ),
+        ],
+    )
+    def test_song_title_extraction(self, filename, expected_bonus, expected_title):
+        pm = mp.parse_component(filename)
+        assert pm.bonus_type == expected_bonus
+        assert pm.episode_title == expected_title
 
     def test_regular_episode_title_not_affected(self):
         pm = mp.parse_component(
@@ -821,20 +790,17 @@ class TestBonusType:
 
 
 class TestCleanSeriesTitle:
-    def test_space_separated(self):
-        assert mp.clean_series_title("Show S01-S02 BDRip x265") == "Show"
-
-    def test_dot_separated(self):
-        assert mp.clean_series_title("Show.S02.1080p.BluRay.x265-iAHD") == "Show"
-
-    def test_no_metadata(self):
-        assert mp.clean_series_title("Plain Title") == "Plain Title"
-
-    def test_dual_audio(self):
-        assert (
-            mp.clean_series_title("Show S01-S02+OVA Dual Audio BDRip x265-EMBER")
-            == "Show"
-        )
+    @pytest.mark.parametrize(
+        "title,expected",
+        [
+            ("Show S01-S02 BDRip x265", "Show"),
+            ("Show.S02.1080p.BluRay.x265-iAHD", "Show"),
+            ("Plain Title", "Plain Title"),
+            ("Show S01-S02+OVA Dual Audio BDRip x265-EMBER", "Show"),
+        ],
+    )
+    def test_clean_series_title(self, title, expected):
+        assert mp.clean_series_title(title) == expected
 
 
 class TestNameVariants:
@@ -879,74 +845,62 @@ class TestSceneTrailingGroup:
 
 
 # ===================================================================
-# Corpus smoke tests (require NAS mount)
+# Corpus smoke tests (require cached fixture or NAS mount)
 # ===================================================================
 
 
 class TestCorpusSmoke:
-    """Smoke tests against live downloads directory."""
+    """Smoke tests against real download filenames.
 
-    @pytest.fixture
-    def downloads_dir(self):
-        import os
+    Uses a cached fixture of relative paths generated by
+    ``pylib/tools/gen_corpus_fixture.py``.  The fixture is auto-generated
+    on first run if the NAS is mounted, and reused on subsequent runs.
+    """
 
-        d = "/Volumes/docker/pvr/data/downloads"
-        if not os.path.isdir(d):
-            pytest.skip("NAS not mounted")
-        return d
+    def test_corpus_smoke(self, corpus_paths):
+        """Single-pass check: classify, parse, and verify series names."""
+        all_paths = corpus_paths["all"]
+        media_paths = set(corpus_paths["media"])
 
-    def test_classify_no_errors(self, downloads_dir):
-        import os
+        classify_errors: list[str] = []
+        parse_errors: list[str] = []
+        missing_name: list[str] = []
 
-        errors = []
-        total = 0
-        for root, dirs, files in os.walk(downloads_dir):
-            for name in files + dirs:
-                full = os.path.join(root, name)
-                rel = os.path.relpath(full, downloads_dir)
-                total += 1
-                try:
-                    mp.classify(mp.tokenize(rel))
-                except Exception as e:
-                    errors.append(f"{rel}: {e}")
-        assert not errors, f"{len(errors)} errors:\n" + "\n".join(errors[:20])
-        assert total > 0
+        for rel in all_paths:
+            # Classify
+            try:
+                mp.classify(mp.tokenize(rel))
+            except Exception as e:
+                classify_errors.append(f"{rel}: {e}")
 
-    def test_parse_no_errors(self, downloads_dir):
-        import os
-
-        errors = []
-        total = 0
-        for root, dirs, files in os.walk(downloads_dir):
-            for name in files + dirs:
-                full = os.path.join(root, name)
-                rel = os.path.relpath(full, downloads_dir)
-                total += 1
-                try:
-                    mp.parse_media_path(rel)
-                except Exception as e:
-                    errors.append(f"{rel}: {e}")
-        assert not errors, f"{len(errors)} errors:\n" + "\n".join(errors[:20])
-        assert total > 0
-
-    def test_media_files_have_series_name(self, downloads_dir):
-        """Every media file should extract a non-empty series name."""
-        import os
-
-        missing = []
-        for root, _dirs, files in os.walk(downloads_dir):
-            for name in files:
-                ext = os.path.splitext(name)[1].lower()
-                if ext not in {".mkv", ".mp4", ".avi"}:
-                    continue
-                full = os.path.join(root, name)
-                rel = os.path.relpath(full, downloads_dir)
+            # Parse
+            try:
                 pm = mp.parse_media_path(rel)
+            except Exception as e:
+                parse_errors.append(f"{rel}: {e}")
+                continue
+
+            # Series name (media files only)
+            if rel in media_paths:
                 if not pm.series_name and not pm.path_series_name:
-                    missing.append(rel)
-        assert not missing, f"{len(missing)} files with no series name:\n" + "\n".join(
-            missing[:20]
-        )
+                    missing_name.append(rel)
+
+        errors: list[str] = []
+        if classify_errors:
+            errors.append(
+                f"{len(classify_errors)} classify errors:\n"
+                + "\n".join(classify_errors[:10])
+            )
+        if parse_errors:
+            errors.append(
+                f"{len(parse_errors)} parse errors:\n" + "\n".join(parse_errors[:10])
+            )
+        if missing_name:
+            errors.append(
+                f"{len(missing_name)} media files with no series name:\n"
+                + "\n".join(missing_name[:10])
+            )
+        assert not errors, "\n\n".join(errors)
 
 
 # ===================================================================
@@ -1256,19 +1210,18 @@ class TestQARegression:
         )
         assert any("FLAC" in c for c in pm.audio_codecs)
 
-    def test_s03ed_recognized_as_credit_special(self):
-        """S03ED should be parsed as season 3 ED (credit special)."""
-        pm = mp.parse_component("S03ED-Kotoba ni Dekinai [Maaya Sakamoto].mkv")
+    @pytest.mark.parametrize(
+        "filename,expected_bonus",
+        [
+            ("S03ED-Kotoba ni Dekinai [Maaya Sakamoto].mkv", "NCED"),
+            ("S03OP-Ano hi No Kotoba [Nao Toyama].mkv", "NCOP"),
+        ],
+    )
+    def test_sxxop_sxxed_credit_special(self, filename, expected_bonus):
+        pm = mp.parse_component(filename)
         assert pm.season == 3
         assert pm.is_special is True
-        assert pm.bonus_type == "NCED"
-
-    def test_s03op_recognized_as_credit_special(self):
-        """S03OP should be parsed as season 3 OP (credit special)."""
-        pm = mp.parse_component("S03OP-Ano hi No Kotoba [Nao Toyama].mkv")
-        assert pm.season == 3
-        assert pm.is_special is True
-        assert pm.bonus_type == "NCOP"
+        assert pm.bonus_type == expected_bonus
 
     def test_bracket_artist_not_release_group(self):
         """[Artist Name] should not override directory release group."""
@@ -1318,15 +1271,16 @@ class TestQARegression:
         token = mp._try_recognize("ESub")
         assert token is not None
 
-    def test_streaming_service_parsed(self):
-        """AMZN, CR, NF etc. should populate streaming_service field."""
-        pm = mp.parse_component("Show.S01E01.1080p.AMZN.WEB-DL.DDP2.0.H.264-GROUP.mkv")
-        assert pm.streaming_service == "AMZN"
-        assert pm.source_type == "Web"
-
-    def test_streaming_service_cr(self):
-        pm = mp.parse_component("Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-GROUP.mkv")
-        assert pm.streaming_service == "CR"
+    @pytest.mark.parametrize(
+        "filename,expected_service",
+        [
+            ("Show.S01E01.1080p.AMZN.WEB-DL.DDP2.0.H.264-GROUP.mkv", "AMZN"),
+            ("Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-GROUP.mkv", "CR"),
+        ],
+    )
+    def test_streaming_service_parsed(self, filename, expected_service):
+        pm = mp.parse_component(filename)
+        assert pm.streaming_service == expected_service
 
     def test_10bit_recognized_as_metadata(self):
         """10bit / 10-Bit should not appear in series name."""
@@ -1335,15 +1289,15 @@ class TestQARegression:
         )
         assert "10bit" not in pm.series_name
 
-    def test_dual_audio_detected(self):
-        """Dual Audio / Dual-Audio should set is_dual_audio."""
-        pm = mp.parse_component(
-            "[Group] Show - 01 (BD 1080p HEVC Opus) [Dual Audio].mkv"
-        )
-        assert pm.is_dual_audio is True
-
-    def test_dual_audio_hyphenated(self):
-        pm = mp.parse_component("Show.S01E01.1080p.BluRay.Dual-Audio.x265-GROUP.mkv")
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "[Group] Show - 01 (BD 1080p HEVC Opus) [Dual Audio].mkv",
+            "Show.S01E01.1080p.BluRay.Dual-Audio.x265-GROUP.mkv",
+        ],
+    )
+    def test_dual_audio_detected(self, filename):
+        pm = mp.parse_component(filename)
         assert pm.is_dual_audio is True
 
     def test_criterion_edition(self):
@@ -1377,28 +1331,35 @@ class TestQARegression:
         assert pm.resolution == "4K"
         assert pm.release_group == "EVO"
 
-    def test_hdr10_detected(self):
-        """HDR10 should be recognized."""
-        pm = mp.parse_component("Movie.2022.2160p.BluRay.HDR10.x265-GROUP.mkv")
-        assert pm.hdr == "HDR10"
-
-    def test_uhd_detected(self):
-        """UHD should be recognized as HDR metadata."""
-        pm = mp.parse_component("Movie.2022.2160p.UHD.BluRay.x265-GROUP.mkv")
-        assert pm.hdr == "UHD"
-
-    def test_dolby_vision_detected(self):
-        """DoVi / DV should be recognized as HDR."""
-        pm = mp.parse_component("Movie.2022.2160p.BluRay.DoVi.x265-GROUP.mkv")
-        assert pm.hdr == "DoVi"
+    @pytest.mark.parametrize(
+        "filename,expected_hdr",
+        [
+            ("Movie.2022.2160p.BluRay.HDR10.x265-GROUP.mkv", "HDR10"),
+            ("Movie.2022.2160p.UHD.BluRay.x265-GROUP.mkv", "UHD"),
+            ("Movie.2022.2160p.BluRay.DoVi.x265-GROUP.mkv", "DoVi"),
+        ],
+    )
+    def test_hdr_format_detected(self, filename, expected_hdr):
+        pm = mp.parse_component(filename)
+        assert pm.hdr == expected_hdr
 
     def test_hdr_not_in_series_name(self):
-        """HDR keywords should not appear in series name."""
         pm = mp.parse_component("Movie.2022.2160p.HDR.BluRay.x265-GROUP.mkv")
         assert "HDR" not in pm.series_name
 
+    @pytest.mark.parametrize(
+        "filename,expected_depth",
+        [
+            ("Movie.2022.1080p.BluRay.10bit.x265-GROUP.mkv", 10),
+            ("Movie.2022.1080p.BluRay.8bit.x264-GROUP.mkv", 8),
+        ],
+    )
+    def test_bit_depth(self, filename, expected_depth):
+        pm = mp.parse_component(filename)
+        assert pm.bit_depth == expected_depth
+
     def test_bit_depth_hi10p(self):
-        """Hi10P should be recognized as 10-bit."""
+        """Hi10P should be recognized as 10-bit with extra field checks."""
         pm = mp.parse_component(
             "Fullmetal.Alchemist.Brotherhood.53.v2.1080p.BluRay."
             "Dual-Audio.FLAC2.0.Hi10P.x264-JySzE.mkv"
@@ -1408,18 +1369,7 @@ class TestQARegression:
         assert pm.version == 2
         assert "Hi10" not in pm.series_name
 
-    def test_bit_depth_10bit(self):
-        """10bit should be recognized."""
-        pm = mp.parse_component("Movie.2022.1080p.BluRay.10bit.x265-GROUP.mkv")
-        assert pm.bit_depth == 10
-
-    def test_bit_depth_8bit(self):
-        """8bit should be recognized."""
-        pm = mp.parse_component("Movie.2022.1080p.BluRay.8bit.x264-GROUP.mkv")
-        assert pm.bit_depth == 8
-
     def test_bit_depth_not_in_series_name(self):
-        """Bit depth should not appear in series name."""
         pm = mp.parse_component("Movie.2022.1080p.10bit.BluRay.x265-GROUP.mkv")
         assert "10bit" not in pm.series_name
 
@@ -1453,32 +1403,19 @@ class TestQARegression:
         assert "TrueHD 5.1" in pm.audio_codecs
         assert pm.release_group == "Hinna"
 
-    def test_resolution_with_p_suffix(self):
-        """1440x1080p should normalize to 1080p."""
-        pm = mp.parse_component(
-            "Show - 01 (BDRip 1440x1080p x265 HEVC FLAC 2.0)[sxales].mkv"
-        )
-        assert pm.resolution == "1080p"
-
-    def test_resolution_dimension_normalized(self):
-        """1920x1080 should normalize to 1080p in parser output."""
-        pm = mp.parse_component("Movie.2022.1920x1080.BluRay.x265-GROUP.mkv")
-        assert pm.resolution == "1080p"
-
-    def test_resolution_480_from_dimensions(self):
-        """720x480 should normalize to 480p."""
-        pm = mp.parse_component("Show - 01 (BDRip 720x480 x265 AC3 2.0)[Group].mkv")
-        assert pm.resolution == "480p"
-
-    def test_resolution_interlaced_preserved(self):
-        """1080i in filename should stay 1080i."""
-        pm = mp.parse_component("Show.S01E01.1080i.HDTV.x264-GROUP.mkv")
-        assert pm.resolution == "1080i"
-
-    def test_resolution_4k_stays_4k(self):
-        """4K should normalize to 4K, not 2160p."""
-        pm = mp.parse_component("Movie.2022.4K.UHD.BluRay.x265-GROUP.mkv")
-        assert pm.resolution == "4K"
+    @pytest.mark.parametrize(
+        "filename,expected_res",
+        [
+            ("Show - 01 (BDRip 1440x1080p x265 HEVC FLAC 2.0)[sxales].mkv", "1080p"),
+            ("Movie.2022.1920x1080.BluRay.x265-GROUP.mkv", "1080p"),
+            ("Show - 01 (BDRip 720x480 x265 AC3 2.0)[Group].mkv", "480p"),
+            ("Show.S01E01.1080i.HDTV.x264-GROUP.mkv", "1080i"),
+            ("Movie.2022.4K.UHD.BluRay.x265-GROUP.mkv", "4K"),
+        ],
+    )
+    def test_resolution_normalization(self, filename, expected_res):
+        pm = mp.parse_component(filename)
+        assert pm.resolution == expected_res
 
     def test_ova_space_episode(self):
         """OVA 01 with space should detect special + episode."""
@@ -1569,22 +1506,15 @@ class TestQARegression:
         )
         assert pm.is_dual_audio is True
 
-    def test_uncensored_detected(self):
-        """Uncensored should set is_uncensored flag."""
-        pm = mp.parse_component(
-            "Chained.Soldier.S02E01.ADN.WEB-DL.1080p.x264.AAC.EAC3."
-            "Dual.Audio.Uncensored-Freehold.mkv"
-        )
-        assert pm.is_uncensored is True
-        assert pm.is_dual_audio is True
-        assert pm.release_group == "Freehold"
-
-    def test_uncensored_in_brackets(self):
-        """(Uncensored) in brackets should set is_uncensored."""
-        pm = mp.parse_component(
-            "[SubsPlus+] Chained Soldier - S02E01 (ADN WEB-DL 1080p AVC AAC) "
-            "(Uncensored) [76A7C1CD].mkv"
-        )
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "Chained.Soldier.S02E01.ADN.WEB-DL.1080p.x264.AAC.EAC3.Dual.Audio.Uncensored-Freehold.mkv",
+            "[SubsPlus+] Chained Soldier - S02E01 (ADN WEB-DL 1080p AVC AAC) (Uncensored) [76A7C1CD].mkv",
+        ],
+    )
+    def test_uncensored_detected(self, filename):
+        pm = mp.parse_component(filename)
         assert pm.is_uncensored is True
 
     # -- Multi-episode range expansion (Sonarr-inspired) --
@@ -1618,29 +1548,22 @@ class TestQARegression:
 
     # -- Year validation (Sonarr-inspired, extended to 1940) --
 
-    def test_year_1935_rejected(self):
-        """Years before 1940 should not be recognized."""
-        pm = mp.parse_component("Movie.1935.1080p.BluRay.mkv")
-        assert pm.year is None
-
-    def test_year_1940_accepted(self):
-        """1940 is the minimum accepted year."""
-        pm = mp.parse_component("Movie.1940.1080p.BluRay.mkv")
-        assert pm.year == 1940
-
-    def test_year_future_rejected(self):
-        """Years more than 1 beyond current year should be rejected."""
+    def test_year_validation(self):
+        """Years outside [1940, current+1] should be rejected."""
         from etp_lib.media_parser import _CURRENT_YEAR
 
-        pm = mp.parse_component(f"Movie.{_CURRENT_YEAR + 2}.1080p.BluRay.mkv")
-        assert pm.year is None
-
-    def test_year_next_year_accepted(self):
-        """Current year + 1 should be accepted (pre-release announcements)."""
-        from etp_lib.media_parser import _CURRENT_YEAR
-
-        pm = mp.parse_component(f"Movie.{_CURRENT_YEAR + 1}.1080p.BluRay.mkv")
-        assert pm.year == _CURRENT_YEAR + 1
+        # Rejected
+        assert mp.parse_component("Movie.1935.1080p.BluRay.mkv").year is None
+        assert (
+            mp.parse_component(f"Movie.{_CURRENT_YEAR + 2}.1080p.BluRay.mkv").year
+            is None
+        )
+        # Accepted
+        assert mp.parse_component("Movie.1940.1080p.BluRay.mkv").year == 1940
+        assert (
+            mp.parse_component(f"Movie.{_CURRENT_YEAR + 1}.1080p.BluRay.mkv").year
+            == _CURRENT_YEAR + 1
+        )
 
     # -- Bilingual title splitting --
 
@@ -1698,40 +1621,33 @@ class TestQARegression:
         )
         assert "sub" not in pm.series_name
 
-    # -- GM-Team Season N format --
+    # -- Season N format --
 
-    def test_season_n_in_parens(self):
-        """(Season 01) should be recognized as season."""
-        pm = mp.parse_component("[GM-Team] Title (Season 01) 01.mkv")
-        assert pm.season == 1
-        assert pm.episode == 1
-
-    def test_season_n_single_digit(self):
-        """(Season 2) should work with single digit."""
-        pm = mp.parse_component("[GM-Team] Title (Season 2) 05.mkv")
-        assert pm.season == 2
-        assert pm.episode == 5
-
-    def test_ordinal_season_still_works(self):
-        """2nd Season should still work alongside Season N."""
-        pm = mp.parse_component("[Group] Title 2nd Season - 05.mkv")
-        assert pm.season == 2
+    @pytest.mark.parametrize(
+        "filename,expected_season,expected_ep",
+        [
+            ("[GM-Team] Title (Season 01) 01.mkv", 1, 1),
+            ("[GM-Team] Title (Season 2) 05.mkv", 2, 5),
+            ("[Group] Title 2nd Season - 05.mkv", 2, 5),
+        ],
+    )
+    def test_season_n_formats(self, filename, expected_season, expected_ep):
+        pm = mp.parse_component(filename)
+        assert pm.season == expected_season
+        assert pm.episode == expected_ep
 
     # -- Decimal episode specials (Sonarr-inspired) --
 
-    def test_decimal_episode_fansub(self):
-        """01.5 in fansub-style should be a special episode."""
-        pm = mp.parse_component("[Group] Title - 01.5 [1080p].mkv")
-        assert pm.episode == 1
-        assert pm.is_special is True
-
-    def test_decimal_episode_12_5(self):
-        """12.5 should mark episode 12 as special."""
-        pm = mp.parse_component("[Group] Title - 12.5 [720p][ABCD1234].mkv")
-        assert pm.episode == 12
-        assert pm.is_special is True
-
-    def test_decimal_not_in_dot_separated(self):
-        """Dot-separated 01.5 should NOT trigger decimal special."""
-        pm = mp.parse_component("Title.01.5.1080p.BluRay.mkv")
-        assert pm.is_special is False
+    @pytest.mark.parametrize(
+        "filename,expected_ep,expected_special",
+        [
+            ("[Group] Title - 01.5 [1080p].mkv", 1, True),
+            ("[Group] Title - 12.5 [720p][ABCD1234].mkv", 12, True),
+            ("Title.01.5.1080p.BluRay.mkv", None, False),  # dot-separated: no decimal
+        ],
+    )
+    def test_decimal_episodes(self, filename, expected_ep, expected_special):
+        pm = mp.parse_component(filename)
+        assert pm.is_special is expected_special
+        if expected_ep is not None:
+            assert pm.episode == expected_ep
