@@ -1866,6 +1866,7 @@ def _build_parsed_media(tokens: list[Token]) -> ParsedMedia:
                 pm.batch_range = (token.batch_start, token.batch_end or 0)
                 pm.path_is_batch = True
         elif token.kind == TokenKind.BONUS:
+            pm.is_special = True
             bt = classify_bonus_type(token.text)
             if bt and bt != "Bonus":
                 pm.bonus_type = bt

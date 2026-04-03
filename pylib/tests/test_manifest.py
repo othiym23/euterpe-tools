@@ -723,6 +723,191 @@ class TestNcopNcedManifestOutput:
         assert song_title in dest
 
 
+class TestNcopNcedWithEpisodeNumber:
+    """Regression: NCOP/NCED with episode numbers must not be filed as regular episodes."""
+
+    def test_ncop_with_episode_number_is_special(self, tmp_path, monkeypatch):
+        """NCOP 01v2 should be a special, not regular s1e01."""
+        sf = SourceFile(
+            path=tmp_path
+            / "[sam] Kusuriya no Hitorigoto - NCOP 01v2 [BD 1080p FLAC] [93B031B8].mkv",
+            parsed=ParsedMetadata(
+                episode=1,
+                bonus_type="NCOP",
+                is_special=True,
+                version=2,
+                hash_code="93B031B8",
+            ),
+        )
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=431162,
+            title_ja="薬屋のひとりごと",
+            title_en="The Apothecary Diaries",
+            year=2023,
+            episodes=[
+                Episode(1, EpisodeType.REGULAR, "Maomao", "", ""),
+                Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1"),
+                Episode(1, EpisodeType.CREDIT, "Ending 1", "", "C2"),
+            ],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "The Apothecary Diaries", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        dest = str(entries[0].dest_path)
+        # Must be a special, not a regular episode (s1e01)
+        assert "Specials" in dest
+        assert "Season 01" not in dest
+
+    def test_ncop_gets_tag_when_no_credits_available(self, tmp_path, monkeypatch):
+        """NCOP 01v2 with TVDB-only data (no credits) should get NCOP1 tag."""
+        sf = SourceFile(
+            path=tmp_path
+            / "[sam] Kusuriya no Hitorigoto - NCOP 01v2 [BD 1080p FLAC] [93B031B8].mkv",
+            parsed=ParsedMetadata(
+                episode=1,
+                bonus_type="NCOP",
+                is_special=True,
+                version=2,
+                hash_code="93B031B8",
+            ),
+        )
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        # TVDB-only: no credit episodes, only regulars and specials
+        info = AnimeInfo(
+            anidb_id=None,
+            tvdb_id=431162,
+            title_ja="薬屋のひとりごと",
+            title_en="The Apothecary Diaries",
+            year=2023,
+            episodes=[
+                Episode(1, EpisodeType.REGULAR, "Maomao", "", ""),
+            ],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "The Apothecary Diaries", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        dest = str(entries[0].dest_path)
+        assert "Specials" in dest
+        assert "NCOP1" in dest
+
+    def test_nced_with_episode_number_is_special(self, tmp_path, monkeypatch):
+        """NCED 02 should be a special, not regular s1e02."""
+        sf = SourceFile(
+            path=tmp_path
+            / "[sam] Kusuriya no Hitorigoto - NCED 02 [BD 1080p FLAC] [BE75EF1C].mkv",
+            parsed=ParsedMetadata(
+                episode=2, bonus_type="NCED", is_special=True, hash_code="BE75EF1C"
+            ),
+        )
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        info = AnimeInfo(
+            anidb_id=100,
+            tvdb_id=431162,
+            title_ja="薬屋のひとりごと",
+            title_en="The Apothecary Diaries",
+            year=2023,
+            episodes=[
+                Episode(1, EpisodeType.REGULAR, "Maomao", "", ""),
+                Episode(2, EpisodeType.REGULAR, "Chilly Apothecary", "", ""),
+                Episode(1, EpisodeType.CREDIT, "Opening 1", "", "C1"),
+                Episode(2, EpisodeType.CREDIT, "Ending 1", "", "C2"),
+                Episode(3, EpisodeType.CREDIT, "Opening 2", "", "C3"),
+                Episode(4, EpisodeType.CREDIT, "Ending 2", "", "C4"),
+            ],
+        )
+        entries = build_manifest_entries(
+            [sf], info, "The Apothecary Diaries", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 1
+        dest = str(entries[0].dest_path)
+        # Must be a special, not regular s1e02
+        assert "Specials" in dest
+        assert "Season 01" not in dest
+
+    def test_multiple_ncop_nced_unique_episode_numbers_and_sorted(
+        self, tmp_path, monkeypatch
+    ):
+        """Multiple NCOP+NCED must get unique s0e numbers, sorted OP-ED pairs."""
+        files = [
+            SourceFile(
+                path=tmp_path / "[sam] Show - NCOP 01v2 [BD 1080p FLAC] [AAAA1111].mkv",
+                parsed=ParsedMetadata(
+                    episode=1,
+                    bonus_type="NCOP",
+                    is_special=True,
+                    version=2,
+                    hash_code="AAAA1111",
+                ),
+            ),
+            SourceFile(
+                path=tmp_path / "[sam] Show - NCED 01v2 [BD 1080p FLAC] [BBBB2222].mkv",
+                parsed=ParsedMetadata(
+                    episode=1,
+                    bonus_type="NCED",
+                    is_special=True,
+                    version=2,
+                    hash_code="BBBB2222",
+                ),
+            ),
+            SourceFile(
+                path=tmp_path / "[sam] Show - NCOP 02 [BD 1080p FLAC] [CCCC3333].mkv",
+                parsed=ParsedMetadata(
+                    episode=2, bonus_type="NCOP", is_special=True, hash_code="CCCC3333"
+                ),
+            ),
+            SourceFile(
+                path=tmp_path / "[sam] Show - NCED 02 [BD 1080p FLAC] [DDDD4444].mkv",
+                parsed=ParsedMetadata(
+                    episode=2, bonus_type="NCED", is_special=True, hash_code="DDDD4444"
+                ),
+            ),
+        ]
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+
+        # TVDB-only: no credit episodes
+        info = AnimeInfo(
+            anidb_id=None,
+            tvdb_id=431162,
+            title_ja="薬屋のひとりごと",
+            title_en="The Apothecary Diaries",
+            year=2023,
+            episodes=[
+                Episode(1, EpisodeType.REGULAR, "Maomao", "", ""),
+            ],
+        )
+        entries = build_manifest_entries(
+            files, info, "The Apothecary Diaries", tmp_path / "dest", verbose=False
+        )
+        assert len(entries) == 4
+
+        # All must be in Specials
+        for e in entries:
+            assert "Specials" in str(e.dest_path)
+
+        # All episode numbers must be unique
+        ep_nums = [e.source.parsed.episode for e in entries]
+        assert len(set(ep_nums)) == 4, f"Duplicate episode numbers: {ep_nums}"
+
+        # Extract tags from dest filenames for sort order check
+        tags = []
+        for e in entries:
+            name = e.dest_path.name
+            for tag in ("NCOP1", "NCED1", "NCOP2", "NCED2"):
+                if tag in name:
+                    tags.append(tag)
+                    break
+
+        # Must be sorted: NCOP1, NCED1, NCOP2, NCED2
+        assert tags == ["NCOP1", "NCED1", "NCOP2", "NCED2"], f"Wrong sort order: {tags}"
+
+
 class TestHamatvNumbering:
     """Tests for HamaTV-compatible special episode numbering."""
 
@@ -750,7 +935,7 @@ class TestHamatvNumbering:
         assert "Specials" in str(entries[0].dest_path)
         assert entries[0].is_todo  # tagged as todo
         # Episode number should be written back to SourceFile
-        assert entries[0].source.parsed.episode == 321  # PV range start
+        assert entries[0].source.parsed.episode == 171  # PV/Trailers range start
         assert entries[0].source.parsed.season == 0
 
     def test_hamatv_numbers_written_to_sourcefile(self, tmp_path):
@@ -776,7 +961,7 @@ class TestHamatvNumbering:
             files, info, "Show", tmp_path / "dest", verbose=False
         )
         ep_nums = sorted(e.source.parsed.episode or 0 for e in entries)
-        assert ep_nums == [321, 322]  # sequential HamaTV PV numbers
+        assert ep_nums == [171, 172]  # sequential HamaTV PV/Trailers numbers
         assert all(e.source.parsed.season == 0 for e in entries)
 
     def test_anidb_matched_special_writes_episode_number(self, tmp_path, monkeypatch):
