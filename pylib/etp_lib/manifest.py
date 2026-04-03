@@ -326,6 +326,7 @@ def write_manifest(
     concise_name: str,
     series_dir: Path,
     extras: list[Path] | None = None,
+    renames: list[tuple[Path, Path]] | None = None,
 ) -> Path:
     """Write manifest entries to a KDL file for editing."""
     provider = ""
@@ -408,6 +409,18 @@ def write_manifest(
         lines.append("}")
         lines.append("")
 
+    if renames:
+        lines.append("// Renames: existing files renamed for naming consistency.")
+        lines.append("// Delete entries to skip individual renames.")
+        lines.append("renames {")
+        for old_path, new_path in sorted(renames, key=lambda r: r[0].name):
+            lines.append("  file {")
+            lines.append(f'    source "{escape_kdl(str(old_path))}"')
+            lines.append(f'    dest "{escape_kdl(new_path.name)}"')
+            lines.append("  }")
+        lines.append("}")
+        lines.append("")
+
     fd, path = tempfile.mkstemp(suffix=".kdl", prefix="etp-triage-")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -431,20 +444,26 @@ def parse_manifest(
     manifest_path: Path,
     known_sources: dict[str, SourceFile],
     series_dir: Path,
-) -> tuple[list[tuple[SourceFile, Path]], list[str], list[tuple[Path, Path]]]:
+) -> tuple[
+    list[tuple[SourceFile, Path]],
+    list[str],
+    list[tuple[Path, Path]],
+    list[tuple[Path, Path]],
+]:
     """Parse an edited KDL manifest file.
 
-    Returns ``(entries, errors, extras)`` where extras is a list of
-    ``(source_path, dest_path)`` pairs for non-video files.
+    Returns ``(entries, errors, extras, renames)`` where extras and renames
+    are lists of ``(source_path, dest_path)`` pairs.
     """
     text = manifest_path.read_text(encoding="utf-8")
     try:
         doc = kdl.parse(text)
     except kdl.ParseError as e:
-        return [], [f"  KDL parse error: {e}"], []
+        return [], [f"  KDL parse error: {e}"], [], []
 
     entries: list[tuple[SourceFile, Path]] = []
     extras: list[tuple[Path, Path]] = []
+    renames: list[tuple[Path, Path]] = []
     errors: list[str] = []
 
     def _ep_label(ep_node: object, group_name: str) -> str:
@@ -473,6 +492,27 @@ def parse_manifest(
                     )
                 else:
                     extras.append((Path(source_path), extras_dir / dest_name))
+            continue
+
+        # Renames section: existing files being renamed for consistency
+        if group_node.name == "renames":
+            for file_node in group_node.nodes:
+                if file_node.name != "file":
+                    continue
+                source_path = ""
+                dest_name = ""
+                for child in file_node.nodes:
+                    if child.name == "source" and child.args:
+                        source_path = str(child.args[0])
+                    elif child.name == "dest" and child.args:
+                        dest_name = str(child.args[0])
+                if not source_path:
+                    errors.append("  rename: missing source path")
+                elif not dest_name:
+                    errors.append(f"  rename '{Path(source_path).name}': missing dest")
+                else:
+                    src = Path(source_path)
+                    renames.append((src, src.parent / dest_name))
             continue
 
         # Determine destination subdirectory
@@ -530,7 +570,7 @@ def parse_manifest(
 
             entries.append((sf, dest_subdir / dest_name))
 
-    return entries, errors, extras
+    return entries, errors, extras, renames
 
 
 def _check_filename_length(dest_path: Path) -> Path:
@@ -676,7 +716,11 @@ class ManifestWorkflow:
         )
         return self.entries
 
-    def write(self, extras: list[Path] | None = None) -> Path:
+    def write(
+        self,
+        extras: list[Path] | None = None,
+        renames: list[tuple[Path, Path]] | None = None,
+    ) -> Path:
         """Write manifest to a temp file for editing."""
         self.manifest_path = write_manifest(
             self.entries,
@@ -684,14 +728,20 @@ class ManifestWorkflow:
             self.concise_name,
             self.series_dir,
             extras=extras or [],
+            renames=renames or [],
         )
         return self.manifest_path
 
     def edit_loop(
         self,
-    ) -> tuple[list[tuple[SourceFile, Path]], list[tuple[Path, Path]]]:
-        """Open editor, parse, and retry on errors. Returns (entries, extras).
+    ) -> tuple[
+        list[tuple[SourceFile, Path]],
+        list[tuple[Path, Path]],
+        list[tuple[Path, Path]],
+    ]:
+        """Open editor, parse, and retry on errors.
 
+        Returns ``(entries, extras, renames)``.
         Raises ValueError if the user cancels or the manifest is empty.
         """
         assert self.manifest_path is not None
@@ -703,7 +753,7 @@ class ManifestWorkflow:
             if not open_editor(self.manifest_path):
                 raise ValueError("Editor failed")
 
-            parsed_entries, errors, extra_entries = parse_manifest(
+            parsed_entries, errors, extra_entries, rename_entries = parse_manifest(
                 self.manifest_path, known_sources, self.series_dir
             )
 
@@ -718,16 +768,17 @@ class ManifestWorkflow:
             if not parsed_entries:
                 raise ValueError("Manifest is empty")
 
-            return parsed_entries, extra_entries
+            return parsed_entries, extra_entries, rename_entries
 
     def execute(
         self,
         parsed_entries: list[tuple[SourceFile, Path]],
         extra_entries: list[tuple[Path, Path]],
+        rename_entries: list[tuple[Path, Path]],
         dry_run: bool,
         parse_source_filename_fn=None,
     ) -> tuple[int, int, list[Path]]:
-        """Execute the manifest: copy files and extras."""
+        """Execute the manifest: copy files, extras, and renames."""
         print(f"\n  Copying {len(parsed_entries)} file(s)...")
         result = execute_manifest(
             parsed_entries,
@@ -743,6 +794,17 @@ class ManifestWorkflow:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 copy_reflink(src, dst, dry_run=dry_run)
 
+        if rename_entries:
+            print(f"  Renaming {len(rename_entries)} existing file(s)...")
+            for old_path, new_path in rename_entries:
+                if dry_run:
+                    print(f"    {old_path.name} → {new_path.name}")
+                else:
+                    try:
+                        old_path.rename(new_path)
+                    except OSError as e:
+                        print(f"    warning: rename failed: {old_path.name}: {e}")
+
         return result
 
     def cleanup(self) -> None:
@@ -757,6 +819,7 @@ class ManifestWorkflow:
         self,
         dry_run: bool = False,
         extras: list[Path] | None = None,
+        renames: list[tuple[Path, Path]] | None = None,
         parse_source_filename_fn=None,
     ) -> tuple[int, int, list[Path]]:
         """Run the full workflow: build → write → edit → execute → cleanup.
@@ -764,11 +827,11 @@ class ManifestWorkflow:
         Returns ``(success, failed, triaged_paths)``.
         """
         self.build()
-        self.write(extras=extras)
+        self.write(extras=extras, renames=renames)
         file_count = len(self.parsed)
 
         try:
-            parsed_entries, extra_entries = self.edit_loop()
+            parsed_entries, extra_entries, rename_entries = self.edit_loop()
         except ValueError as e:
             print(f"  {e}. Skipping group.")
             return 0, file_count, []
@@ -778,6 +841,7 @@ class ManifestWorkflow:
         return self.execute(
             parsed_entries,
             extra_entries,
+            rename_entries,
             dry_run,
             parse_source_filename_fn=parse_source_filename_fn,
         )

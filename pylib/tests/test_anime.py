@@ -1773,3 +1773,109 @@ class TestIterMediaFiles:
         """Non-existent source directories are silently skipped."""
         result = anime._iter_media_files([Path("/nonexistent/path")])
         assert result == []
+
+
+class TestScanExistingConciseNames:
+    """Tests for scanning existing dest files to extract concise names."""
+
+    def test_extracts_names_from_existing_files(self, tmp_path):
+        series_dir = tmp_path / "series"
+        s01 = series_dir / "Season 01"
+        s01.mkdir(parents=True)
+        (s01 / "Apothecary Diaries - s1e01 - Maomao [BD,1080p].mkv").touch()
+        (s01 / "Apothecary Diaries - s1e02 - Episode [BD,1080p].mkv").touch()
+
+        result = anime._scan_existing_concise_names(series_dir, [1])
+        assert s01 in result
+        assert "Apothecary Diaries" in result[s01]
+        assert len(result[s01]["Apothecary Diaries"]) == 2
+
+    def test_empty_dir_returns_empty(self, tmp_path):
+        series_dir = tmp_path / "series"
+        s01 = series_dir / "Season 01"
+        s01.mkdir(parents=True)
+
+        result = anime._scan_existing_concise_names(series_dir, [1])
+        assert result == {}
+
+    def test_nonexistent_dir_returns_empty(self, tmp_path):
+        result = anime._scan_existing_concise_names(tmp_path / "missing", [1])
+        assert result == {}
+
+    def test_detects_multiple_names(self, tmp_path):
+        series_dir = tmp_path / "series"
+        s01 = series_dir / "Season 01"
+        s01.mkdir(parents=True)
+        (s01 / "Apothecary Diaries - s1e01 [BD].mkv").touch()
+        (s01 / "The Apothecary Diaries - s1e02 [BD].mkv").touch()
+
+        result = anime._scan_existing_concise_names(series_dir, [1])
+        assert len(result[s01]) == 2
+
+    def test_scans_specials_dir(self, tmp_path):
+        series_dir = tmp_path / "series"
+        specials = series_dir / "Specials"
+        specials.mkdir(parents=True)
+        (specials / "Show - NCOP1 [BD].mkv").touch()
+
+        result = anime._scan_existing_concise_names(series_dir, [1])
+        assert specials in result
+
+
+class TestResolveConciseNameFromExisting:
+    """Tests for resolving concise name from existing dest files."""
+
+    def test_single_name_returns_it(self, tmp_path):
+        series_dir = tmp_path / "series"
+        s01 = series_dir / "Season 01"
+        existing = {
+            s01: {
+                "Apothecary Diaries": [
+                    s01 / "Apothecary Diaries - s1e01.mkv",
+                    s01 / "Apothecary Diaries - s1e02.mkv",
+                ],
+            },
+        }
+        name, renames = anime._resolve_concise_name_from_existing(existing, series_dir)
+        assert name == "Apothecary Diaries"
+        assert renames == []
+
+    def test_multiple_names_collects_renames_on_confirm(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(anime, "prompt_confirm", lambda *a, **kw: True)
+
+        series_dir = tmp_path / "series"
+        s01 = series_dir / "Season 01"
+        s01.mkdir(parents=True)
+        file_a1 = s01 / "Show - s1e01.mkv"
+        file_a2 = s01 / "Show - s1e02.mkv"
+        file_b = s01 / "The Show - s1e03.mkv"
+        file_a1.touch()
+        file_a2.touch()
+        file_b.touch()
+
+        existing = {
+            s01: {
+                "Show": [file_a1, file_a2],
+                "The Show": [file_b],
+            },
+        }
+        name, renames = anime._resolve_concise_name_from_existing(existing, series_dir)
+        assert name == "Show"  # most common
+        assert len(renames) == 1
+        assert renames[0][0] == file_b
+        assert renames[0][1].name == "Show - s1e03.mkv"
+
+    def test_multiple_names_no_renames_on_decline(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(anime, "prompt_confirm", lambda *a, **kw: False)
+
+        series_dir = tmp_path / "series"
+        s01 = series_dir / "Season 01"
+        existing = {
+            s01: {
+                "Show": [s01 / "Show - s1e01.mkv"],
+                "The Show": [s01 / "The Show - s1e02.mkv"],
+            },
+        }
+        name, renames = anime._resolve_concise_name_from_existing(existing, series_dir)
+        assert name == "Show"
+        assert renames == []

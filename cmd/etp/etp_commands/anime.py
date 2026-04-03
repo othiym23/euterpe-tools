@@ -470,6 +470,87 @@ def _extract_concise_name(source_files: list[SourceFile]) -> str:
     return pm.series_name
 
 
+def _scan_existing_concise_names(
+    series_dir: Path, seasons: list[int]
+) -> dict[Path, dict[str, list[Path]]]:
+    """Scan existing media files in dest season dirs and extract concise names.
+
+    Returns ``{season_dir: {concise_name: [file_paths]}}`` for each affected
+    season directory that already contains files.
+    """
+    result: dict[Path, dict[str, list[Path]]] = {}
+    dirs_to_check = [series_dir / f"Season {s:02d}" for s in seasons]
+    dirs_to_check.append(series_dir / "Specials")
+
+    for season_dir in dirs_to_check:
+        if not season_dir.is_dir():
+            continue
+        names: dict[str, list[Path]] = {}
+        for f in season_dir.iterdir():
+            if not f.is_file() or f.suffix.lower() not in _MEDIA_EXTENSIONS:
+                continue
+            pm = media_parser.parse_component(f.name)
+            name = pm.series_name.strip()
+            if name:
+                names.setdefault(name, []).append(f)
+        if names:
+            result[season_dir] = names
+
+    return result
+
+
+def _resolve_concise_name_from_existing(
+    existing_names: dict[Path, dict[str, list[Path]]],
+    series_dir: Path,
+) -> tuple[str, list[tuple[Path, Path]]]:
+    """Determine the default concise name from existing dest files.
+
+    If all existing files use the same name, returns it silently.  If
+    multiple names are found per season dir, warns the user and offers to
+    normalize by renaming existing files to use the most common name.
+
+    Returns ``(default_name, renames)`` where *renames* is a list of
+    ``(old_path, new_path)`` for files that need renaming.
+    """
+    # Flatten to get global most-common name across all season dirs
+    global_counts: Counter[str] = Counter()
+    for names_in_dir in existing_names.values():
+        for name, files in names_in_dir.items():
+            global_counts[name] += len(files)
+
+    if not global_counts:
+        return "", []
+
+    most_common = global_counts.most_common(1)[0][0]
+    renames: list[tuple[Path, Path]] = []
+
+    for season_dir, names_in_dir in existing_names.items():
+        if len(names_in_dir) <= 1:
+            continue
+
+        # Multiple names in this season dir — warn and ask
+        rel_dir = season_dir.relative_to(series_dir)
+        print(f"\n  Warning: multiple naming conventions in {rel_dir}/:")
+        for name, files in sorted(names_in_dir.items(), key=lambda kv: -len(kv[1])):
+            print(f"    {name!r} ({len(files)} file(s))")
+
+        if not prompt_confirm(
+            f"  Rename all files in {rel_dir}/ to use {most_common!r}?"
+        ):
+            continue
+
+        # Collect renames for files that don't match the target name
+        for name, files in names_in_dir.items():
+            if name == most_common:
+                continue
+            for old_path in files:
+                new_name = old_path.name.replace(name, most_common, 1)
+                if new_name != old_path.name:
+                    renames.append((old_path, old_path.parent / new_name))
+
+    return most_common, renames
+
+
 def _build_download_index(downloads_dir: Path) -> DownloadIndex:
     """Build an index of download files for matching.
 
@@ -1242,20 +1323,7 @@ def _process_group_batch(
         for mf in matched:
             mf.season = season_override
 
-    # Resolve concise name
-    saved_concise = ""
-    if config is not None and default_concise_name:
-        saved_concise = config.concise_names.get(default_concise_name, "")
-    if saved_concise:
-        default_concise_name = saved_concise
-    elif not default_concise_name:
-        sources = [mf.source for mf in matched]
-        default_concise_name = _extract_concise_name(sources)
-    default_concise_name = _strip_year(default_concise_name)
-    concise_name = prompt_value(
-        "Concise series name for filenames", default_concise_name
-    )
-
+    # Resolve series directory first — needed to scan existing files
     seasons_needed = {mf.effective_season or 1 for mf in matched}
     seasons_list = sorted(seasons_needed)
 
@@ -1268,6 +1336,34 @@ def _process_group_batch(
         id_map[(MetadataProvider.ANIDB, info.anidb_id)] = series_dir
     if info.tvdb_id is not None:
         id_map[(MetadataProvider.TVDB, info.tvdb_id)] = series_dir
+
+    # Scan existing files in affected dest season dirs to determine the
+    # default concise name and detect naming inconsistencies.
+    group_key = default_concise_name  # preserve for config lookup
+    renames: list[tuple[Path, Path]] = []
+    existing_names = _scan_existing_concise_names(series_dir, seasons_list)
+    if existing_names:
+        default_from_existing, renames = _resolve_concise_name_from_existing(
+            existing_names, series_dir
+        )
+        if default_from_existing:
+            default_concise_name = default_from_existing
+
+    # Config saved name can override any default (including from existing files)
+    saved_concise = (
+        config.concise_names.get(group_key, "")
+        if config is not None and group_key
+        else ""
+    )
+    if saved_concise:
+        default_concise_name = saved_concise
+    elif not default_concise_name:
+        sources = [mf.source for mf in matched]
+        default_concise_name = _extract_concise_name(sources)
+    default_concise_name = _strip_year(default_concise_name)
+    concise_name = prompt_value(
+        "Concise series name for filenames", default_concise_name
+    )
 
     # Prompt for release group — applied only to files that lack one or
     # that match the auto-detected default. Files with a different group
@@ -1311,6 +1407,7 @@ def _process_group_batch(
     return workflow.run(
         dry_run=dry_run,
         extras=extras,
+        renames=renames,
         parse_source_filename_fn=parse_source_filename,
     )
 

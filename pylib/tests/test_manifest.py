@@ -340,7 +340,7 @@ class TestWriteManifest:
         manifest_path = write_manifest([entry], info, "Test", tmp_path / "series")
         try:
             series_dir = tmp_path / "series"
-            entries, errors, _extras = parse_manifest(
+            entries, errors, _extras, _renames = parse_manifest(
                 manifest_path,
                 {str(sf.path): sf},
                 series_dir,
@@ -368,7 +368,9 @@ class TestParseManifest:
         manifest = tmp_path / "manifest.kdl"
         manifest.write_text(self._make_kdl(1, "a.mkv", "dst.mkv"), encoding="utf-8")
         series_dir = tmp_path / "series"
-        entries, errors, _extras = parse_manifest(manifest, {"a.mkv": sf}, series_dir)
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"a.mkv": sf}, series_dir
+        )
         assert len(entries) == 1
         assert len(errors) == 0
         assert entries[0][0] is sf
@@ -382,7 +384,9 @@ class TestParseManifest:
             '    dest "dst.mkv"\n  }\n}\n',
             encoding="utf-8",
         )
-        entries, errors, _extras = parse_manifest(manifest, {"a.mkv": sf}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"a.mkv": sf}, tmp_path
+        )
         assert len(entries) == 0
         assert any("todo" in e for e in errors)
 
@@ -391,14 +395,14 @@ class TestParseManifest:
         manifest.write_text(
             self._make_kdl(1, "unknown.mkv", "dst.mkv"), encoding="utf-8"
         )
-        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(manifest, {}, tmp_path)
         assert len(entries) == 0
         assert any("unknown source" in e for e in errors)
 
     def test_empty_manifest(self, tmp_path):
         manifest = tmp_path / "manifest.kdl"
         manifest.write_text("// all entries deleted\n", encoding="utf-8")
-        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(manifest, {}, tmp_path)
         assert len(entries) == 0
         assert len(errors) == 0
 
@@ -411,7 +415,9 @@ class TestParseManifest:
             '    dest "dst.mkv"\n  }\n}\n',
             encoding="utf-8",
         )
-        entries, errors, _extras = parse_manifest(manifest, {"a.mkv": sf}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"a.mkv": sf}, tmp_path
+        )
         assert len(entries) == 0
         assert len(errors) == 0
 
@@ -424,7 +430,9 @@ class TestParseManifest:
             encoding="utf-8",
         )
         series_dir = tmp_path / "series"
-        entries, errors, _extras = parse_manifest(manifest, {"s.mkv": sf}, series_dir)
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"s.mkv": sf}, series_dir
+        )
         assert len(entries) == 1
         assert entries[0][1] == series_dir / "Specials" / "special.mkv"
 
@@ -436,7 +444,7 @@ class TestParseManifest:
             '    dest "dst.mkv"\n  }\n}\n',
             encoding="utf-8",
         )
-        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(manifest, {}, tmp_path)
         assert len(entries) == 0
         assert any("invalid season" in e for e in errors)
 
@@ -448,7 +456,9 @@ class TestParseManifest:
             'season 1 {\n  episode 5 {\n    source "a.mkv"\n  }\n}\n',
             encoding="utf-8",
         )
-        entries, errors, _extras = parse_manifest(manifest, {"a.mkv": sf}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"a.mkv": sf}, tmp_path
+        )
         assert len(entries) == 0
         assert any("episode 5" in e and "missing dest" in e for e in errors)
 
@@ -459,7 +469,7 @@ class TestParseManifest:
             'season 1 {\n  episode 1 {\n    dest "dst.mkv"\n  }\n}\n',
             encoding="utf-8",
         )
-        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(manifest, {}, tmp_path)
         assert len(entries) == 0
         assert any("missing source" in e for e in errors)
 
@@ -468,7 +478,9 @@ class TestParseManifest:
         sf = SourceFile(path=Path("/src/real.mkv"))
         manifest = tmp_path / "manifest.kdl"
         manifest.write_text(self._make_kdl(1, "wrong.mkv", "dst.mkv"), encoding="utf-8")
-        entries, errors, _extras = parse_manifest(manifest, {"real.mkv": sf}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"real.mkv": sf}, tmp_path
+        )
         assert len(entries) == 0
         assert any("unknown source" in e and "real.mkv" in e for e in errors)
 
@@ -479,7 +491,7 @@ class TestParseManifest:
             'extras {\n  file "/src/art.zip" {\n  }\n}\n',
             encoding="utf-8",
         )
-        entries, errors, extras = parse_manifest(manifest, {}, tmp_path)
+        entries, errors, extras, _renames = parse_manifest(manifest, {}, tmp_path)
         assert len(extras) == 0
         assert any("extras" in e and "missing dest" in e for e in errors)
 
@@ -487,9 +499,54 @@ class TestParseManifest:
         """Malformed KDL should return a parse error, not crash."""
         manifest = tmp_path / "manifest.kdl"
         manifest.write_text("season 1 { unclosed", encoding="utf-8")
-        entries, errors, _extras = parse_manifest(manifest, {}, tmp_path)
+        entries, errors, _extras, _renames = parse_manifest(manifest, {}, tmp_path)
         assert len(entries) == 0
         assert any("parse error" in e.lower() for e in errors)
+
+
+class TestRenamesInManifest:
+    """Tests for rename entries in manifest KDL."""
+
+    def test_renames_roundtrip(self, tmp_path):
+        """Renames written to KDL should be parsed back correctly."""
+        old_path = tmp_path / "Season 01" / "Old Name - s1e01 [BD].mkv"
+        new_path = tmp_path / "Season 01" / "New Name - s1e01 [BD].mkv"
+
+        renames = [(old_path, new_path)]
+        info = AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+        )
+        manifest_path = write_manifest([], info, "Test", tmp_path, renames=renames)
+        try:
+            _entries, errors, _extras, parsed_renames = parse_manifest(
+                manifest_path, {}, tmp_path
+            )
+            assert not errors
+            assert len(parsed_renames) == 1
+            assert parsed_renames[0][0] == old_path
+            assert parsed_renames[0][1].name == "New Name - s1e01 [BD].mkv"
+        finally:
+            manifest_path.unlink()
+
+    def test_renames_not_written_when_empty(self, tmp_path):
+        """No renames section when the list is empty."""
+        info = AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="テスト",
+            title_en="Test",
+            year=2020,
+        )
+        manifest_path = write_manifest([], info, "Test", tmp_path)
+        try:
+            text = manifest_path.read_text(encoding="utf-8")
+            assert "renames {" not in text
+        finally:
+            manifest_path.unlink()
 
 
 class TestOpenEditor:
