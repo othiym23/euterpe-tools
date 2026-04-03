@@ -214,10 +214,11 @@ cleanup (temp file removal). Callers should use `run()` rather than calling the
 individual manifest functions.
 
 **HamaTV ranges start after TVDB specials.** When using TVDB, unmatched bonus
-files get HamaTV-compatible episode numbers (NCOP=171+, NCED=191+, PV=321+,
-etc.). These ranges are adjusted to start after the highest existing TVDB
-special number (+20 buffer) to avoid collisions in the single `Specials/`
-directory.
+files get HamaTV-compatible episode numbers aligned with the ScudLee anime-lists
+conventions (Credits=121+, Trailers=171+, Parodies=221+, Other=321+). NCOP and
+NCED share a counter and interleave as OP/ED pairs. Ranges are adjusted to start
+after the highest existing TVDB special number (+20 buffer) to avoid collisions.
+See [ADR 2026-04-02-04](adrs/2026-04-02-04-hamatv-special-episode-ranges.md).
 
 **Resolution uses height only.** Width is irrelevant for resolution tags —
 anamorphic encodes (1440x1080, 848x480) have non-standard widths but standard

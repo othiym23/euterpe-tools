@@ -359,20 +359,21 @@ Special detection sources (combined):
 
 #### HamaTV episode number ranges
 
-For bonus files that cannot be matched to AniDB specials:
+For bonus files that cannot be matched to AniDB specials, episode numbers are
+assigned from HamaTV-compatible ranges (ScudLee anime-lists conventions, +20
+buffer). NCOP and NCED share a counter and interleave as OP/ED pairs.
 
-| Bonus type | Range start | HamaTV category |
-| ---------- | ----------- | --------------- |
-| NCOP       | 171         | s0e151+         |
-| NCED       | 191         | s0e171+         |
-| PV         | 321         | s0e301+         |
-| Preview    | 321         | s0e301+         |
-| CM         | 521         | s0e501+         |
-| Bonus      | 521         | s0e501+         |
-| Menu       | 921         | s0e901+         |
+| Bonus type   | Range start | HamaTV base (ScudLee) |
+| ------------ | ----------- | --------------------- |
+| NCOP / NCED  | 121         | Credits (s0e101+)     |
+| PV / Preview | 171         | Trailers (s0e151+)    |
+| CM           | 221         | Parodies (s0e201+)    |
+| Bonus / Menu | 321         | Other (s0e301+)       |
 
 When using TVDB, ranges start after the highest existing TVDB special number
-(+20 buffer) to avoid collisions in the single `Specials/` directory.
+(+20 buffer) to avoid collisions in the single `Specials/` directory. See
+[ADR 2026-04-02-04](adrs/2026-04-02-04-hamatv-special-episode-ranges.md) for the
+full rationale and evolution history.
 
 Unmatched bonus files are tagged `(todo)` in the manifest for user review.
 
