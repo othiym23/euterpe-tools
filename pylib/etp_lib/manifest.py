@@ -32,17 +32,19 @@ from etp_lib.types import (
     SourceFile,
 )
 
-# HamaTV-compatible special episode ranges.
-# Offset by +20 from each range start to avoid collisions with
+# HamaTV-compatible special episode ranges (from ScudLee anime-lists):
+#   S (Specials) = s0e1+, C (Credits) = s0e101+, T (Trailers) = s0e151+,
+#   P (Parodies) = s0e201+, O (Other) = s0e301+
+# Offset by +20 from each HamaTV range start to avoid collisions with
 # AniDB-tracked specials that may be added later.
 _HAMATV_RANGES: dict[str, int] = {
-    BonusType.NCOP: 171,  # s0e151+ range, +20 buffer
-    BonusType.NCED: 171,  # shared with NCOP — interleaved by sort order
-    BonusType.PV: 321,  # s0e301+ range, +20 buffer
-    BonusType.PREVIEW: 321,  # alias for PV — same HamaTV category
-    BonusType.CM: 521,  # s0e501+ range, +20 buffer
-    BonusType.BONUS: 521,  # alias for CM — same HamaTV category
-    BonusType.MENU: 921,  # s0e901+ range, +20 buffer
+    BonusType.NCOP: 121,  # Credits range (s0e101+), +20 buffer
+    BonusType.NCED: 121,  # shared with NCOP — interleaved by sort order
+    BonusType.PV: 171,  # Trailers range (s0e151+), +20 buffer
+    BonusType.PREVIEW: 171,  # alias for PV — same HamaTV category
+    BonusType.CM: 221,  # Parodies range (s0e201+), +20 buffer
+    BonusType.BONUS: 321,  # Other range (s0e301+), +20 buffer
+    BonusType.MENU: 321,  # Other range (s0e301+), +20 buffer
 }
 
 # Counter key shared by NCOP and NCED so they get interleaved episode

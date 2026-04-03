@@ -935,7 +935,7 @@ class TestHamatvNumbering:
         assert "Specials" in str(entries[0].dest_path)
         assert entries[0].is_todo  # tagged as todo
         # Episode number should be written back to SourceFile
-        assert entries[0].source.parsed.episode == 321  # PV range start
+        assert entries[0].source.parsed.episode == 171  # PV/Trailers range start
         assert entries[0].source.parsed.season == 0
 
     def test_hamatv_numbers_written_to_sourcefile(self, tmp_path):
@@ -961,7 +961,7 @@ class TestHamatvNumbering:
             files, info, "Show", tmp_path / "dest", verbose=False
         )
         ep_nums = sorted(e.source.parsed.episode or 0 for e in entries)
-        assert ep_nums == [321, 322]  # sequential HamaTV PV numbers
+        assert ep_nums == [171, 172]  # sequential HamaTV PV/Trailers numbers
         assert all(e.source.parsed.season == 0 for e in entries)
 
     def test_anidb_matched_special_writes_episode_number(self, tmp_path, monkeypatch):
