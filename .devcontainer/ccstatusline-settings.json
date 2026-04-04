@@ -1,0 +1,90 @@
+{
+  "version": 3,
+  "lines": [
+    [
+      {
+        "id": "1",
+        "type": "model",
+        "color": "white"
+      },
+      {
+        "id": "edb8db63-4d51-4355-b93c-29fabce867c9",
+        "type": "separator"
+      },
+      {
+        "id": "bc594dc4-19c3-44aa-8bd0-cab8978d5685",
+        "type": "session-name",
+        "color": "brightGreen"
+      },
+      {
+        "id": "5",
+        "type": "git-branch",
+        "color": "brightMagenta"
+      },
+      {
+        "id": "7",
+        "type": "git-changes",
+        "color": "magenta"
+      },
+      {
+        "id": "ec6ceec9-a517-4ce2-9bf3-01c4c51fa09d",
+        "type": "flex-separator"
+      },
+      {
+        "id": "3",
+        "type": "context-percentage-usable",
+        "color": "brightYellow"
+      },
+      {
+        "id": "16ff23b6-d3a0-4914-9ba4-43c81bbb515f",
+        "type": "session-usage",
+        "color": "brightBlue"
+      },
+      {
+        "id": "cf02d047-cd2f-4e5d-a306-da2d7f103b92",
+        "type": "weekly-usage",
+        "color": "brightBlue"
+      }
+    ],
+    [
+      {
+        "id": "da5f3400-c560-43c3-bc72-1a4b73f519b2",
+        "type": "version",
+        "color": "black"
+      },
+      {
+        "id": "bee635bd-721b-41f6-b336-a76d8fdb18a4",
+        "type": "claude-session-id",
+        "color": "green"
+      },
+      {
+        "id": "2dccc089-7a00-4867-b428-3ee1cb1af950",
+        "type": "flex-separator"
+      },
+      {
+        "id": "8cda99eb-bfc0-4114-9533-c5aa2645371d",
+        "type": "skills"
+      }
+    ],
+    []
+  ],
+  "flexMode": "full-minus-40",
+  "compactThreshold": 60,
+  "colorLevel": 3,
+  "defaultPadding": " ",
+  "inheritSeparatorColors": false,
+  "globalBold": false,
+  "powerline": {
+    "enabled": false,
+    "separators": [
+      ""
+    ],
+    "separatorInvertBackground": [
+      false
+    ],
+    "startCaps": [],
+    "endCaps": [],
+    "theme": "nord-aurora",
+    "autoAlign": false
+  }
+}

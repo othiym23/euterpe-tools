@@ -1,5 +1,7 @@
+.DS_Store
 /target
 .claude/
+!.claude/settings.json
 __pycache__/
 .hypothesis/
 .pytest_cache/
@@ -11,3 +13,5 @@ parser-problems.jsonl
 parser-problems.state
 test-data/
 pylib/tests/fixtures/
+.devcontainer/.gh-token
+.devcontainer/.env

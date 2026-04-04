@@ -23,11 +23,17 @@ docs/            Plans, ADRs, design notes
 
 ## Build & run
 
+Most development happens inside a devcontainer (see `.devcontainer/`). The
+container has the full Rust and Python toolchain for building, checking, and
+testing. However, `just build-nas` and `just deploy` require the macOS
+cross-compilation toolchain and write access to NAS shares, so they must be run
+on the host — do not attempt them inside the devcontainer.
+
 ```bash
 just build-smoketest  # verify all crates compile
 just build            # native release (aarch64-apple-darwin)
-just build-nas        # NAS release (x86_64-unknown-linux-musl, static)
-just deploy           # check + test + build + copy to NAS
+just build-nas        # NAS release (x86_64-unknown-linux-musl, static) — host only
+just deploy           # check + test + build + copy to NAS — host only
 
 # Rust plumbing (in cmd/)
 etp-scan <directory> [--db <path>] [-e <name>...] [-v]
