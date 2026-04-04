@@ -27,11 +27,16 @@ RUN apk update && apk add --no-cache \
     bash \
     sudo \
     posix-libc-utils \
+    docker \
+    iptables \
     && rm -rf /var/cache/apk/*
 
 # Install the Rust toolchain via rustup
 RUN rustup-init -y --no-modify-path --default-toolchain "${RUST_VERSION}"
 ENV PATH="/usr/local/cargo/bin:${PATH}"
+
+# cargo-nextest (shared toolchain, user can run it)
+RUN cargo install cargo-nextest --locked
 
 # Prime ld.so.cache for VS Code Server's check-requirements.sh
 RUN ldconfig
@@ -41,13 +46,15 @@ RUN ldconfig
 RUN { grep -q ":${USER_GID}:" /etc/group || addgroup -g ${USER_GID} staff; } && \
     GROUP_NAME=$(awk -F: -v gid=${USER_GID} '$3 == gid {print $1}' /etc/group) && \
     adduser -D -u ${USER_UID} -G "${GROUP_NAME}" -s /bin/bash ${USERNAME} && \
-    echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME}
+    addgroup ${USERNAME} docker && \
+    echo "${USERNAME} ALL=(root) NOPASSWD: /usr/bin/dockerd" > /etc/sudoers.d/${USERNAME}
 
 # Install npm-based tools globally
 RUN npm install -g @anthropic-ai/claude-code prettier ccstatusline
 
-# Install cargo-nextest (shared toolchain, user can run it)
-RUN cargo install cargo-nextest --locked
+# Hand rustup/cargo directories to the container user so they can
+# download crates and add targets without root.
+RUN chown -R ${USER_UID}:${USER_GID} ${RUSTUP_HOME} ${CARGO_HOME}
 
 ENV PATH="/home/${USERNAME}/.local/bin:${PATH}"
 

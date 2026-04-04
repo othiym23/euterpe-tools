@@ -12,6 +12,7 @@ with all project dependencies pre-installed.
 | Python 3.14    | uv             | pylib + etp porcelain               |
 | ruff / pyright | uv tool        | Linting, type checking              |
 | ty             | uv tool        | Type checking (experimental)        |
+| Docker         | Wolfi          | Docker-in-Docker (build/run images) |
 | Node 22 LTS    | Wolfi          | prettier, Claude Code, ccstatusline |
 | bun            | Wolfi          | ccstatusline runtime                |
 | uv             | Wolfi          | Python toolchain + venv management  |
@@ -94,6 +95,12 @@ unavailable.
    from the forwarded 1Password agent via `ssh-add -L`)
 5. Runs `uv sync` to set up the Python virtualenv
 
+### `post-start.sh` — runs inside the container on every start
+
+1. Starts `dockerd` in the background (via sudo, scoped to just this binary)
+2. Waits up to 10 seconds for the Docker socket to become available
+3. Logs to `/tmp/dockerd.log` for debugging
+
 ### `statusline-shim.sh` — Claude Code status line dispatcher
 
 Configured in `.claude/settings.json` as the project-level status line command.
@@ -140,6 +147,11 @@ NAS share files are accessible with correct permissions.
   manages the exact version matching `pyproject.toml`
 - **Pre-created `~/.local` and `~/.config`** directories with correct ownership
   prevent permission errors when Docker creates bind mount targets as root
+- **Docker-in-Docker** via `privileged: true` — `dockerd` runs inside the
+  container, fully isolated from the host Docker daemon
+- **Scoped sudo** — `ogd` can only sudo `/usr/bin/dockerd`, not arbitrary
+  commands. This is important for running Claude Code with
+  `--dangerously-skip-permissions`
 
 ## Rebuilding
 
