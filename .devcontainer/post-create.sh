@@ -16,7 +16,7 @@ if [ -s "${TOKEN_FILE}" ]; then
   mkdir -p "${GH_CONFIG_DIR}"
   cat > "${GH_CONFIG_DIR}/hosts.yml" <<YAML
 github.com:
-    oauth_token: ${TOKEN}
+    oauth_token: "${TOKEN}"
     user: othiym23
     git_protocol: ssh
 YAML
@@ -28,9 +28,8 @@ fi
 
 # The host's ~/.ssh/config sets IdentityAgent to ~/.1password/agent.sock,
 # which doesn't exist inside the container.  SSH then ignores the forwarded
-# VS Code agent entirely.  Fix: set GIT_SSH_COMMAND to bypass the config
-# and use the forwarded agent via SSH_AUTH_SOCK.
-export GIT_SSH_COMMAND="ssh -o IdentityAgent=\${SSH_AUTH_SOCK}"
+# VS Code agent entirely.  Fix: override via git config so all future git
+# SSH operations use the forwarded agent via SSH_AUTH_SOCK.
 git config --global core.sshCommand 'ssh -o IdentityAgent=$SSH_AUTH_SOCK'
 
 # Configure git identity and SSH commit signing.
