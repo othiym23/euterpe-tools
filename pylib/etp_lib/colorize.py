@@ -1,13 +1,21 @@
-"""ANSI 256-color helpers for media filename display.
+"""ANSI color helpers for media filename display.
 
 Provides token-level colorization of media paths and formatted display of
 ParsedMedia objects. Used by both the QA tool and the manifest workflow to
 give a visual breakdown of parsed filename components.
+
+Color depth is detected from the terminal environment:
+  - 256-color (COLORTERM or "256color" in TERM)
+  - 16-color (any other TERM with "color")
+  - no color (dumb terminal, non-TTY, or NO_COLOR set)
 """
 
 from __future__ import annotations
 
+import os
 import re
+import sys
+from enum import IntEnum
 
 from etp_lib.media_parser import (
     ParsedMedia,
@@ -18,41 +26,180 @@ from etp_lib.media_parser import (
 )
 
 
-def _c(n: int) -> str:
+# ---------------------------------------------------------------------------
+# Color depth detection
+# ---------------------------------------------------------------------------
+
+
+class ColorDepth(IntEnum):
+    NONE = 0
+    BASIC = 16
+    FULL = 256
+
+
+def detect_color_depth() -> ColorDepth:
+    """Detect terminal color support from the environment."""
+    # NO_COLOR convention (https://no-color.org/)
+    if "NO_COLOR" in os.environ:
+        return ColorDepth.NONE
+
+    # Non-TTY stdout
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return ColorDepth.NONE
+
+    term = os.environ.get("TERM", "")
+    colorterm = os.environ.get("COLORTERM", "")
+
+    # COLORTERM=truecolor or 24bit implies 256-color support
+    if colorterm in ("truecolor", "24bit", "256color"):
+        return ColorDepth.FULL
+
+    # TERM contains "256color"
+    if "256color" in term:
+        return ColorDepth.FULL
+
+    # Any color terminal
+    if "color" in term or colorterm:
+        return ColorDepth.BASIC
+
+    # dumb or unknown
+    if term in ("", "dumb"):
+        return ColorDepth.NONE
+
+    # Default: assume basic color if TERM is set to something
+    return ColorDepth.BASIC
+
+
+_color_depth: ColorDepth | None = None
+
+
+def _get_color_depth() -> ColorDepth:
+    global _color_depth
+    if _color_depth is None:
+        _color_depth = detect_color_depth()
+    return _color_depth
+
+
+def set_color_depth(depth: ColorDepth) -> None:
+    """Override the detected color depth (useful for testing)."""
+    global _color_depth
+    _color_depth = depth
+
+
+# ---------------------------------------------------------------------------
+# Color code generators
+# ---------------------------------------------------------------------------
+
+
+# 256-color: \033[38;5;Nm
+def _c256(n: int) -> str:
     return f"\033[38;5;{n}m"
 
 
-TOKEN_COLORS: dict[TokenKind, str] = {
-    TokenKind.TEXT: _c(228),  # bright yellow — series name
-    TokenKind.DOT_TEXT: _c(228),  # bright yellow — series name
-    TokenKind.EPISODE_TITLE: _c(218),  # light pink — episode title
-    TokenKind.RELEASE_GROUP: _c(214),  # orange
-    TokenKind.CRC32: _c(245),  # mid gray
-    TokenKind.EPISODE: _c(51),  # bright cyan — episode number
-    TokenKind.SEASON: _c(39),  # deep sky blue — season number
-    TokenKind.SPECIAL: _c(207),  # hot pink
-    TokenKind.VERSION: _c(141),  # medium purple
-    TokenKind.RESOLUTION: _c(114),  # pale green
-    TokenKind.VIDEO_CODEC: _c(79),  # medium aquamarine
-    TokenKind.AUDIO_CODEC: _c(180),  # tan / light salmon
-    TokenKind.SOURCE: _c(176),  # pink / light magenta
-    TokenKind.REMUX: _c(204),  # hot pink (distinct from source)
-    TokenKind.YEAR: _c(75),  # steel blue
-    TokenKind.BATCH_RANGE: _c(87),  # aquamarine
-    TokenKind.SUBTITLE_INFO: _c(102),  # gray-green
-    TokenKind.LANGUAGE: _c(103),  # olive gray
-    TokenKind.BONUS: _c(213),  # orchid
-    TokenKind.DUAL_AUDIO: _c(222),  # light gold
-    TokenKind.UNCENSORED: _c(196),  # red
-    TokenKind.EDITION: _c(147),  # light steel blue
-    TokenKind.HDR: _c(226),  # yellow
-    TokenKind.BIT_DEPTH: _c(156),  # light green
-    TokenKind.SEPARATOR: _c(240),  # dark gray
-    TokenKind.EXTENSION: _c(240),  # dark gray
-    TokenKind.SITE_PREFIX: _c(240),  # dark gray
-    TokenKind.UNKNOWN: _c(244),  # gray — unclassified metadata
+# 16-color: \033[{30-37;1}m  (bright = bold + base)
+def _c16(code: str) -> str:
+    return f"\033[{code}m"
+
+
+# 16-color codes: name -> ANSI SGR parameter
+_BRIGHT_RED = "91"
+_BRIGHT_GREEN = "92"
+_BRIGHT_YELLOW = "93"
+_BRIGHT_BLUE = "94"
+_BRIGHT_MAGENTA = "95"
+_BRIGHT_CYAN = "96"
+_RED = "31"
+_GREEN = "32"
+_YELLOW = "33"
+_BLUE = "34"
+_MAGENTA = "35"
+_CYAN = "36"
+_WHITE = "37"
+_DARK_GRAY = "90"
+_GRAY = "37"
+
+# Map each 256-color code to its closest 16-color equivalent
+_256_TO_16: dict[int, str] = {
+    228: _BRIGHT_YELLOW,  # TEXT/DOT_TEXT — series name
+    218: _BRIGHT_MAGENTA,  # EPISODE_TITLE — light pink → bright magenta
+    214: _YELLOW,  # RELEASE_GROUP — orange → yellow
+    245: _DARK_GRAY,  # CRC32 — mid gray
+    51: _BRIGHT_CYAN,  # EPISODE — bright cyan
+    39: _BRIGHT_BLUE,  # SEASON — deep sky blue → bright blue
+    207: _BRIGHT_MAGENTA,  # SPECIAL — hot pink → bright magenta
+    141: _MAGENTA,  # VERSION — medium purple → magenta
+    114: _BRIGHT_GREEN,  # RESOLUTION — pale green → bright green
+    79: _CYAN,  # VIDEO_CODEC — medium aquamarine → cyan
+    180: _YELLOW,  # AUDIO_CODEC — tan → yellow
+    176: _MAGENTA,  # SOURCE — pink → magenta
+    204: _RED,  # REMUX — hot pink → red
+    75: _BLUE,  # YEAR — steel blue → blue
+    87: _BRIGHT_CYAN,  # BATCH_RANGE — aquamarine → bright cyan
+    102: _DARK_GRAY,  # SUBTITLE_INFO — gray-green → dark gray
+    103: _DARK_GRAY,  # LANGUAGE — olive gray → dark gray
+    213: _BRIGHT_MAGENTA,  # BONUS — orchid → bright magenta
+    222: _BRIGHT_YELLOW,  # DUAL_AUDIO — light gold → bright yellow
+    196: _BRIGHT_RED,  # UNCENSORED — red → bright red
+    147: _BRIGHT_BLUE,  # EDITION — light steel blue → bright blue
+    226: _BRIGHT_YELLOW,  # HDR — yellow → bright yellow
+    156: _GREEN,  # BIT_DEPTH — light green → green
+    240: _DARK_GRAY,  # SEPARATOR/EXTENSION/SITE_PREFIX — dark gray
+    244: _GRAY,  # UNKNOWN — gray
 }
-RESET = "\033[0m"
+
+
+def _make_color(n256: int) -> str:
+    """Return the appropriate escape sequence for a 256-color code."""
+    depth = _get_color_depth()
+    if depth == ColorDepth.NONE:
+        return ""
+    if depth == ColorDepth.BASIC:
+        code = _256_TO_16.get(n256)
+        return _c16(code) if code else ""
+    return _c256(n256)
+
+
+def _reset() -> str:
+    if _get_color_depth() == ColorDepth.NONE:
+        return ""
+    return "\033[0m"
+
+
+# ---------------------------------------------------------------------------
+# Token color mapping
+# ---------------------------------------------------------------------------
+
+# Store the raw 256-color numbers so we can resolve at render time.
+_TOKEN_COLOR_NUMS: dict[TokenKind, int] = {
+    TokenKind.TEXT: 228,
+    TokenKind.DOT_TEXT: 228,
+    TokenKind.EPISODE_TITLE: 218,
+    TokenKind.RELEASE_GROUP: 214,
+    TokenKind.CRC32: 245,
+    TokenKind.EPISODE: 51,
+    TokenKind.SEASON: 39,
+    TokenKind.SPECIAL: 207,
+    TokenKind.VERSION: 141,
+    TokenKind.RESOLUTION: 114,
+    TokenKind.VIDEO_CODEC: 79,
+    TokenKind.AUDIO_CODEC: 180,
+    TokenKind.SOURCE: 176,
+    TokenKind.REMUX: 204,
+    TokenKind.YEAR: 75,
+    TokenKind.BATCH_RANGE: 87,
+    TokenKind.SUBTITLE_INFO: 102,
+    TokenKind.LANGUAGE: 103,
+    TokenKind.BONUS: 213,
+    TokenKind.DUAL_AUDIO: 222,
+    TokenKind.UNCENSORED: 196,
+    TokenKind.EDITION: 147,
+    TokenKind.HDR: 226,
+    TokenKind.BIT_DEPTH: 156,
+    TokenKind.SEPARATOR: 240,
+    TokenKind.EXTENSION: 240,
+    TokenKind.SITE_PREFIX: 240,
+    TokenKind.UNKNOWN: 244,
+}
 
 _FIELD_TO_KIND: dict[str, TokenKind] = {
     "series": TokenKind.TEXT,
@@ -86,19 +233,28 @@ _FIELD_TO_KIND: dict[str, TokenKind] = {
 _RE_SE_SPLIT = re.compile(r"([Ss]\d{1,2})([Ee]\d{1,4}(?:v\d+)?)", re.IGNORECASE)
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
 def colorize(text: str, kind: TokenKind) -> str:
     """Wrap text in ANSI color for a token kind."""
-    color = TOKEN_COLORS.get(kind, "")
-    if color:
-        return f"{color}{text}{RESET}"
+    n = _TOKEN_COLOR_NUMS.get(kind)
+    if n is not None:
+        color = _make_color(n)
+        if color:
+            return f"{color}{text}{_reset()}"
     return text
 
 
 def color_for_field(field: str) -> str:
     """Return the ANSI color code for a parsed field name."""
     kind = _FIELD_TO_KIND.get(field)
-    if kind:
-        return TOKEN_COLORS.get(kind, "")
+    if kind is not None:
+        n = _TOKEN_COLOR_NUMS.get(kind)
+        if n is not None:
+            return _make_color(n)
     return ""
 
 
@@ -127,18 +283,14 @@ def colorize_path(rel_path: str) -> str:
 
     for part in parts:
         tokens = classify(tokenize_component(part))
-        # Reconstruct the part by finding each token's text in order
         result: list[str] = []
         remaining = part
         for token in tokens:
             text = token.text
 
-            # Large TEXT/DOT_TEXT tokens may contain unclassified metadata
-            # (e.g., directory names). Scan for finer-grained tokens.
             if token.kind in (TokenKind.TEXT, TokenKind.DOT_TEXT) and " " in text:
                 sub_tokens = scan_words(text)
                 if any(t.kind != TokenKind.UNKNOWN for t in sub_tokens):
-                    # Found classifiable content — colorize each sub-token
                     idx = remaining.find(text)
                     if idx > 0:
                         result.append(remaining[:idx])
@@ -160,8 +312,6 @@ def colorize_path(rel_path: str) -> str:
                     remaining = remaining[idx + len(text) :] if idx >= 0 else remaining
                     continue
 
-            # Find the token text in remaining string
-            # For brackets/parens, search for the delimited form
             if token.kind == TokenKind.BRACKET:
                 search = f"[{text}]"
             elif token.kind == TokenKind.PAREN:
@@ -194,6 +344,7 @@ def colorize_path(rel_path: str) -> str:
 
 def format_parsed_media(pm: ParsedMedia) -> str:
     """Format ParsedMedia for display, showing only non-empty fields."""
+    reset = _reset()
     lines = []
     for field, value in [
         ("series", pm.series_name),
@@ -231,6 +382,6 @@ def format_parsed_media(pm: ParsedMedia) -> str:
     ]:
         if value is not None and value != "" and value is not False:
             color = color_for_field(field)
-            val_str = f"{color}{value}{RESET}" if color else str(value)
+            val_str = f"{color}{value}{reset}" if color else str(value)
             lines.append(f"  {field:12s} {val_str}")
     return "\n".join(lines)
