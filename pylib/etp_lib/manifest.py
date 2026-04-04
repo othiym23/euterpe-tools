@@ -381,11 +381,11 @@ def write_manifest(
             if entry.hash_failed:
                 lines.append("  // CRC32 MISMATCH — hash stripped from destination")
             lines.append(f"  {tag}episode {ep_num} {{")
-            lines.append(f'    source "{escape_kdl(str(entry.source.path))}"')
             if entry.source.matched_download is not None:
                 lines.append(
                     f'    downloaded "{escape_kdl(str(entry.source.matched_download))}"'
                 )
+            lines.append(f'    source "{escape_kdl(str(entry.source.path))}"')
             dest_name = entry.dest_path.name
             if len(dest_name.encode("utf-8")) > _MAX_FILENAME_BYTES:
                 lines.append(
@@ -732,6 +732,10 @@ class ManifestWorkflow:
         )
         return self.manifest_path
 
+    @property
+    def _known_sources(self) -> dict[str, SourceFile]:
+        return {str(e.source.path): e.source for e in self.entries}
+
     def edit_loop(
         self,
     ) -> tuple[
@@ -745,16 +749,13 @@ class ManifestWorkflow:
         Raises ValueError if the user cancels or the manifest is empty.
         """
         assert self.manifest_path is not None
-        known_sources: dict[str, SourceFile] = {
-            str(e.source.path): e.source for e in self.entries
-        }
 
         while True:
             if not open_editor(self.manifest_path):
                 raise ValueError("Editor failed")
 
             parsed_entries, errors, extra_entries, rename_entries = parse_manifest(
-                self.manifest_path, known_sources, self.series_dir
+                self.manifest_path, self._known_sources, self.series_dir
             )
 
             if errors:
@@ -815,6 +816,25 @@ class ManifestWorkflow:
             except OSError:
                 pass
 
+    def print_colorized_manifest(self) -> None:
+        """Print the manifest with colorized source/downloaded/dest paths."""
+        from etp_lib.colorize import colorize_path
+
+        assert self.manifest_path is not None
+        text = self.manifest_path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith(("source ", "downloaded ", "dest ")):
+                # Extract the quoted path value
+                quote_start = line.find('"')
+                quote_end = line.rfind('"')
+                if quote_start != -1 and quote_end > quote_start:
+                    prefix = line[:quote_start]
+                    path_str = line[quote_start + 1 : quote_end]
+                    print(f'{prefix}"{colorize_path(path_str)}"')
+                    continue
+            print(line)
+
     def run(
         self,
         dry_run: bool = False,
@@ -830,8 +850,25 @@ class ManifestWorkflow:
         self.write(extras=extras, renames=renames)
         file_count = len(self.parsed)
 
+        print()
+        self.print_colorized_manifest()
+
         try:
-            parsed_entries, extra_entries, rename_entries = self.edit_loop()
+            if prompt_confirm("\n  Edit manifest?"):
+                parsed_entries, extra_entries, rename_entries = self.edit_loop()
+            else:
+                assert self.manifest_path is not None
+                parsed_entries, errors, extra_entries, rename_entries = parse_manifest(
+                    self.manifest_path, self._known_sources, self.series_dir
+                )
+                if errors:
+                    print(f"\n  Manifest has {len(errors)} error(s):")
+                    for err in errors:
+                        print(err)
+                    return 0, file_count, []
+                if not parsed_entries:
+                    print("  Manifest is empty. Skipping group.")
+                    return 0, file_count, []
         except ValueError as e:
             print(f"  {e}. Skipping group.")
             return 0, file_count, []

@@ -134,6 +134,24 @@ implemented.
       query
 - [x] `system_patterns` as `HashSet<String>` for O(1) lookup
 
+## Terminal UI Improvements
+
+- [ ] Investigate [Rich](https://github.com/Textualize/rich) for terminal
+      rendering — color depth detection/mapping, tables, progress bars, styled
+      text. Could replace the manual ANSI plumbing in `colorize.py` and improve
+      the triage/series interactive workflow.
+- [ ] Evaluate [Textual](https://github.com/Textualize/textual) (TUI framework
+      from the same team as Rich) if full interactive screens are needed (e.g.,
+      manifest editing with live preview instead of shelling out to Vim).
+- [ ] Consider [click](https://github.com/pallets/click) or
+      [Typer](https://github.com/fastapi/typer) for CLI argument parsing with
+      built-in color/help formatting (Typer is built on click + Rich).
+- [ ] Look at [tqdm](https://github.com/tqdm/tqdm) for progress bars during
+      long-running operations (metadata scanning, file copying).
+- [ ] [Prompt Toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit)
+      for advanced interactive prompts (autocomplete, multi-select, fuzzy
+      matching) — could improve the ID selection flow in triage/series.
+
 ## Post-SP3: Memory Profiling
 
 - [ ] Profile peak memory of all commands and subcommands against a large
