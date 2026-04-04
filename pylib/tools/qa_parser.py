@@ -31,10 +31,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from etp_lib.colorize import colorize_path, format_parsed_media
 from etp_lib.media_parser import (
     ParsedMedia,
+    _MEDIA_EXTENSIONS,
     parse_media_path,
 )
-
-_MEDIA_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi", ".flac", ".m4a", ".mp3"})
 
 
 def _collect_files(root: Path) -> list[Path]:

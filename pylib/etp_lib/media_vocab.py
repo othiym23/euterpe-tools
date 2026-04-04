@@ -72,7 +72,7 @@ class Token:
 # Media file extensions
 # ---------------------------------------------------------------------------
 
-_MEDIA_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi"})
+_MEDIA_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi", ".flac", ".m4a", ".mp3"})
 _ALL_EXTENSIONS = frozenset(
     {".mkv", ".mp4", ".avi", ".rar", ".iso", ".zip", ".7z", ".webdl"}
 )
