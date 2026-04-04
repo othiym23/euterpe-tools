@@ -361,7 +361,9 @@ def write_manifest(
     lines.append(
         "// Edit destination filenames. Delete or /- comment out entries to skip."
     )
-    lines.append("// Source filenames are for reference only — only dest is used.")
+    lines.append(
+        "// Source/sonarr filenames are for reference only — only dest is used."
+    )
     lines.append("")
 
     for group_key in sorted(groups.keys()):
@@ -385,7 +387,9 @@ def write_manifest(
                 lines.append(
                     f'    downloaded "{escape_kdl(str(entry.source.matched_download))}"'
                 )
-            lines.append(f'    source "{escape_kdl(str(entry.source.path))}"')
+                lines.append(f'    sonarr "{escape_kdl(str(entry.source.path))}"')
+            else:
+                lines.append(f'    source "{escape_kdl(str(entry.source.path))}"')
             dest_name = entry.dest_path.name
             if len(dest_name.encode("utf-8")) > _MAX_FILENAME_BYTES:
                 lines.append(
@@ -538,11 +542,12 @@ def parse_manifest(
                 errors.append(f"  {label}: unresolved (todo) entry")
                 continue
 
-            # Extract source and dest from children
+            # Extract source/sonarr and dest from children.
+            # "source" is used in triage mode, "sonarr" in series mode.
             source_name = ""
             dest_name = ""
             for child in ep_node.nodes:
-                if child.name == "source" and child.args:
+                if child.name in ("source", "sonarr") and child.args:
                     source_name = str(child.args[0])
                 elif child.name == "dest" and child.args:
                     dest_name = str(child.args[0])
@@ -824,7 +829,7 @@ class ManifestWorkflow:
         text = self.manifest_path.read_text(encoding="utf-8")
         for line in text.splitlines():
             stripped = line.lstrip()
-            if stripped.startswith(("source ", "downloaded ", "dest ")):
+            if stripped.startswith(("source ", "sonarr ", "downloaded ", "dest ")):
                 # Extract the quoted path value
                 quote_start = line.find('"')
                 quote_end = line.rfind('"')
