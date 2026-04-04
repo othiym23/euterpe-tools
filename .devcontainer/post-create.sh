@@ -26,6 +26,13 @@ else
   echo "warning: no GitHub token found. Run: gh auth login"
 fi
 
+# The host's ~/.ssh/config sets IdentityAgent to ~/.1password/agent.sock,
+# which doesn't exist inside the container.  SSH then ignores the forwarded
+# VS Code agent entirely.  Fix: set GIT_SSH_COMMAND to bypass the config
+# and use the forwarded agent via SSH_AUTH_SOCK.
+export GIT_SSH_COMMAND="ssh -o IdentityAgent=\${SSH_AUTH_SOCK}"
+git config --global core.sshCommand 'ssh -o IdentityAgent=$SSH_AUTH_SOCK'
+
 # Configure git identity and SSH commit signing.
 # The signing key is discovered from the forwarded 1Password agent.
 git config --global user.name "零Rei"
