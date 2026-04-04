@@ -161,18 +161,22 @@ _PALETTE_TO_16: dict[str, str] = {
 }
 
 
+# Reverse map: 256-color number -> 16-color SGR code
+_256_TO_16: dict[int, str] = {
+    num: _PALETTE_TO_16[name]
+    for name, num in _PALETTE.items()
+    if name in _PALETTE_TO_16
+}
+
+
 def _make_color(n256: int) -> str:
     """Return the appropriate escape sequence for a 256-color code."""
     depth = _get_color_depth()
     if depth == ColorDepth.NONE:
         return ""
     if depth == ColorDepth.BASIC:
-        # Reverse-lookup the palette name for this number
-        for name, num in _PALETTE.items():
-            if num == n256:
-                code = _PALETTE_TO_16.get(name)
-                return _c16(code) if code else ""
-        return ""
+        code = _256_TO_16.get(n256)
+        return _c16(code) if code else ""
     return _c256(n256)
 
 
