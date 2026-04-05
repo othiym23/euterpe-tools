@@ -37,6 +37,7 @@ from etp_lib.conflicts import (
     prompt_value,
     verify_hash,
 )
+from etp_lib.colorize import colorize_path
 from etp_lib.manifest import ManifestWorkflow, escape_kdl, parse_manifest
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
@@ -1408,6 +1409,27 @@ def _apply_batch_traits(
             mf.is_uncensored = True
 
 
+def _print_existing_dest_files(series_dir: Path, seasons: list[int]) -> None:
+    """Print colorized existing media files in affected season directories."""
+    existing: list[tuple[str, str]] = []
+    for s in seasons:
+        season_dir = series_dir / f"Season {s:02d}"
+        if season_dir.is_dir():
+            for f in sorted(season_dir.iterdir()):
+                if f.is_file() and f.suffix.lower() in _MEDIA_EXTENSIONS:
+                    existing.append((f"Season {s:02d}", f.name))
+    specials_dir = series_dir / "Specials"
+    if specials_dir.is_dir():
+        for f in sorted(specials_dir.iterdir()):
+            if f.is_file() and f.suffix.lower() in _MEDIA_EXTENSIONS:
+                existing.append(("Specials", f.name))
+
+    if existing:
+        print(f"\n  Existing files in {series_dir.name}:")
+        for subdir, name in existing:
+            print(f"    {subdir}/{colorize_path(name)}")
+
+
 def _prompt_batch_confirmation(
     proposed_dir: Path,
     dir_exists: bool,
@@ -1485,7 +1507,7 @@ def _process_group_batch(
     _apply_batch_traits(matched, release_group, detected_group)
     snapshot_parsed = [mf.to_source_snapshot() for mf in matched]
 
-    # Phase 2: Lightweight manifest preview
+    # Phase 2: Lightweight build (no display yet — wait for enrichment)
     workflow = ManifestWorkflow(
         snapshot_parsed,
         info,
@@ -1495,22 +1517,13 @@ def _process_group_batch(
         analyze_file_fn=analyze_file,
     )
     workflow.build_lightweight()
-    workflow.write(extras=extras, renames=renames)
-    print()
-    workflow.print_colorized_manifest()
 
-    # Phase 3: Confirmation loop (auto-proceed if dir already exists)
-    if dir_exists:
-        print(f"\n  Series dir:     {proposed_dir.name}  [exists]")
-        print(f"  Concise name:   {concise_name}")
-        print(f"  Release group:  {release_group}")
-
+    # Phase 3: Confirmation gate for new directories
     while not dir_exists:
         choice = _prompt_batch_confirmation(
             proposed_dir, dir_exists, concise_name, release_group
         )
         if choice == "s":
-            workflow.cleanup()
             return 0, len(matched), []
         if choice == "e":
             concise_name = prompt_value(
@@ -1537,9 +1550,6 @@ def _process_group_batch(
                 analyze_file_fn=analyze_file,
             )
             workflow.build_lightweight()
-            workflow.write(extras=extras, renames=renames)
-            print()
-            workflow.print_colorized_manifest()
             continue
         break  # "y"
 
@@ -1552,9 +1562,14 @@ def _process_group_batch(
     if info.tvdb_id is not None:
         id_map[(MetadataProvider.TVDB, info.tvdb_id)] = series_dir
 
-    # Phase 5: Enrich with mediainfo + CRC32, then edit + execute
+    # Phase 5: Enrich with mediainfo + CRC32
     workflow.enrich(extras=extras, renames=renames)
     file_count = len(workflow.parsed)
+
+    # Phase 6: Show existing files + enriched manifest + edit prompt
+    _print_existing_dest_files(series_dir, seasons_list)
+    print()
+    workflow.print_colorized_manifest()
 
     try:
         if prompt_confirm("\n  Edit manifest?"):
