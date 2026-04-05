@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+from dataclasses import dataclass
 import readline  # noqa: F401 — enables line editing in input()
 import shutil
 import subprocess
@@ -496,27 +497,42 @@ def _extract_concise_name(source_files: list[SourceFile]) -> str:
     return pm.series_name
 
 
-def _scan_existing_concise_names(
-    series_dir: Path, seasons: list[int]
-) -> dict[Path, dict[str, list[Path]]]:
-    """Scan existing media files in dest season dirs and extract concise names.
+@dataclass
+class DestScan:
+    """Cached scan of all media files in a series destination directory.
 
-    Returns ``{season_dir: {concise_name: [file_paths]}}`` for each affected
-    season directory that already contains files.
+    Built once per batch by :func:`scan_dest_directory` and threaded through
+    concise-name resolution, existing-file display, and rename detection.
     """
-    result: dict[Path, dict[str, list[Path]]] = {}
-    dirs_to_check = [series_dir / f"Season {s:02d}" for s in seasons]
-    dirs_to_check.append(series_dir / "Specials")
 
-    for season_dir in dirs_to_check:
-        if not season_dir.is_dir():
+    files_by_subdir: dict[Path, list[Path]]
+    """``{subdir_path: [media_file_paths]}`` for every subdirectory."""
+
+    names_by_subdir: dict[Path, dict[str, list[Path]]]
+    """``{subdir_path: {concise_name: [file_paths]}}``."""
+
+
+def scan_dest_directory(series_dir: Path) -> DestScan:
+    """Scan all subdirectories of *series_dir* for media files.
+
+    Returns a :class:`DestScan` with both the raw file listing (for display)
+    and the concise-name grouping (for name resolution and rename detection).
+    """
+    files_by_subdir: dict[Path, list[Path]] = {}
+    names_by_subdir: dict[Path, dict[str, list[Path]]] = {}
+
+    if not series_dir.is_dir():
+        return DestScan(files_by_subdir, names_by_subdir)
+
+    for subdir in sorted(series_dir.iterdir()):
+        if not subdir.is_dir():
             continue
+        media_files: list[Path] = []
         names: dict[str, list[Path]] = {}
-        for f in season_dir.iterdir():
+        for f in sorted(subdir.iterdir()):
             if not f.is_file() or f.suffix.lower() not in _MEDIA_EXTENSIONS:
                 continue
-            # Extract concise name: use text before the first " - " separator
-            # to avoid including episode titles in the concise name.
+            media_files.append(f)
             stem = f.stem
             sep_idx = stem.find(" - ")
             if sep_idx > 0:
@@ -526,10 +542,12 @@ def _scan_existing_concise_names(
                 name = pm.series_name.strip()
             if name:
                 names.setdefault(name, []).append(f)
+        if media_files:
+            files_by_subdir[subdir] = media_files
         if names:
-            result[season_dir] = names
+            names_by_subdir[subdir] = names
 
-    return result
+    return DestScan(files_by_subdir, names_by_subdir)
 
 
 def _resolve_concise_name_from_existing(
@@ -1347,8 +1365,7 @@ def _strip_year(name: str) -> str:
 
 def _auto_resolve_concise_name(
     matched: list[MatchedFile],
-    series_dir: Path,
-    seasons_list: list[int],
+    dest_scan: DestScan,
     config: AnimeConfig | None,
     group_key: str,
 ) -> str:
@@ -1358,7 +1375,6 @@ def _auto_resolve_concise_name(
     Existing files take priority because the user has already established
     a naming convention in the destination directory.
     """
-    # Start with config or parsed as the baseline
     default = group_key
     saved_concise = (
         config.concise_names.get(group_key, "")
@@ -1372,15 +1388,13 @@ def _auto_resolve_concise_name(
         default = _extract_concise_name(sources)
 
     # Existing files in dest override — they reflect the established naming
-    if series_dir.is_dir():
-        existing_names = _scan_existing_concise_names(series_dir, seasons_list)
-        if existing_names:
-            global_counts: Counter[str] = Counter()
-            for names_in_dir in existing_names.values():
-                for name, files in names_in_dir.items():
-                    global_counts[name] += len(files)
-            if global_counts:
-                default = global_counts.most_common(1)[0][0]
+    if dest_scan.names_by_subdir:
+        global_counts: Counter[str] = Counter()
+        for names_in_dir in dest_scan.names_by_subdir.values():
+            for name, files in names_in_dir.items():
+                global_counts[name] += len(files)
+        if global_counts:
+            default = global_counts.most_common(1)[0][0]
 
     return _strip_year(default)
 
@@ -1417,22 +1431,14 @@ def _apply_batch_traits(
             mf.is_uncensored = True
 
 
-def _print_existing_dest_files(series_dir: Path) -> None:
-    """Print colorized existing media files in all season/specials directories."""
-    if not series_dir.is_dir():
+def _print_existing_dest_files(series_dir: Path, dest_scan: DestScan) -> None:
+    """Print colorized existing media files from a pre-scanned directory."""
+    if not dest_scan.files_by_subdir:
         return
-    existing: list[tuple[str, str]] = []
-    for subdir in sorted(series_dir.iterdir()):
-        if not subdir.is_dir():
-            continue
-        for f in sorted(subdir.iterdir()):
-            if f.is_file() and f.suffix.lower() in _MEDIA_EXTENSIONS:
-                existing.append((subdir.name, f.name))
-
-    if existing:
-        print(f"\n  Existing files in {series_dir.name}:")
-        for subdir, name in existing:
-            print(f"    {subdir}/{colorize_path(name)}")
+    print(f"\n  Existing files in {series_dir.name}:")
+    for subdir, files in dest_scan.files_by_subdir.items():
+        for f in files:
+            print(f"    {subdir.name}/{colorize_path(f.name)}")
 
 
 def _prompt_batch_confirmation(
@@ -1506,9 +1512,8 @@ def _process_group_batch(
     proposed_dir, dir_exists, _found_via_id = propose_series_directory(
         dest, info, id_map
     )
-    concise_name = _auto_resolve_concise_name(
-        matched, proposed_dir, seasons_list, config, group_key
-    )
+    dest_scan = scan_dest_directory(proposed_dir)
+    concise_name = _auto_resolve_concise_name(matched, dest_scan, config, group_key)
     detected_group = _auto_detect_release_group(matched)
     release_group = detected_group
     _apply_batch_traits(matched, release_group, detected_group)
@@ -1574,7 +1579,7 @@ def _process_group_batch(
     file_count = len(workflow.parsed)
 
     # Phase 6: Show existing files + enriched manifest + edit prompt
-    _print_existing_dest_files(series_dir)
+    _print_existing_dest_files(series_dir, dest_scan)
     print()
     workflow.print_colorized_manifest()
 
@@ -1583,12 +1588,10 @@ def _process_group_batch(
         return 0, file_count, []
     parsed_entries, extra_entries, rename_entries = result
 
-    # Check for naming inconsistencies in existing files after the user has
-    # confirmed/edited the manifest — merge any renames with manifest renames.
-    existing_names = _scan_existing_concise_names(series_dir, seasons_list)
-    if existing_names:
+    # Check for naming inconsistencies — reuses the scan from phase 1
+    if dest_scan.names_by_subdir:
         _resolved_name, extra_renames = _resolve_concise_name_from_existing(
-            existing_names, series_dir
+            dest_scan.names_by_subdir, series_dir
         )
         rename_entries.extend(extra_renames)
 
