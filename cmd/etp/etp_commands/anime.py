@@ -268,6 +268,36 @@ def parse_source_filename(filename: str) -> SourceFile:
 # ---------------------------------------------------------------------------
 
 
+def build_id_queue(
+    series_name: str,
+    config: AnimeConfig,
+    source_dir: Path | None = None,
+) -> list[tuple[str, int]]:
+    """Build an ordered ID queue from source directory .id files and config.
+
+    Reads ``anidb.id`` / ``tvdb.id`` from *source_dir* (if provided), then
+    appends any config mappings not already in the queue.
+    """
+    queue: list[tuple[str, int]] = []
+    if source_dir is not None:
+        for id_filename, provider in (
+            ("anidb.id", MetadataProvider.ANIDB),
+            ("tvdb.id", MetadataProvider.TVDB),
+        ):
+            id_file = source_dir / id_filename
+            if id_file.is_file():
+                try:
+                    raw = id_file.read_text(encoding="utf-8").strip()
+                    if raw:
+                        queue.append((provider, int(raw)))
+                except ValueError, OSError:
+                    pass
+    for entry in lookup_series_ids(series_name, config):
+        if entry not in queue:
+            queue.append(entry)
+    return queue
+
+
 def scan_dest_ids(dest: Path) -> dict[tuple[str, int], Path]:
     """Scan destination directory for existing series with ID files.
 
@@ -1879,31 +1909,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
 
         print(f"  {len(media_files)} file(s) to process.")
 
-        # Build a queue of IDs from source dir files + config mappings
-        id_queue: list[tuple[str, int]] = []
-
-        # Check for ID files in the source series directory
-        anidb_file = series_path / "anidb.id"
-        tvdb_file = series_path / "tvdb.id"
-        if anidb_file.is_file():
-            try:
-                id_queue.append(
-                    (MetadataProvider.ANIDB, int(anidb_file.read_text().strip()))
-                )
-            except ValueError:
-                pass
-        if tvdb_file.is_file():
-            try:
-                id_queue.append(
-                    (MetadataProvider.TVDB, int(tvdb_file.read_text().strip()))
-                )
-            except ValueError:
-                pass
-
-        # Add config mappings (may have multiple AniDB IDs for multi-season)
-        for entry in lookup_series_ids(series_path.name, config):
-            if entry not in id_queue:
-                id_queue.append(entry)
+        id_queue = build_id_queue(series_path.name, config, source_dir=series_path)
 
         if id_queue:
             print(f"  Known IDs: {', '.join(f'{p} {i}' for p, i in id_queue)}")
@@ -2095,7 +2101,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         print(f"Group: {name}  ({len(files)} files)")
         print(f"{'=' * 60}")
         for f in files:
-            print(f"  {f.name}")
+            print(f"  {colorize_path(f.name)}")
 
         # Parse all files upfront for the group
         pool = _parse_files(files)
@@ -2110,11 +2116,9 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
                 if f.is_file() and f.suffix.lower() in _EXTRAS_EXTENSIONS
             ]
 
-        # Build ID queue from config for this group
-        id_queue: list[tuple[str, int]] = []
-        saved = lookup_series_ids(name, config)
-        if saved:
-            id_queue.extend(saved)
+        id_queue = build_id_queue(name, config)
+        if id_queue:
+            print(f"  Known IDs: {', '.join(f'{p} {i}' for p, i in id_queue)}")
 
         success, failed, quit_all = _process_pool(
             pool,
