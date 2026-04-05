@@ -1686,14 +1686,6 @@ def _process_pool(
             )
             pid = anidb_id if anidb_id is not None else tvdb_id
             assert pid is not None
-            _maybe_save_mapping(
-                group_name,
-                provider,
-                pid,
-                config,
-                dry_run,
-                concise_name=_extract_concise_name(pool),
-            )
 
         # Fetch metadata
         try:
@@ -1758,6 +1750,22 @@ def _process_pool(
         print(f"\n  Done: {success} copied, {failed} skipped/failed")
         total_success += success
         total_failed += failed
+
+        # Save config mapping only after successful copy
+        if success > 0:
+            pid = anidb_id if anidb_id is not None else tvdb_id
+            if pid is not None:
+                _maybe_save_mapping(
+                    group_name,
+                    MetadataProvider.ANIDB
+                    if anidb_id is not None
+                    else MetadataProvider.TVDB,
+                    pid,
+                    config,
+                    dry_run,
+                    concise_name=_extract_concise_name(pool) if pool else "",
+                )
+
         if triaged and not dry_run:
             for p in triaged:
                 already_copied.add(_resolve(p))
