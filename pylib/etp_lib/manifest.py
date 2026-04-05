@@ -752,6 +752,29 @@ class ManifestWorkflow:
         self.entries: list[ManifestEntry] = []
         self.manifest_path: Path | None = None
 
+    def build_lightweight(self) -> list[ManifestEntry]:
+        """Match episodes and build entries without mediainfo or CRC32."""
+        self.entries = match_episodes(
+            self.parsed, self.info, self.concise_name, self.series_dir
+        )
+        return self.entries
+
+    def enrich(
+        self,
+        extras: list[Path] | None = None,
+        renames: list[tuple[Path, Path]] | None = None,
+    ) -> None:
+        """Run mediainfo + CRC32 on entries, regenerate filenames, re-write manifest."""
+        print()
+        enrich_manifest_entries(
+            self.entries,
+            self.concise_name,
+            self.series_dir,
+            self.verbose,
+            analyze_file_fn=self.analyze_file_fn,
+        )
+        self.write(extras=extras, renames=renames)
+
     def build(self) -> list[ManifestEntry]:
         """Build manifest entries (mediainfo + CRC32 verification)."""
         print()
