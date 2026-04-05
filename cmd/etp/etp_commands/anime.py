@@ -238,6 +238,8 @@ def _maybe_save_mapping(
 
 # Media file extensions (canonical set in media_parser)
 _MEDIA_EXTENSIONS = media_parser._MEDIA_EXTENSIONS
+_VIDEO_EXTENSIONS = media_parser._VIDEO_EXTENSIONS
+_AUDIO_EXTENSIONS = media_parser._AUDIO_EXTENSIONS
 _EXTRAS_EXTENSIONS = frozenset({".rar", ".zip", ".7z", ".flac", ".wav", ".ape", ".txt"})
 
 
@@ -505,15 +507,22 @@ def _save_triage_manifest(copied: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _iter_media_files(source_dirs: list[Path]) -> list[Path]:
-    """Walk source directories recursively for media files."""
+def _iter_media_files(
+    source_dirs: list[Path], include_audio: bool = False
+) -> list[Path]:
+    """Walk source directories recursively for media files.
+
+    By default only video files are returned.  Set *include_audio* to
+    also collect audio files (for the QA tool or extras detection).
+    """
+    extensions = _MEDIA_EXTENSIONS if include_audio else _VIDEO_EXTENSIONS
     results: list[Path] = []
     for source_dir in source_dirs:
         if not source_dir.is_dir():
             continue
         for root, _dirs, files in os.walk(source_dir):
             for name in files:
-                if Path(name).suffix.lower() in _MEDIA_EXTENSIONS:
+                if Path(name).suffix.lower() in extensions:
                     results.append(Path(root) / name)
     return results
 
@@ -1671,6 +1680,7 @@ def _process_pool(
     download_index: DownloadIndex | None = None,
     title_index: media_parser.TitleAliasIndex | None = None,
     resolved_paths: dict[Path, str] | None = None,
+    auto_accept_ids: bool = False,
 ) -> tuple[int, int, bool]:
     """Process a file pool against metadata IDs interactively.
 
@@ -1693,15 +1703,49 @@ def _process_pool(
         tvdb_id: int | None = None
         id_from_config = False
 
-        # Auto-accept pre-populated ID queue (from config / .id files)
+        # Use pre-populated ID queue. In series mode (auto_accept_ids),
+        # accept without prompting. In triage mode, prompt for confirmation.
         if id_queue:
-            provider, sid = id_queue.pop(0)
-            id_from_config = True
-            print(f"\n  {len(pool)} file(s) remaining, using {provider} {sid}.")
-            if provider == MetadataProvider.ANIDB:
-                anidb_id = sid
+            provider, sid = id_queue[0]
+            if auto_accept_ids:
+                id_queue.pop(0)
+                id_from_config = True
+                print(f"\n  {len(pool)} file(s) remaining, using {provider} {sid}.")
+                if provider == MetadataProvider.ANIDB:
+                    anidb_id = sid
+                else:
+                    tvdb_id = sid
             else:
-                tvdb_id = sid
+                print(f"\n  {len(pool)} file(s) remaining in pool.")
+                raw = (
+                    input(
+                        f"\n  Use {provider} {sid} from config?"
+                        f" [Y]es / [n]o / [s]kip / [d]one / [q]uit: "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if raw in ("", "y", "yes"):
+                    id_queue.pop(0)
+                    id_from_config = True
+                    if provider == MetadataProvider.ANIDB:
+                        anidb_id = sid
+                    else:
+                        tvdb_id = sid
+                elif raw == "n":
+                    id_queue.pop(0)
+                elif raw == "s":
+                    break
+                elif raw == "d":
+                    if not dry_run:
+                        for sf in pool:
+                            already_copied.add(_resolve(sf.path))
+                        _save_triage_manifest(already_copied)
+                    print(f"  Marked {len(pool)} file(s) as done.")
+                    pool.clear()
+                    break
+                elif raw == "q":
+                    return total_success, total_failed, True
 
         # If no ID yet, prompt for one
         if anidb_id is None and tvdb_id is None:
@@ -1980,6 +2024,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
             already_copied=already_copied,
             download_index=download_index,
             title_index=title_index,
+            auto_accept_ids=True,
         )
         total_success += success
         total_failed += failed
