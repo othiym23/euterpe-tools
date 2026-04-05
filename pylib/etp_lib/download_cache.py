@@ -17,7 +17,7 @@ import msgpack
 from etp_lib.paths import cache_dir
 from etp_lib.types import DownloadIndex
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # bumped: audio files excluded from grouping
 
 
 @dataclass
