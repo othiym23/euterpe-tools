@@ -1556,9 +1556,6 @@ def _process_group_batch(
     workflow.enrich(extras=extras, renames=renames)
     file_count = len(workflow.parsed)
 
-    print()
-    workflow.print_colorized_manifest()
-
     try:
         if prompt_confirm("\n  Edit manifest?"):
             parsed_entries, extra_entries, rename_entries = workflow.edit_loop()
