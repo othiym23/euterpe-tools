@@ -3,7 +3,7 @@ name = "etp"
 version = "0.1.0"
 description = "Python plumbing for euterpe-tools"
 requires-python = ">=3.14"
-dependencies = ["kdl-py>=1.2.0", "parsy>=2.2"]
+dependencies = ["kdl-py>=1.2.0", "msgpack>=1.0", "parsy>=2.2"]
 
 [project.scripts]
 etp = "etp_commands.dispatcher:main"

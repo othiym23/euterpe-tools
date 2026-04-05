@@ -39,6 +39,13 @@ from etp_lib.conflicts import (
     verify_hash,
 )
 from etp_lib.colorize import colorize_path
+from etp_lib.download_cache import (
+    DownloadCache,
+    find_stale_dirs,
+    load_cache,
+    save_cache,
+    scan_dir_mtimes,
+)
 from etp_lib.manifest import ManifestWorkflow, escape_kdl
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
@@ -1856,12 +1863,39 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
         print("No series directories found.")
         return 0
 
-    # Build download index for enriching metadata from original filenames
+    # Build download index — use cache if available
     downloads_dir = config.downloads_dir
+    no_cache = args.no_cache
     if downloads_dir.is_dir():
-        print(f"Building download index from {downloads_dir}...")
-        download_index = _build_download_index(downloads_dir)
-        print(f"  Indexed {download_index.file_count} files.")
+        cached = load_cache() if not no_cache else None
+        if cached is not None and cached.download_index.file_count > 0:
+            current_mtimes = scan_dir_mtimes([downloads_dir])
+            changed, removed = find_stale_dirs(cached.dir_mtimes, current_mtimes)
+            if not changed and not removed:
+                print(
+                    f"Using cached download index ({cached.download_index.file_count} files)."
+                )
+                download_index = cached.download_index
+            else:
+                print(f"Building download index from {downloads_dir}...")
+                download_index = _build_download_index(downloads_dir)
+                print(f"  Indexed {download_index.file_count} files.")
+                save_cache(
+                    DownloadCache(
+                        download_index=download_index,
+                        dir_mtimes=current_mtimes,
+                    )
+                )
+        else:
+            print(f"Building download index from {downloads_dir}...")
+            download_index = _build_download_index(downloads_dir)
+            print(f"  Indexed {download_index.file_count} files.")
+            save_cache(
+                DownloadCache(
+                    download_index=download_index,
+                    dir_mtimes=scan_dir_mtimes([downloads_dir]),
+                )
+            )
     else:
         download_index = DownloadIndex()
 
@@ -2035,7 +2069,36 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     out on subsequent runs (use --force to re-process).
     """
     source_dirs = args.source or [config.downloads_dir]
-    groups = _scan_and_group(source_dirs)
+    no_cache = args.no_cache
+
+    # Check cached grouping first — avoids re-walking 5K+ files
+    cached = load_cache() if not no_cache else None
+    if cached is not None:
+        current_mtimes = scan_dir_mtimes(source_dirs)
+        changed, removed = find_stale_dirs(cached.dir_mtimes, current_mtimes)
+        if not changed and not removed:
+            print("Using cached download index.")
+            groups = cached.groups
+        else:
+            if changed:
+                print(
+                    f"Re-scanning {len(changed)} changed director{'y' if len(changed) == 1 else 'ies'}..."
+                )
+            groups = _scan_and_group(source_dirs)
+            save_cache(
+                DownloadCache(
+                    groups=groups,
+                    dir_mtimes=current_mtimes,
+                )
+            )
+    else:
+        groups = _scan_and_group(source_dirs)
+        save_cache(
+            DownloadCache(
+                groups=groups,
+                dir_mtimes=scan_dir_mtimes(source_dirs),
+            )
+        )
 
     # Filter by pattern if provided
     pattern = args.pattern
