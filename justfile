@@ -105,9 +105,11 @@ deploy: check test build-nas
     rsync -a --delete \
         --exclude __pycache__ --exclude .pytest_cache \
         --exclude .ruff_cache --exclude '*.pyc' \
+        --exclude '.smbdelete*' \
         pylib/ "$dest/pylib/"
     rsync -a --delete \
         --exclude __pycache__ --exclude '*.pyc' \
+        --exclude '.smbdelete*' \
         cmd/etp/ "$dest/cmd/etp/"
     cp -X pyproject.toml uv.lock "$dest/"
     ssh ogd@{{ nas_host }} "cd ~/.local/src/etp && ~/.local/bin/uv tool install --force --python python3.14 ."
