@@ -134,6 +134,19 @@ implemented.
       query
 - [x] `system_patterns` as `HashSet<String>` for O(1) lookup
 
+## Anime Destination Cache (etp-scan SQLite)
+
+- [ ] Use the etp-scan SQLite database for the anime destination directory
+      (`/volume1/video/anime`, 82K files, 1543 dirs) instead of walking:
+  - [ ] `scan_dest_ids` → SQL query for `anidb.id`/`tvdb.id` files
+  - [ ] `scan_dest_directory` (DestScan) → SQL query instead of `iterdir`
+  - [ ] Auto-run `etp-scan` if DB is stale (mtime > threshold)
+  - [ ] Fallback to `os.walk` if etp-scan binary or DB unavailable
+- [ ] QA subcommand: `etp anime qa --missing-ids` to enumerate destination
+      series directories lacking `anidb.id` / `tvdb.id` files
+- [ ] Aggressive title matching: use AniDB/TVDB alternate names from cached
+      metadata to increase download → Sonarr → destination matching percentage
+
 ## Terminal UI Improvements
 
 - [ ] Investigate [Rich](https://github.com/Textualize/rich) for terminal
