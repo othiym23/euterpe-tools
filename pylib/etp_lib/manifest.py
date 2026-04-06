@@ -22,8 +22,13 @@ from etp_lib.conflicts import (
     verify_hash,
 )
 from etp_lib.media_parser import normalize_for_matching, parse_component
-from etp_lib.naming import format_episode_filename, format_series_dirname
+from etp_lib.naming import (
+    format_episode_filename,
+    format_series_dirname,
+    season_subdir,
+)
 from etp_lib.types import (
+    ConflictAction,
     AnimeInfo,
     BonusType,
     Episode,
@@ -261,7 +266,7 @@ def match_episodes(
                 special_tag=special_tag,
             )
             placeholder = placeholder.replace("s1e00", "s1eXX")
-            dest_dir = series_dir / f"Season {season:02d}"
+            dest_dir = season_subdir(series_dir, season, is_special)
             entries.append(
                 ManifestEntry(
                     source=sf,
@@ -283,10 +288,7 @@ def match_episodes(
                 is_special=is_special,
                 special_tag=special_tag,
             )
-            if is_special:
-                dest_dir = series_dir / "Specials"
-            else:
-                dest_dir = series_dir / f"Season {season:02d}"
+            dest_dir = season_subdir(series_dir, season, is_special)
             entries.append(
                 ManifestEntry(
                     source=sf,
@@ -351,11 +353,9 @@ def enrich_manifest_entries(
                 is_special=entry.is_special,
                 special_tag=entry.special_tag,
             )
-            if entry.is_special:
-                dest_dir = series_dir / "Specials"
-            else:
-                dest_dir = series_dir / f"Season {season:02d}"
-            entry.dest_path = dest_dir / filename
+            entry.dest_path = (
+                season_subdir(series_dir, season, entry.is_special) / filename
+            )
 
 
 def build_manifest_entries(
@@ -579,14 +579,14 @@ def parse_manifest(
 
         # Determine destination subdirectory
         if group_node.name == "specials":
-            dest_subdir = series_dir / "Specials"
+            dest_subdir = season_subdir(series_dir, 0, is_special=True)
         elif group_node.name == "season" and group_node.args:
             try:
                 season_num = int(group_node.args[0])
             except ValueError, TypeError:
                 errors.append(f"  invalid season number: '{group_node.args[0]}'")
                 continue
-            dest_subdir = series_dir / f"Season {season_num:02d}"
+            dest_subdir = season_subdir(series_dir, season_num)
         else:
             continue
 
@@ -682,14 +682,14 @@ def execute_manifest(
                 parse_source_filename_fn=parse_source_filename_fn,
                 analyze_file_fn=analyze_file_fn,
             )
-            if action in ("keep", "skip"):
+            if action in (ConflictAction.KEEP, ConflictAction.SKIP):
                 triaged_paths.append(sf.path)
-                if action == "skip":
+                if action == ConflictAction.SKIP:
                     failed += 1
                 else:
                     success += 1
                 continue
-            if action == "both":
+            if action == ConflictAction.BOTH:
                 # Keep existing. If dest already exists (same filename from
                 # matching metadata), disambiguate by appending the source
                 # file's CRC32 to the filename.

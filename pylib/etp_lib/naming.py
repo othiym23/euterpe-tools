@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from etp_lib.types import AudioTrack, SourceFile
 
@@ -103,6 +104,13 @@ def _sanitize_path(name: str) -> str:
     Replaces ``/`` with `` - `` and ``:`` with ``-``.
     """
     return name.replace("/", " - ").replace(":", "-")
+
+
+def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Path:
+    """Return the subdirectory for a season or Specials."""
+    if is_special or season == 0:
+        return series_dir / "Specials"
+    return series_dir / f"Season {season:02d}"
 
 
 def format_episode_filename(

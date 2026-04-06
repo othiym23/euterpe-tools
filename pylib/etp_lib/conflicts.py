@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from etp_lib.naming import unique_audio_codecs
-from etp_lib.types import MediaInfo, SourceFile
+from etp_lib.types import ConflictAction, MediaInfo, SourceFile
 
 _IS_LINUX = platform.system() == "Linux"
 
@@ -191,18 +191,16 @@ def _format_media_summary(media: MediaInfo | None) -> str:
     return ", ".join(parts)
 
 
-def resolve_conflict(conflict: ConflictInfo) -> str:
-    """Handle a destination conflict. Returns 'replace', 'keep', 'both', or 'skip'.
+def resolve_conflict(conflict: ConflictInfo) -> ConflictAction:
+    """Handle a destination conflict interactively.
 
     For matching metadata with matching CRC32, auto-replaces silently.
-    'both' keeps the existing file and copies the new one alongside it.
+    ``BOTH`` keeps the existing file and copies the new one alongside it.
     """
     if conflict.metadata_matches:
-        # Short-circuit: if file sizes differ, CRC32 can't match
         incoming_size = conflict.incoming_source.path.stat().st_size
         if incoming_size == conflict.existing_size:
             src_crc = compute_crc32(conflict.incoming_source.path)
-            # Stash the computed CRC for later use (e.g., "both" disambiguation)
             if not conflict.incoming_source.parsed.hash_code:
                 conflict.incoming_source.parsed.hash_code = src_crc
             dst_crc = compute_crc32(conflict.existing_path)
@@ -211,7 +209,7 @@ def resolve_conflict(conflict: ConflictInfo) -> str:
                     "  Destination exists with matching encode"
                     " (CRC32 match) — replacing to fix naming."
                 )
-                return "replace"
+                return ConflictAction.REPLACE
             print("  WARNING: Same encode metadata but CRC32 differs!")
         else:
             print("  WARNING: Same encode metadata but file sizes differ!")
@@ -235,13 +233,13 @@ def resolve_conflict(conflict: ConflictInfo) -> str:
     while True:
         choice = input("  [k]eep existing  [r]eplace  [b]oth  [s]kip: ").strip().lower()
         if choice in ("k", "keep"):
-            return "keep"
+            return ConflictAction.KEEP
         if choice in ("r", "replace"):
-            return "replace"
+            return ConflictAction.REPLACE
         if choice in ("b", "both"):
-            return "both"
+            return ConflictAction.BOTH
         if choice in ("s", "skip"):
-            return "skip"
+            return ConflictAction.SKIP
         print("  Please enter k, r, b, or s.")
 
 
@@ -286,16 +284,11 @@ def handle_conflict(
     dest_path: Path,
     parse_source_filename_fn=None,
     analyze_file_fn=None,
-) -> str | None:
+) -> ConflictAction | None:
     """Check for and resolve a destination conflict.
 
-    First checks for an exact path match, then does a fuzzy search for
-    an existing file with the same episode tag (handles different
-    zero-padding conventions like s1e01 vs s01e01).
-
-    Returns ``None`` if no conflict, or 'replace'/'keep'/'both'/'skip'.
-    When 'replace' is returned, the existing file has already been removed.
-    When 'both' is returned, the existing file is left in place.
+    Returns ``None`` if no conflict, or a :class:`ConflictAction`.
+    When ``REPLACE`` is returned, the existing file has already been removed.
     """
     # Exact path match
     conflict = check_destination_conflict(
@@ -321,7 +314,7 @@ def handle_conflict(
     if conflict is None:
         return None
     action = resolve_conflict(conflict)
-    if action == "replace":
+    if action == ConflictAction.REPLACE:
         conflict.existing_path.unlink()
     return action
 

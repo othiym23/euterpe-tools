@@ -36,6 +36,13 @@ class MetadataProvider(StrEnum):
     TVDB = "tvdb"
 
 
+class ConflictAction(StrEnum):
+    KEEP = "keep"
+    REPLACE = "replace"
+    BOTH = "both"
+    SKIP = "skip"
+
+
 # ---------------------------------------------------------------------------
 # Default paths (NAS layout)
 # ---------------------------------------------------------------------------
@@ -121,6 +128,7 @@ class ParsedMetadata:
     matching, path) for cleaner composition.
     """
 
+    series_name: str = ""
     release_group: str = ""
     source_type: str = ""  # "BD", "Web", "DVD", "HDTV", "SDTV", "VCD", "CD-R"
     is_remux: bool = False

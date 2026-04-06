@@ -50,12 +50,14 @@ from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
     format_episode_filename,
     format_series_dirname,
+    season_subdir,
 )
 from etp_lib.paths import cache_dir as _cache_dir
 from etp_lib.tvdb import fetch_tvdb_series
 from etp_lib.types import (
     AnimeConfig,
     AnimeInfo,
+    ConflictAction,
     DEFAULT_ANIME_SOURCE_DIR,  # noqa: F401 (re-export for tests)
     DEFAULT_DEST_DIR,  # noqa: F401 (re-export for tests)
     DEFAULT_DOWNLOADS_DIR,  # noqa: F401 (re-export for tests)
@@ -250,6 +252,7 @@ def parse_source_filename(filename: str) -> SourceFile:
     return SourceFile(
         path=Path(filename),
         parsed=ParsedMetadata(
+            series_name=pm.series_name,
             release_group=pm.release_group,
             source_type=pm.source_type,
             is_remux=pm.is_remux,
@@ -1163,13 +1166,7 @@ def _process_file(
         special_tag=special_tag,
     )
 
-    # Determine destination
-    if is_special:
-        dest_dir = series_dir / "Specials"
-    else:
-        dest_dir = series_dir / f"Season {season:02d}"
-
-    dest_path = dest_dir / filename
+    dest_path = season_subdir(series_dir, season, is_special) / filename
     print(f"\n  -> {dest_path}")
 
     # Check for existing file at destination
@@ -1180,9 +1177,9 @@ def _process_file(
             parse_source_filename_fn=parse_source_filename,
             analyze_file_fn=analyze_file,
         )
-        if action == "skip":
+        if action == ConflictAction.SKIP:
             return False
-        if action == "keep":
+        if action == ConflictAction.KEEP:
             return True
 
     if not prompt_confirm("  Copy this file?"):
@@ -1229,8 +1226,7 @@ def _match_files_to_season(
     title_unmatched: list[SourceFile] = []
     if known_titles:
         for sf in pool:
-            sf_pm = media_parser.parse_component(sf.path.name)
-            sf_title_norm = media_parser.normalize_for_matching(sf_pm.series_name)
+            sf_title_norm = media_parser.normalize_for_matching(sf.parsed.series_name)
             if not sf_title_norm:
                 # Can't determine series name — include by default
                 title_matched.append(sf)
