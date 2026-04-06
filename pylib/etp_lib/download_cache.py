@@ -17,7 +17,7 @@ import msgpack
 from etp_lib.paths import cache_dir
 from etp_lib.types import DownloadIndex
 
-_CACHE_VERSION = 2  # bumped: audio files excluded from grouping
+_CACHE_VERSION = 3  # bumped: added dest_ids cache
 
 
 @dataclass
@@ -28,6 +28,11 @@ class DownloadCache:
     download_index: DownloadIndex = field(default_factory=DownloadIndex)
     dir_mtimes: dict[str, int] = field(default_factory=dict)
     """``{dir_path: mtime_ns}`` for each walked directory."""
+
+    dest_ids: dict[tuple[str, int], str] = field(default_factory=dict)
+    """``{(provider, id): dir_path}`` from scan_dest_ids."""
+    dest_mtimes: dict[str, int] = field(default_factory=dict)
+    """``{dir_path: mtime_ns}`` for the destination directory (depth 1)."""
 
 
 def cache_path() -> Path:
@@ -41,12 +46,16 @@ def _serialize(cache: DownloadCache) -> bytes:
         key: [(s, e, str(p), sz) for s, e, p, sz in entries]
         for key, entries in cache.download_index.by_series.items()
     }
+    # dest_ids keys are (provider, id) tuples — serialize as "provider:id" strings
+    dest_ids = {f"{p}:{i}": str(d) for (p, i), d in cache.dest_ids.items()}
     data = {
         "v": _CACHE_VERSION,
         "dirs": cache.dir_mtimes,
         "groups": groups,
         "dl_index": dl_index,
         "dl_count": cache.download_index.file_count,
+        "dest_ids": dest_ids,
+        "dest_dirs": cache.dest_mtimes,
     }
     result: bytes = msgpack.packb(data, use_bin_type=True)  # type: ignore[assignment]
     return result
@@ -70,10 +79,23 @@ def _deserialize(raw: bytes) -> DownloadCache | None:
     }
     dl_index = DownloadIndex(by_series=dl_entries, file_count=data.get("dl_count", 0))
 
+    # Deserialize dest_ids: "provider:id" -> (provider, int(id))
+    raw_dest_ids = data.get("dest_ids", {})
+    dest_ids: dict[tuple[str, int], str] = {}
+    for key, dir_path in raw_dest_ids.items():
+        parts = key.rsplit(":", 1)
+        if len(parts) == 2:
+            try:
+                dest_ids[(parts[0], int(parts[1]))] = dir_path
+            except ValueError:
+                pass
+
     return DownloadCache(
         groups=groups,
         download_index=dl_index,
         dir_mtimes=data.get("dirs", {}),
+        dest_ids=dest_ids,
+        dest_mtimes=data.get("dest_dirs", {}),
     )
 
 
@@ -102,6 +124,9 @@ def save_cache(cache: DownloadCache) -> None:
             cache.groups = existing.groups
         if not cache.download_index.by_series and existing.download_index.by_series:
             cache.download_index = existing.download_index
+        if not cache.dest_ids and existing.dest_ids:
+            cache.dest_ids = existing.dest_ids
+            cache.dest_mtimes = existing.dest_mtimes
     path.write_bytes(_serialize(cache))
 
 

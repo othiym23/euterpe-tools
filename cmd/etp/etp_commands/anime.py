@@ -42,7 +42,10 @@ from etp_lib.colorize import colorize_path
 from etp_lib.download_cache import (
     DownloadCache,
     check_cache_freshness,
+    find_stale_dirs,
+    load_cache,
     save_cache,
+    scan_dir_mtimes,
 )
 from etp_lib.manifest import ManifestWorkflow, escape_kdl
 from etp_lib.mediainfo import analyze_file
@@ -334,6 +337,29 @@ def scan_dest_ids(dest: Path) -> dict[tuple[str, int], Path]:
                 except ValueError, OSError:
                     pass
     return result
+
+
+def _cached_scan_dest_ids(
+    dest: Path, no_cache: bool = False
+) -> dict[tuple[str, int], Path]:
+    """Scan dest IDs with caching — avoids walking 1500+ dirs on repeat runs."""
+    if not no_cache:
+        cached = load_cache()
+        if cached is not None and cached.dest_ids:
+            dest_mtimes = scan_dir_mtimes([dest])
+            changed, removed = find_stale_dirs(cached.dest_mtimes, dest_mtimes)
+            if not changed and not removed:
+                print(f"Using cached dest ID map ({len(cached.dest_ids)} entries).")
+                return {k: Path(v) for k, v in cached.dest_ids.items()}
+
+    id_map = scan_dest_ids(dest)
+    save_cache(
+        DownloadCache(
+            dest_ids={k: str(v) for k, v in id_map.items()},
+            dest_mtimes=scan_dir_mtimes([dest]),
+        )
+    )
+    return id_map
 
 
 def _ensure_subdirs(
@@ -1936,7 +1962,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
     # Load triage manifest for tracking
     already_copied = _load_triage_manifest()
     force = args.force
-    id_map = scan_dest_ids(args.dest)
+    id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
     total_success = 0
     total_failed = 0
@@ -2146,7 +2172,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         return 0
 
     # Scan destination for existing series (once, reused across groups)
-    id_map = scan_dest_ids(args.dest)
+    id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
     print(f"\nFound {len(groups)} group(s):")
     group_list = list(groups.items())
