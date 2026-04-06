@@ -535,6 +535,9 @@ def _save_triage_manifest(copied: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+_SCAN_EXCLUDE_DIRS = frozenset({"temp", ".tmp", "incomplete", ".incomplete"})
+
+
 def _iter_media_files(
     source_dirs: list[Path], include_audio: bool = False
 ) -> list[Path]:
@@ -542,13 +545,19 @@ def _iter_media_files(
 
     By default only video files are returned.  Set *include_audio* to
     also collect audio files (for the QA tool or extras detection).
+
+    Skips download-client working directories (``temp``, ``incomplete``,
+    etc.) — files there are still being downloaded and shouldn't be
+    triaged.
     """
     extensions = _MEDIA_EXTENSIONS if include_audio else _VIDEO_EXTENSIONS
     results: list[Path] = []
     for source_dir in source_dirs:
         if not source_dir.is_dir():
             continue
-        for root, _dirs, files in os.walk(source_dir):
+        for root, dirs, files in os.walk(source_dir):
+            # Prune excluded directories in place so os.walk skips them
+            dirs[:] = [d for d in dirs if d.lower() not in _SCAN_EXCLUDE_DIRS]
             for name in files:
                 if Path(name).suffix.lower() in extensions:
                     results.append(Path(root) / name)

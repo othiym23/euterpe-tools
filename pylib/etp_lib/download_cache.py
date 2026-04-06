@@ -17,7 +17,7 @@ import msgpack
 from etp_lib.paths import cache_dir
 from etp_lib.types import DownloadIndex
 
-_CACHE_VERSION = 4  # bumped: dir_mtimes preservation fix
+_CACHE_VERSION = 5  # bumped: exclude temp/incomplete dirs from scanning
 
 
 @dataclass
