@@ -2227,15 +2227,54 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         # Parse all files upfront for the group
         pool = _parse_files(files)
 
-        # Collect non-video extras from the same directory
+        # Collect extras: walk Extras/ subdirectories recursively,
+        # plus non-video files from the immediate group directory.
         group_dir = files[0].parent if files else None
         group_extras: list[Path] = []
+        extras_video: list[Path] = []
         if group_dir and group_dir.is_dir():
+            # Non-video files in the immediate directory
             group_extras = [
                 f
                 for f in group_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in _EXTRAS_EXTENSIONS
             ]
+            # Recursively walk Extras/ subdirectories
+            extras_dir = group_dir / "Extras"
+            if extras_dir.is_dir():
+                for root, _dirs, fnames in os.walk(extras_dir):
+                    for name in fnames:
+                        p = Path(root) / name
+                        ext = p.suffix.lower()
+                        if ext in _VIDEO_EXTENSIONS:
+                            extras_video.append(p)
+                        else:
+                            group_extras.append(p)
+
+        # Prompt for video files found in Extras/
+        if extras_video:
+            print(f"\n  Found {len(extras_video)} video file(s) in Extras/:")
+            for v in extras_video[:5]:
+                print(f"    {colorize_path(v.name)}")
+            if len(extras_video) > 5:
+                print(f"    ... and {len(extras_video) - 5} more")
+            raw = (
+                input(
+                    "\n  [e]xtras (copy as-is)  [s]pecials (edit in manifest)  [S]kip: "
+                )
+                .strip()
+                .lower()
+            )
+            if raw in ("e", "extras"):
+                group_extras.extend(extras_video)
+            elif raw in ("s", "specials"):
+                # Add video files to the main pool as specials
+                for v in extras_video:
+                    sf = parse_source_filename(v.name)
+                    sf.path = v
+                    sf.parsed.is_special = True
+                    pool.append(sf)
+            # else: skip — don't copy them
 
         id_queue = build_id_queue(name, config)
         if id_queue:
