@@ -17,7 +17,7 @@ import msgpack
 from etp_lib.paths import cache_dir
 from etp_lib.types import DownloadIndex
 
-_CACHE_VERSION = 3  # bumped: added dest_ids cache
+_CACHE_VERSION = 4  # bumped: dir_mtimes preservation fix
 
 
 @dataclass
@@ -113,8 +113,10 @@ def load_cache() -> DownloadCache | None:
 def save_cache(cache: DownloadCache) -> None:
     """Write the download cache to disk, merging with existing data.
 
-    Triage saves groups, series saves download_index — merging prevents
-    one subcommand from clobbering the other's cached data.
+    Each subcommand and helper sets only the fields it owns
+    (groups, download_index, dest_ids, dir_mtimes, dest_mtimes); the
+    merge preserves fields from the existing cache that the caller
+    didn't populate.
     """
     path = cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,8 +126,11 @@ def save_cache(cache: DownloadCache) -> None:
             cache.groups = existing.groups
         if not cache.download_index.by_series and existing.download_index.by_series:
             cache.download_index = existing.download_index
+        if not cache.dir_mtimes and existing.dir_mtimes:
+            cache.dir_mtimes = existing.dir_mtimes
         if not cache.dest_ids and existing.dest_ids:
             cache.dest_ids = existing.dest_ids
+        if not cache.dest_mtimes and existing.dest_mtimes:
             cache.dest_mtimes = existing.dest_mtimes
     path.write_bytes(_serialize(cache))
 
