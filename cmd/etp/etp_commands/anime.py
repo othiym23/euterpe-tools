@@ -1884,7 +1884,7 @@ def _process_pool(
                     pid,
                     config,
                     dry_run,
-                    concise_name=_extract_concise_name(pool) if pool else "",
+                    concise_name=_strip_year(group_name),
                 )
 
         if triaged and not dry_run:

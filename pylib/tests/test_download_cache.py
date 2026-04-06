@@ -88,6 +88,51 @@ class TestSaveAndLoad:
         )
         assert load_cache() is None
 
+    def test_merge_preserves_other_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving groups doesn't clobber existing download_index."""
+        cache_file = tmp_path / "test.msgpack"
+        monkeypatch.setattr("etp_lib.download_cache.cache_path", lambda: cache_file)
+
+        # Save download_index first
+        dl = DownloadIndex(
+            by_series={"key": [(1, 1, Path("/dl/ep1.mkv"), 100)]}, file_count=1
+        )
+        save_cache(DownloadCache(download_index=dl, dir_mtimes={"/dl": 1000}))
+
+        # Save groups — should preserve download_index
+        save_cache(
+            DownloadCache(groups={"S": [Path("/s/ep.mkv")]}, dir_mtimes={"/s": 2000})
+        )
+
+        loaded = load_cache()
+        assert loaded is not None
+        assert loaded.groups == {"S": [Path("/s/ep.mkv")]}
+        assert loaded.download_index.file_count == 1
+
+    def test_dest_ids_round_trip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache_file = tmp_path / "test.msgpack"
+        monkeypatch.setattr("etp_lib.download_cache.cache_path", lambda: cache_file)
+
+        cache = DownloadCache(
+            dest_ids={
+                ("anidb", 123): "/anime/series1",
+                ("tvdb", 456): "/anime/series2",
+            },
+            dest_mtimes={"/anime": 9999},
+        )
+        save_cache(cache)
+        loaded = load_cache()
+        assert loaded is not None
+        assert loaded.dest_ids == {
+            ("anidb", 123): "/anime/series1",
+            ("tvdb", 456): "/anime/series2",
+        }
+        assert loaded.dest_mtimes == {"/anime": 9999}
+
 
 class TestScanDirMtimes:
     def test_scans_root_and_subdirs(self, tmp_path: Path) -> None:
