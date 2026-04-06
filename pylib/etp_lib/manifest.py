@@ -461,12 +461,23 @@ def write_manifest(
         lines.append("}")
         lines.append("")
 
-    # Non-video extras (CDs, scans, etc.) — user can delete entries to skip
+    # Non-video extras (CDs, scans, etc.) — user can delete entries to skip.
+    # Extras from nested subdirectories (e.g., Extras/OST/ED/track.flac)
+    # preserve their relative path structure under the destination Extras/.
     if extras:
         lines.append("extras {")
-        for f in sorted(extras, key=lambda p: p.name):
+        for f in sorted(extras, key=lambda p: str(p)):
+            # Try to preserve subdirectory structure from an Extras/ parent
+            dest_name = f.name
+            parts = f.parts
+            try:
+                extras_idx = [p.lower() for p in parts].index("extras")
+                rel = Path(*parts[extras_idx + 1 :])
+                dest_name = str(rel)
+            except ValueError:
+                pass
             lines.append(f'  file "{escape_kdl(str(f))}" {{')
-            lines.append(f'    dest "{escape_kdl(f.name)}"')
+            lines.append(f'    dest "{escape_kdl(dest_name)}"')
             lines.append("  }")
         lines.append("}")
         lines.append("")
