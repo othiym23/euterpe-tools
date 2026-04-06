@@ -2172,6 +2172,8 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         print("No media files found in source directories.")
         return 0
 
+    total_files = sum(len(files) for files in groups.values())
+
     # Load manifest of previously copied files
     already_copied = _load_triage_manifest()
     manifest_size_at_start = len(already_copied)
@@ -2186,27 +2188,33 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     # Filter out already-copied files unless --force
     if not force and already_copied:
         filtered_groups: dict[str, list[Path]] = {}
-        skipped_total = 0
+        skipped_files = 0
         for name, files in groups.items():
             remaining = [f for f in files if resolved_paths[f] not in already_copied]
-            skipped = len(files) - len(remaining)
-            skipped_total += skipped
+            skipped_files += len(files) - len(remaining)
             if remaining:
                 filtered_groups[name] = remaining
-        if skipped_total:
-            print(
-                f"Skipping {skipped_total} previously copied file(s) (use --force to re-process)."
-            )
+        skipped_groups = len(groups) - len(filtered_groups)
+        if skipped_files:
+            parts = [f"Skipping {skipped_files} previously copied file(s)"]
+            if skipped_groups:
+                parts.append(f"{skipped_groups} fully-processed group(s)")
+            print(f"{', '.join(parts)} (use --force to re-process).")
         groups = filtered_groups
 
     if not groups:
         print("All files have been previously copied. Nothing to do.")
         return 0
 
+    remaining_files = sum(len(files) for files in groups.values())
     # Scan destination for existing series (once, reused across groups)
     id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
-    print(f"\nFound {len(groups)} group(s):")
+    remaining_files = sum(len(files) for files in groups.values())
+    print(
+        f"\n{len(groups)} group(s), {remaining_files} file(s) to process"
+        f" (of {total_files} total):"
+    )
     group_list = list(groups.items())
     for i, (name, files) in enumerate(group_list, 1):
         count = len(files)
