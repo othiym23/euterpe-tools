@@ -18,6 +18,7 @@ from etp_lib.manifest import (
 from etp_lib.manifest import _match_bonus_to_anidb_special
 from etp_lib.types import (
     AnimeInfo,
+    ConflictAction,
     Episode,
     EpisodeType,
     ManifestEntry,
@@ -608,10 +609,11 @@ class TestExecuteManifest:
             (sf2, Path("/dst/b.mkv")),
         ]
 
-        success, failed, copied = execute_manifest(entries, dry_run=True, verbose=False)
-        assert success == 2
-        assert failed == 0
-        assert len(copied) == 2
+        result = execute_manifest(entries, dry_run=True, verbose=False)
+        assert result.success == 2
+        assert result.failed == 0
+        assert result.skipped == 0
+        assert len(result.triaged) == 2
 
     def test_failure_counting(self, monkeypatch):
         call_count = 0
@@ -628,11 +630,9 @@ class TestExecuteManifest:
             (SourceFile(path=Path("/src/b.mkv")), Path("/dst/b.mkv")),
             (SourceFile(path=Path("/src/c.mkv")), Path("/dst/c.mkv")),
         ]
-        success, failed, copied = execute_manifest(
-            entries, dry_run=False, verbose=False
-        )
-        assert success == 2
-        assert failed == 1
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.success == 2
+        assert result.failed == 1
 
     def test_both_action_crc_disambiguation(self, tmp_path, monkeypatch):
         """'both' action with existing dest appends CRC32 to filename."""
@@ -649,15 +649,14 @@ class TestExecuteManifest:
 
         sf = SourceFile(path=src, parsed=ParsedMetadata(episode=1, season=1))
 
-        # Mock handle_conflict to return "both"
-        monkeypatch.setattr(_manifest_mod, "handle_conflict", lambda *a, **kw: "both")
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.BOTH
+        )
         monkeypatch.setattr(_manifest_mod, "copy_reflink", lambda *a, **kw: True)
 
         entries = [(sf, dest_path)]
-        success, failed, copied = execute_manifest(
-            entries, dry_run=False, verbose=False
-        )
-        assert success == 1
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.success == 1
         # CRC32 should have been computed and stashed
         assert sf.parsed.hash_code != ""
         assert len(sf.parsed.hash_code) == 8
@@ -673,7 +672,9 @@ class TestExecuteManifest:
 
         sf = SourceFile(path=src, parsed=ParsedMetadata(episode=1, season=1))
 
-        monkeypatch.setattr(_manifest_mod, "handle_conflict", lambda *a, **kw: "both")
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.BOTH
+        )
 
         copied_to: list[Path] = []
 
@@ -686,6 +687,52 @@ class TestExecuteManifest:
         execute_manifest([(sf, dest_path)], dry_run=False, verbose=False)
         # Should copy to original path (no CRC suffix)
         assert copied_to[0] == dest_path
+
+    def test_copy_error_counted_as_failed(self, monkeypatch):
+        """OSError during copy counts as failed, not skipped."""
+
+        def failing_copy(*_a: object, **_kw: object) -> bool:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_manifest_mod, "copy_reflink", failing_copy)
+
+        entries = [
+            (SourceFile(path=Path("/src/ep01.mkv")), Path("/dst/ep01.mkv")),
+        ]
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.failed == 1
+        assert result.skipped == 0
+        assert result.success == 0
+
+    def test_skip_conflict_counted_as_skipped(self, monkeypatch):
+        """ConflictAction.SKIP counts as skipped, not failed."""
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.SKIP
+        )
+
+        entries = [
+            (SourceFile(path=Path("/src/ep01.mkv")), Path("/dst/ep01.mkv")),
+        ]
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.skipped == 1
+        assert result.failed == 0
+        assert result.success == 0
+        assert len(result.triaged) == 1  # still tracked as processed
+
+    def test_keep_conflict_counted_as_success(self, monkeypatch):
+        """ConflictAction.KEEP counts as success (existing file is fine)."""
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.KEEP
+        )
+
+        entries = [
+            (SourceFile(path=Path("/src/ep01.mkv")), Path("/dst/ep01.mkv")),
+        ]
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.success == 1
+        assert result.skipped == 0
+        assert result.failed == 0
+        assert len(result.triaged) == 1
 
 
 class TestBonusToAnidbMatching:

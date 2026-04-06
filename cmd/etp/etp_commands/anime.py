@@ -60,6 +60,7 @@ from etp_lib.tvdb import fetch_tvdb_series
 from etp_lib.types import (
     AnimeConfig,
     AnimeInfo,
+    BatchResult,
     ConflictAction,
     DEFAULT_ANIME_SOURCE_DIR,  # noqa: F401 (re-export for tests)
     DEFAULT_DEST_DIR,  # noqa: F401 (re-export for tests)
@@ -1577,7 +1578,7 @@ def _process_group_batch(
     season_override: int | None = None,
     extras: list[Path] | None = None,
     config: AnimeConfig | None = None,
-) -> tuple[int, int, list[Path]]:
+) -> BatchResult:
     """Batch-process a group of files via an editable manifest.
 
     Uses a two-phase workflow: build a lightweight preview (episode matching
@@ -1635,7 +1636,7 @@ def _process_group_batch(
             proposed_dir, dir_exists, concise_name, release_group
         )
         if choice == "s":
-            return 0, len(matched), []
+            return BatchResult(skipped=len(matched))
         if choice == "e":
             concise_name = prompt_value(
                 "Concise series name for filenames", concise_name
@@ -1684,8 +1685,11 @@ def _process_group_batch(
 
     result = workflow.confirm_and_parse()
     if result is None:
-        return 0, file_count, []
+        return BatchResult(skipped=file_count)
     parsed_entries, extra_entries, rename_entries = result
+
+    # Files removed during manifest editing count as skipped
+    edited_out = file_count - len(parsed_entries)
 
     # Check for naming inconsistencies — reuses the scan from phase 1
     if dest_scan.names_by_subdir:
@@ -1694,13 +1698,15 @@ def _process_group_batch(
         )
         rename_entries.extend(extra_renames)
 
-    return workflow.execute(
+    batch = workflow.execute(
         parsed_entries,
         extra_entries,
         rename_entries,
         dry_run,
         parse_source_filename_fn=parse_source_filename,
     )
+    batch.skipped += edited_out
+    return batch
 
 
 # ---------------------------------------------------------------------------
@@ -1734,17 +1740,16 @@ def _process_pool(
     title_index: media_parser.TitleAliasIndex | None = None,
     resolved_paths: dict[Path, str] | None = None,
     auto_accept_ids: bool = False,
-) -> tuple[int, int, bool]:
+) -> tuple[BatchResult, bool]:
     """Process a file pool against metadata IDs interactively.
 
     Prompts the user for AniDB/TVDB IDs (using id_queue for pre-populated
     suggestions), fetches metadata, matches files to seasons, and delegates
     to ``_process_group_batch()`` for manifest editing and execution.
 
-    Returns ``(total_success, total_failed, quit_requested)``.
+    Returns ``(BatchResult, quit_requested)``.
     """
-    total_success = 0
-    total_failed = 0
+    totals = BatchResult()
 
     def _resolve(p: Path) -> str:
         if resolved_paths:
@@ -1801,7 +1806,7 @@ def _process_pool(
                     _mark_pool_done()
                     break
                 elif raw == "q":
-                    return total_success, total_failed, True
+                    return totals, True
 
         # If no ID yet, prompt for one
         if anidb_id is None and tvdb_id is None:
@@ -1822,7 +1827,7 @@ def _process_pool(
                 _mark_pool_done()
                 break
             if raw.lower() == "q":
-                return total_success, total_failed, True
+                return totals, True
             anidb_id, tvdb_id = _parse_id_input(raw)
             if anidb_id is None and tvdb_id is None:
                 print(f"  Invalid ID '{raw}', try again.")
@@ -1871,7 +1876,7 @@ def _process_pool(
             if not matched:
                 print("  No files matched. Try another ID.")
                 continue
-            success, failed, triaged = _process_group_batch(
+            batch = _process_group_batch(
                 [],
                 info,
                 id_map,
@@ -1886,7 +1891,7 @@ def _process_pool(
             )
             extras = None  # extras go with the first AniDB season only
         else:
-            success, failed, triaged = _process_group_batch(
+            batch = _process_group_batch(
                 [],
                 info,
                 id_map,
@@ -1900,12 +1905,16 @@ def _process_pool(
             )
             pool = []
 
-        print(f"\n  Done: {success} copied, {failed} skipped/failed")
-        total_success += success
-        total_failed += failed
+        print(
+            f"\n  Done: {batch.success} copied,"
+            f" {batch.skipped} skipped, {batch.failed} failed"
+        )
+        totals.success += batch.success
+        totals.skipped += batch.skipped
+        totals.failed += batch.failed
 
         # Save config mapping only after successful copy
-        if success > 0:
+        if batch.success > 0:
             pid = anidb_id if anidb_id is not None else tvdb_id
             if pid is not None:
                 _maybe_save_mapping(
@@ -1919,15 +1928,15 @@ def _process_pool(
                     concise_name=_strip_year(group_name),
                 )
 
-        if triaged and not dry_run:
-            for p in triaged:
+        if batch.triaged and not dry_run:
+            for p in batch.triaged:
                 already_copied.add(_resolve(p))
             _save_triage_manifest(already_copied)
 
     # Count remaining pool files as skipped
-    total_failed += len(pool)
+    totals.skipped += len(pool)
 
-    return total_success, total_failed, False
+    return totals, False
 
 
 def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
@@ -2000,6 +2009,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
     id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
     total_success = 0
+    total_skipped = 0
     total_failed = 0
 
     for series_path in series_dirs:
@@ -2048,7 +2058,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
                 title_index=title_index,
             )
 
-        success, failed, quit_all = _process_pool(
+        pool_result, quit_all = _process_pool(
             pool,
             group_name=series_path.name,
             id_queue=id_queue,
@@ -2063,14 +2073,16 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
             title_index=title_index,
             auto_accept_ids=True,
         )
-        total_success += success
-        total_failed += failed
+        total_success += pool_result.success
+        total_skipped += pool_result.skipped
+        total_failed += pool_result.failed
 
         if quit_all:
             break
 
     print(
-        f"\nSeries sync complete: {total_success} copied, {total_failed} skipped/failed"
+        f"\nSeries sync complete: {total_success} copied,"
+        f" {total_skipped} skipped, {total_failed} failed"
     )
     return 0 if total_failed == 0 else 1
 
@@ -2225,6 +2237,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
 
     # Process each group
     total_success = 0
+    total_skipped = 0
     total_failed = 0
     groups_processed = 0
 
@@ -2291,7 +2304,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         if id_queue:
             print(f"  Known IDs: {', '.join(f'{p} {i}' for p, i in id_queue)}")
 
-        success, failed, quit_all = _process_pool(
+        pool_result, quit_all = _process_pool(
             pool,
             group_name=name,
             id_queue=id_queue,
@@ -2305,8 +2318,9 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
             extras=group_extras,
             resolved_paths=resolved_paths,
         )
-        total_success += success
-        total_failed += failed
+        total_success += pool_result.success
+        total_skipped += pool_result.skipped
+        total_failed += pool_result.failed
 
         if quit_all:
             if not args.dry_run and len(already_copied) > manifest_size_at_start:
@@ -2323,7 +2337,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     print(f"\n{'=' * 60}")
     print(
         f"Triage complete: {groups_processed} groups processed, "
-        f"{total_success} files copied, {total_failed} skipped/failed"
+        f"{total_success} copied, {total_skipped} skipped, {total_failed} failed"
     )
     return 0 if total_failed == 0 else 1
 

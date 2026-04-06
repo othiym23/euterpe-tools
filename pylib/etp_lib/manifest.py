@@ -28,6 +28,7 @@ from etp_lib.naming import (
     season_subdir,
 )
 from etp_lib.types import (
+    BatchResult,
     ConflictAction,
     AnimeInfo,
     BonusType,
@@ -668,24 +669,16 @@ def execute_manifest(
     verbose: bool,
     parse_source_filename_fn=None,
     analyze_file_fn=None,
-) -> tuple[int, int, list[Path]]:
-    """Execute the parsed manifest: copy each file to its destination.
-
-    Returns ``(success, failed, triaged_paths)`` -- triaged_paths includes
-    files that were kept, skipped, or copied (all are marked as processed).
-    """
-    success = 0
-    failed = 0
-    triaged_paths: list[Path] = []
+) -> BatchResult:
+    """Execute the parsed manifest: copy each file to its destination."""
+    result = BatchResult()
 
     for sf, dest_path in entries:
-        # Check filename length before attempting any operations
         dest_path = _check_filename_length(dest_path)
 
         if verbose:
             print(f"  {sf.path.name} -> {dest_path}")
 
-        # Check for existing file at destination
         if not dry_run:
             action = handle_conflict(
                 sf,
@@ -693,17 +686,15 @@ def execute_manifest(
                 parse_source_filename_fn=parse_source_filename_fn,
                 analyze_file_fn=analyze_file_fn,
             )
-            if action in (ConflictAction.KEEP, ConflictAction.SKIP):
-                triaged_paths.append(sf.path)
-                if action == ConflictAction.SKIP:
-                    failed += 1
-                else:
-                    success += 1
+            if action == ConflictAction.SKIP:
+                result.skipped += 1
+                result.triaged.append(sf.path)
+                continue
+            if action == ConflictAction.KEEP:
+                result.success += 1
+                result.triaged.append(sf.path)
                 continue
             if action == ConflictAction.BOTH:
-                # Keep existing. If dest already exists (same filename from
-                # matching metadata), disambiguate by appending the source
-                # file's CRC32 to the filename.
                 if dest_path.exists():
                     crc = sf.parsed.hash_code
                     if not crc:
@@ -715,23 +706,23 @@ def execute_manifest(
 
         try:
             if copy_reflink(sf.path, dest_path, dry_run=dry_run):
-                success += 1
-                triaged_paths.append(sf.path)
+                result.success += 1
+                result.triaged.append(sf.path)
             else:
-                failed += 1
+                result.failed += 1
         except OSError as e:
             if e.errno == errno.ENAMETOOLONG:
                 dest_path = _check_filename_length(dest_path)
                 if copy_reflink(sf.path, dest_path, dry_run=dry_run):
-                    success += 1
-                    triaged_paths.append(sf.path)
+                    result.success += 1
+                    result.triaged.append(sf.path)
                 else:
-                    failed += 1
+                    result.failed += 1
             else:
                 print(f"  error: {e}", file=sys.stderr)
-                failed += 1
+                result.failed += 1
 
-    return success, failed, triaged_paths
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -913,7 +904,7 @@ class ManifestWorkflow:
         rename_entries: list[tuple[Path, Path]],
         dry_run: bool,
         parse_source_filename_fn=None,
-    ) -> tuple[int, int, list[Path]]:
+    ) -> BatchResult:
         """Execute the manifest: copy files, extras, and renames."""
         print(f"\n  Copying {len(parsed_entries)} file(s)...")
         result = execute_manifest(
@@ -976,11 +967,8 @@ class ManifestWorkflow:
         extras: list[Path] | None = None,
         renames: list[tuple[Path, Path]] | None = None,
         parse_source_filename_fn=None,
-    ) -> tuple[int, int, list[Path]]:
-        """Run the full workflow: build → write → edit → execute → cleanup.
-
-        Returns ``(success, failed, triaged_paths)``.
-        """
+    ) -> BatchResult:
+        """Run the full workflow: build → write → edit → execute → cleanup."""
         self.build()
         self.write(extras=extras, renames=renames)
         file_count = len(self.parsed)
@@ -990,7 +978,7 @@ class ManifestWorkflow:
 
         result = self.confirm_and_parse()
         if result is None:
-            return 0, file_count, []
+            return BatchResult(skipped=file_count)
         parsed_entries, extra_entries, rename_entries = result
 
         return self.execute(

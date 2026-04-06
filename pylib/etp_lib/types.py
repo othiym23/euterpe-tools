@@ -302,6 +302,17 @@ class ManifestEntry:
 
 
 @dataclass
+class BatchResult:
+    """Result of a batch processing operation."""
+
+    success: int = 0
+    failed: int = 0
+    skipped: int = 0
+    triaged: list[Path] = field(default_factory=list)
+    """Paths of files that were processed (copied, kept, or skipped)."""
+
+
+@dataclass
 class DownloadIndex:
     """Index of download files for matching against source files.
 
