@@ -1003,6 +1003,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_flags(s)
 
+    # ingest: unified import (replaces triage + series)
+    i = sub.add_parser(
+        "ingest",
+        help="Import anime from Sonarr and/or downloads",
+        description="Unified anime ingestion. Requires at least one of "
+        "--sonarr or --downloads to specify which sources to process.",
+    )
+    i.add_argument("pattern", nargs="?", help="Filter by name pattern")
+    i.add_argument(
+        "--sonarr",
+        action="store_true",
+        help="Process Sonarr-managed anime directory",
+    )
+    i.add_argument(
+        "--downloads",
+        action="store_true",
+        help="Triage files from downloads directory",
+    )
+    i.add_argument(
+        "--source",
+        type=Path,
+        action="append",
+        metavar="DIR",
+        help="Override source directory (repeatable for --downloads)",
+    )
+    i.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-process previously ingested files",
+    )
+    _add_common_flags(i)
+
     # episode: single-file import
     e = sub.add_parser(
         "episode",
@@ -2246,6 +2278,45 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     return 0 if total_failed == 0 else 1
 
 
+def run_ingest(args: argparse.Namespace, config: AnimeConfig) -> int:
+    """Unified anime ingestion from Sonarr and/or downloads.
+
+    Requires at least one of ``--sonarr`` or ``--downloads``. When both
+    are specified, Sonarr sync runs first, then downloads triage handles
+    whatever Sonarr didn't cover.
+    """
+    if not args.sonarr and not args.downloads:
+        print(
+            "error: specify --sonarr, --downloads, or both.",
+            file=sys.stderr,
+        )
+        return 1
+
+    total_result = 0
+
+    if args.sonarr:
+        print("=" * 60)
+        print("Sonarr sync")
+        print("=" * 60)
+        # run_series expects args.source as a single Path
+        series_args = argparse.Namespace(**vars(args))
+        series_args.source = args.source[0] if args.source else None
+        result = run_series(series_args, config)
+        if result > total_result:
+            total_result = result
+
+    if args.downloads:
+        if args.sonarr:
+            print(f"\n{'=' * 60}")
+            print("Downloads triage")
+            print("=" * 60)
+        result = run_triage(args, config)
+        if result > total_result:
+            total_result = result
+
+    return total_result
+
+
 def main() -> int:
     """Entry point: parse args, load config, dispatch to subcommand."""
     _load_env_file()
@@ -2269,9 +2340,19 @@ def main() -> int:
     if not args.dest:
         args.dest = config.anime_dest_dir
 
-    if args.command == "triage":
+    if args.command == "ingest":
+        return run_ingest(args, config)
+    elif args.command == "triage":
+        print(
+            "warning: 'triage' is deprecated, use 'ingest --downloads' instead.",
+            file=sys.stderr,
+        )
         return run_triage(args, config)
     elif args.command == "series":
+        print(
+            "warning: 'series' is deprecated, use 'ingest --sonarr' instead.",
+            file=sys.stderr,
+        )
         return run_series(args, config)
     elif args.command == "episode":
         return run_episode(args, config)

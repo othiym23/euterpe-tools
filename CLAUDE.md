@@ -55,7 +55,8 @@ etp-query stats [--format text|csv|json|kdl] [--[no-]include-system-files]
 etp tree <directory> [args...]
 etp find <pattern> [-R <directory>] [args...]
 etp catalog [--dry-run] [config.kdl]
-etp anime triage|series|episode [args...]
+etp anime ingest --sonarr|--downloads [--source DIR] [--force] [pattern]
+etp anime episode FILE --anidb ID|--tvdb ID
 ```
 
 ## Testing
