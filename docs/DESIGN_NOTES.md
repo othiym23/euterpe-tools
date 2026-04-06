@@ -179,17 +179,24 @@ Interactive CLI for managing an anime collection on the NAS: fetches metadata
 from AniDB or TheTVDB, analyzes source files with mediainfo, constructs properly
 named episode files, and copies them using Btrfs COW reflinks.
 
-Three subcommands share a common pipeline:
+Subcommands:
 
-- `etp anime triage` — bulk import from downloads directory (auto-groups by
-  series name, including CJK/Latin alt-title merging)
-- `etp anime series` — sync from Sonarr-managed anime directory (uses ID files
-  - config mappings, download index for metadata enrichment)
+- `etp anime ingest --sonarr` — sync from Sonarr-managed anime directory (uses
+  ID files + config mappings, download index for metadata enrichment)
+- `etp anime ingest --downloads` — triage files from downloads directory
+  (auto-groups by series name, including CJK/Latin alt-title merging)
+- `etp anime ingest --sonarr --downloads` — both in sequence (Sonarr first, then
+  triage for leftovers)
 - `etp anime episode` — single-file import
 
-Both `triage` and `series` delegate to a shared `_process_pool()` function that
-handles the interactive ID-prompt → metadata-fetch → season-match → manifest
-workflow loop.
+The `ingest` command (which replaced the former `triage` and `series`
+subcommands) delegates to a shared `_process_pool()` function that handles the
+interactive ID-prompt → metadata-fetch → season-match → manifest workflow loop.
+
+Extras handling: non-video files from BD batch `Extras/` subdirectories are
+copied wholesale to the destination `Extras/` directory, preserving the source
+subtree structure. Video files found in `Extras/` prompt the user to choose:
+copy as extras, route to Specials for manifest editing, or skip.
 
 ### Data flow
 
