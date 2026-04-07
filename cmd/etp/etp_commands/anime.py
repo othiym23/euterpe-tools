@@ -244,6 +244,7 @@ def _maybe_save_mapping(
 _MEDIA_EXTENSIONS = media_parser._MEDIA_EXTENSIONS
 _VIDEO_EXTENSIONS = media_parser._VIDEO_EXTENSIONS
 _AUDIO_EXTENSIONS = media_parser._AUDIO_EXTENSIONS
+_SCAN_EXCLUDE_DIRS = media_parser._SCAN_EXCLUDE_DIRS
 _EXTRAS_EXTENSIONS = frozenset({".rar", ".zip", ".7z", ".flac", ".wav", ".ape", ".txt"})
 
 
@@ -533,9 +534,6 @@ def _save_triage_manifest(copied: set[str]) -> None:
 # ---------------------------------------------------------------------------
 # Source file discovery
 # ---------------------------------------------------------------------------
-
-
-_SCAN_EXCLUDE_DIRS = frozenset({"temp", ".tmp", "incomplete", ".incomplete"})
 
 
 def _iter_media_files(
@@ -1288,7 +1286,7 @@ def _match_files_to_season(
     # "Sousou no Frieren" match against the canonical "Frieren: Beyond
     # Journey's End".
     known_titles: list[str] = []
-    for t in (info.title_en, info.title_ja, info.title_romaji, *info.aliases):
+    for t in info.all_titles():
         norm = media_parser.normalize_for_matching(t)
         if norm and norm not in known_titles:
             known_titles.append(norm)
@@ -1862,16 +1860,7 @@ def _process_pool(
 
         # Update title alias index and re-match downloads
         if title_index is not None:
-            new_titles = [
-                t
-                for t in (
-                    info.title_ja,
-                    info.title_en,
-                    info.title_romaji,
-                    *info.aliases,
-                )
-                if t
-            ]
+            new_titles = info.all_titles()
             if new_titles:
                 title_index.add_series(new_titles)
         if download_index is not None and download_index.by_series:
@@ -1923,6 +1912,9 @@ def _process_pool(
                 extras=extras,
                 config=config,
             )
+            # TVDB consumes the entire pool in one batch (no per-season
+            # splitting like AniDB).  Triaged paths are tracked via
+            # batch.triaged below — this just empties the loop's pool.
             pool = []
 
         print(
@@ -1932,6 +1924,7 @@ def _process_pool(
         totals.success += batch.success
         totals.skipped += batch.skipped
         totals.failed += batch.failed
+        totals.triaged.extend(batch.triaged)
 
         # Save config mapping only after successful copy
         if batch.success > 0:

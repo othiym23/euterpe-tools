@@ -77,7 +77,7 @@ def _parse_tvdb_json(
         name,
         title_ja,
         title_en,
-        *(alias.get("name", "") for alias in raw_aliases),
+        *(alias.get("name") or "" for alias in raw_aliases),
     ):
         if candidate and candidate not in seen:
             seen.add(candidate)

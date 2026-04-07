@@ -86,6 +86,20 @@ class AnimeInfo:
     """All known title variants — synonyms, alternate language names, romaji."""
     episodes: list[Episode] = field(default_factory=list)
 
+    def all_titles(self) -> list[str]:
+        """Return every known title variant, deduped, in priority order.
+
+        English/Japanese/romaji main titles come first, followed by any
+        additional aliases. Empty strings are filtered out.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for t in (self.title_en, self.title_ja, self.title_romaji, *self.aliases):
+            if t and t not in seen:
+                seen.add(t)
+                result.append(t)
+        return result
+
     def find_episode_title(self, ep_number: int, season: int = 1) -> str:
         """Find the episode title by number and season.
 

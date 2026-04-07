@@ -75,6 +75,11 @@ class Token:
 _VIDEO_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi"})
 _AUDIO_EXTENSIONS = frozenset({".flac", ".m4a", ".mp3"})
 _MEDIA_EXTENSIONS = _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS
+
+# Directory names to skip when walking source trees — download clients
+# (qBittorrent, SABnzbd, etc.) use these for in-progress files that
+# shouldn't be triaged.
+_SCAN_EXCLUDE_DIRS = frozenset({"temp", ".tmp", "incomplete", ".incomplete"})
 _ALL_EXTENSIONS = frozenset(
     {".mkv", ".mp4", ".avi", ".rar", ".iso", ".zip", ".7z", ".webdl"}
 )

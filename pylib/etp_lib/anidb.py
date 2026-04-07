@@ -74,9 +74,9 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         if not text:
             continue
 
-        # Collect every title variant (main, official, synonym, short) in
-        # any language so the matcher can recognize romaji and alternate
-        # transliterations.
+        # Collect main/official/synonym title variants in any language so
+        # the matcher can recognize romaji and alternate transliterations.
+        # "short" titles (e.g. "FMA") are excluded — too prone to collision.
         if ttype in ("main", "official", "synonym") and text not in seen_aliases:
             seen_aliases.add(text)
             all_aliases.append(text)
