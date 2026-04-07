@@ -82,6 +82,8 @@ class AnimeInfo:
     title_en: str
     year: int
     title_romaji: str = ""  # x-jat romanization (e.g. "Youjo Senki")
+    aliases: list[str] = field(default_factory=list)
+    """All known title variants — synonyms, alternate language names, romaji."""
     episodes: list[Episode] = field(default_factory=list)
 
     def find_episode_title(self, ep_number: int, season: int = 1) -> str:

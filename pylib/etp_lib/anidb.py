@@ -64,10 +64,22 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
     en_main = ""
     en_synonym = ""
     main_title_fallback = ""
+    all_aliases: list[str] = []
+    seen_aliases: set[str] = set()
     for title_elem in root.findall("titles/title"):
         lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
         ttype = title_elem.get("type", "")
         text = (title_elem.text or "").strip()
+
+        if not text:
+            continue
+
+        # Collect every title variant (main, official, synonym, short) in
+        # any language so the matcher can recognize romaji and alternate
+        # transliterations.
+        if ttype in ("main", "official", "synonym") and text not in seen_aliases:
+            seen_aliases.add(text)
+            all_aliases.append(text)
 
         if ttype == "main" and not main_title_fallback:
             main_title_fallback = text
@@ -157,6 +169,7 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         title_en=title_en,
         year=year,
         title_romaji=jat_main,
+        aliases=all_aliases,
         episodes=episodes,
     )
 

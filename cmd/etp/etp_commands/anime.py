@@ -1281,12 +1281,14 @@ def _match_files_to_season(
     """
     regular_count = sum(1 for ep in info.episodes if ep.ep_type == EpisodeType.REGULAR)
 
-    # Filter pool by sub-series title similarity against AniDB entry.
-    # This prevents files from other sub-series in a batch from being
-    # mixed in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD).
-    # Try English first, then Japanese, then romaji — files may use any.
+    # Filter pool by sub-series title similarity against AniDB/TVDB entry.
+    # This prevents files from other sub-series in a batch from being mixed
+    # in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD). Use every known title
+    # variant (primary names + all aliases) so romaji transliterations like
+    # "Sousou no Frieren" match against the canonical "Frieren: Beyond
+    # Journey's End".
     known_titles: list[str] = []
-    for t in (info.title_en, info.title_ja, info.title_romaji):
+    for t in (info.title_en, info.title_ja, info.title_romaji, *info.aliases):
         norm = media_parser.normalize_for_matching(t)
         if norm and norm not in known_titles:
             known_titles.append(norm)
@@ -1860,7 +1862,16 @@ def _process_pool(
 
         # Update title alias index and re-match downloads
         if title_index is not None:
-            new_titles = [t for t in (info.title_ja, info.title_en) if t]
+            new_titles = [
+                t
+                for t in (
+                    info.title_ja,
+                    info.title_en,
+                    info.title_romaji,
+                    *info.aliases,
+                )
+                if t
+            ]
             if new_titles:
                 title_index.add_series(new_titles)
         if download_index is not None and download_index.by_series:
