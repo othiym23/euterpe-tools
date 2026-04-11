@@ -113,6 +113,19 @@ def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Pa
     return series_dir / f"Season {season:02d}"
 
 
+def _format_episode_tag(season: int, episode: int, episodes: list[int] | None) -> str:
+    """Format the sXeYY portion of an episode filename.
+
+    For multi-episode files uses the Sonarr-style ``s1e02-e03`` range form
+    (first and last episode), matching HamaTV/Plex conventions.
+    """
+    if episodes and len(episodes) > 1:
+        first = episodes[0]
+        last = episodes[-1]
+        return f"s{season}e{first:02d}-e{last:02d}"
+    return f"s{season}e{episode:02d}"
+
+
 def format_episode_filename(
     concise_name: str,
     season: int,
@@ -123,6 +136,7 @@ def format_episode_filename(
     movie_dir_name: str = "",
     is_special: bool = False,
     special_tag: str = "",
+    episodes: list[int] | None = None,
 ) -> str:
     """Build the full episode filename."""
     ext = source.path.suffix or ".mkv"
@@ -148,7 +162,7 @@ def format_episode_filename(
         return f"{concise_name} - {special_tag}{meta_str}{hash_str}{ext}"
 
     # Regular episode: `Name - sXeYY - Episode Name [metadata] [hash].ext`
-    ep_tag = f"s{season}e{episode:02d}"
+    ep_tag = _format_episode_tag(season, episode, episodes)
     if episode_name:
         return f"{concise_name} - {ep_tag} - {episode_name}{meta_str}{hash_str}{ext}"
     return f"{concise_name} - {ep_tag}{meta_str}{hash_str}{ext}"

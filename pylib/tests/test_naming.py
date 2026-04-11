@@ -192,6 +192,33 @@ class TestFormatEpisodeFilename:
             "Eden of the East - s1e05 [NH BD,1080p,AVC,10bit,x264,aac].mkv"
         )
 
+    def test_multi_episode_range(self):
+        sf = self._make_source()
+        result = format_episode_filename(
+            concise_name="Panty and Stocking",
+            season=1,
+            episode=2,
+            episode_name="A + B + C",
+            source=sf,
+            episodes=[2, 3, 4],
+        )
+        assert result == (
+            "Panty and Stocking - s1e02-e04 - A + B + C "
+            "[NH BD,1080p,AVC,10bit,x264,aac].mkv"
+        )
+
+    def test_multi_episode_single_element_uses_scalar(self):
+        sf = self._make_source()
+        result = format_episode_filename(
+            concise_name="Show",
+            season=1,
+            episode=5,
+            episode_name="Foo",
+            source=sf,
+            episodes=[5],
+        )
+        assert " - s1e05 - " in result
+
     def test_special_episode(self):
         sf = self._make_source()
         result = format_episode_filename(
