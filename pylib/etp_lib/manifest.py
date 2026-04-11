@@ -183,7 +183,14 @@ def match_episodes(
                 special_tag = ep.special_tag
                 season = 0
         elif ep_number is not None and not is_special:
-            episode_name = info.find_episode_title(ep_number, season)
+            if sf.parsed.episodes and len(sf.parsed.episodes) > 1:
+                # Sonarr uses " + " between titles in multi-episode filenames.
+                episode_name = " + ".join(
+                    info.find_episode_title(n, season) or f"Episode {n}"
+                    for n in sf.parsed.episodes
+                )
+            else:
+                episode_name = info.find_episode_title(ep_number, season)
             # Replace generic "Episode N" placeholders with the actual title
             # from the downloaded or sonarr filename, in that order.
             _is_generic = not episode_name or re.match(
@@ -288,6 +295,7 @@ def match_episodes(
                 source=sf,
                 is_special=is_special,
                 special_tag=special_tag,
+                episodes=sf.parsed.episodes if not is_special else None,
             )
             dest_dir = season_subdir(series_dir, season, is_special)
             entries.append(
@@ -353,6 +361,7 @@ def enrich_manifest_entries(
                 source=sf,
                 is_special=entry.is_special,
                 special_tag=entry.special_tag,
+                episodes=sf.parsed.episodes if not entry.is_special else None,
             )
             entry.dest_path = (
                 season_subdir(series_dir, season, entry.is_special) / filename
