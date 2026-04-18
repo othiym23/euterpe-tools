@@ -1084,7 +1084,7 @@ pub async fn count_files_by_extension(
     }
 
     let mut result: Vec<(String, i64)> = counts.into_iter().collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
+    result.sort_by_key(|r| std::cmp::Reverse(r.1));
     Ok(result)
 }
 
