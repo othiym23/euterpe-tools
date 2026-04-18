@@ -1,6 +1,13 @@
 creating new database: ./.etp.db
 initializing from clean schema
 starting scan: .
+phase: all_directory_mtimes done in [..]s — 0 entries
 scanning: . (4 files)
+phase: final flush_pending done in [..]s
+phase: walk complete in [..]s — dirs_scanned=1, dirs_cached=0, removed_files_accum=0, seen_paths=1
+phase: remove_stale_directories done in [..]s — dir_removed=0, stale_orphans=0
+phase: reconcile_moves done in [..]s — orphan_hashes=0
+phase: cas blob cleanup done in [..]s — blobs_removed=0
+phase: finish_scan done in [..]s
 scan complete in [..]ms: 0 cached, 1 scanned, 0 removed
 wrote ./index.csv
