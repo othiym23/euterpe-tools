@@ -55,9 +55,9 @@ Library crate (`crates/etp-lib/src/lib.rs`) re-exports shared modules:
 - `scanner.rs` — walkdir-based scanning; skips unchanged directories by mtime
 - `csv_writer.rs` — sorted CSV output (`path,size,ctime,mtime`)
 - `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
-- `finder.rs` — `FindMatch` struct returned by the DAO-layer match path. The
-  actual regex evaluation runs inside SQLite via the REGEXP UDF (see "Search
-  (etp-find)" below).
+- `finder.rs` — `FindMatch` struct (full path + stat fields) returned by the
+  DAO-layer match path. Regex evaluation happens in SQLite via the REGEXP UDF
+  (see "Search (etp-find)" below).
 - `metadata.rs` — media metadata reading with dual backend: lofty for audio
   formats, mediainfo subprocess for video (MKV, MP4, AVI) and gap audio (WMA,
   MKA). Extension-based dispatch. Extracts audio properties (duration, bitrate,

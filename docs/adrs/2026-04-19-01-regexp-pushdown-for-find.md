@@ -103,9 +103,9 @@ the same data. Dropping the dispatch removed `is_literal_pattern`,
 - `sqlx-sqlite`'s auxdata caching compiles each `?`-bound regex once per
   statement, so there is no per-row regex compilation cost even with two REGEXP
   arguments.
-- `finder::matches_pattern` is no longer called by any production path (kept for
-  its test coverage of the `FindMatch` struct layout). A future cleanup can
-  remove it once all callers of the old `Regex`-based API are confirmed dropped.
+- `finder.rs` shrinks to just the `FindMatch` struct. The old
+  `matches_pattern(&FileRecord, &Regex) -> Option<FindMatch>` helper and its
+  tests were removed once the SQL path was the only production caller.
 - A CTE refactor was considered (computing `full_path` once in a WITH clause to
   avoid re-evaluating the concat in the system-filter variant) but benchmarked
   as no faster on the production DB. Not adopted.
