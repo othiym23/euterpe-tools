@@ -54,6 +54,11 @@ fn make_fixture(dir: &std::path::Path) {
     fs::write(dir.join("notes_2026.md"), b"x").unwrap();
     fs::create_dir_all(dir.join("sub")).unwrap();
     fs::write(dir.join("sub/track01-swans.flac"), b"x").unwrap();
+    // System-file shapes used by the SQL-layer filter tests.
+    fs::create_dir_all(dir.join("@eaDir/SYNOLOGY")).unwrap();
+    fs::write(dir.join("@eaDir/SYNOLOGY/Swans@eadir-thumb.jpg"), b"x").unwrap();
+    fs::write(dir.join("@eaDir/SYNOLOGY/swans-eaDir-inside.flac"), b"x").unwrap();
+    fs::write(dir.join("sub/.etp.db"), b"x").unwrap();
 }
 
 async fn scanned_pool() -> (sqlx::SqlitePool, i64, tempfile::TempDir) {
@@ -71,7 +76,25 @@ async fn scanned_pool() -> (sqlx::SqlitePool, i64, tempfile::TempDir) {
 }
 
 async fn find(pool: &sqlx::SqlitePool, scan_id: i64, pat: &str, i: bool) -> Vec<String> {
+    // include_system_files=true — keeps system paths visible for the case-
+    // sensitivity tests that don't care about the system filter.
     let filter = ops::FilterConfig::new(true);
+    ops::collect_find_matches(pool, Some(scan_id), pat, i, &[], &filter)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.full_path.rsplit('/').next().unwrap().to_string())
+        .collect()
+}
+
+async fn find_with_filter(
+    pool: &sqlx::SqlitePool,
+    scan_id: i64,
+    pat: &str,
+    i: bool,
+    include_system: bool,
+) -> Vec<String> {
+    let filter = ops::FilterConfig::new(include_system);
     ops::collect_find_matches(pool, Some(scan_id), pat, i, &[], &filter)
         .await
         .unwrap()
@@ -205,4 +228,60 @@ async fn underscore_is_literal_in_regex() {
     let (pool, scan_id, _tmp) = scanned_pool().await;
     let names = find(&pool, scan_id, "_2026", false).await;
     assert_eq!(names, vec!["notes_2026.md".to_string()], "{names:?}");
+}
+
+// ─── SQL-layer system-file exclusion ────────────────────────────────────────
+
+#[tokio::test]
+async fn system_filter_default_hides_eadir_children() {
+    // Default filter (include_system=false) must drop anything inside @eaDir,
+    // even when the pattern matches its contents.
+    let (pool, scan_id, _tmp) = scanned_pool().await;
+    let names = find_with_filter(&pool, scan_id, "(?i)swans", true, false).await;
+    // Should surface the real Swans files...
+    assert!(names.iter().any(|n| n == "swans-demo.mp3"));
+    assert!(names.iter().any(|n| n == "Swans - The Seer.flac"));
+    assert!(names.iter().any(|n| n == "track01-swans.flac"));
+    // ...but not @eaDir descendants, even though they contain "swans".
+    assert!(
+        !names.iter().any(|n| n == "Swans@eadir-thumb.jpg"),
+        "file inside @eaDir must be hidden: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "swans-eaDir-inside.flac"),
+        "file inside @eaDir must be hidden: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn system_filter_include_shows_eadir_children() {
+    // With include_system_files=true the SQL filter is bypassed entirely and
+    // @eaDir contents appear in the results.
+    let (pool, scan_id, _tmp) = scanned_pool().await;
+    let names = find_with_filter(&pool, scan_id, "(?i)swans", true, true).await;
+    assert!(
+        names.iter().any(|n| n == "Swans@eadir-thumb.jpg"),
+        "{names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "swans-eaDir-inside.flac"),
+        "{names:?}"
+    );
+}
+
+#[tokio::test]
+async fn system_filter_hides_etp_db_filename() {
+    // `.etp.db` is a system-pattern filename. It must be excluded by default.
+    let (pool, scan_id, _tmp) = scanned_pool().await;
+    let default_names = find_with_filter(&pool, scan_id, "etp", false, false).await;
+    assert!(
+        !default_names.iter().any(|n| n == ".etp.db"),
+        "default filter must hide .etp.db: {default_names:?}"
+    );
+
+    let include_names = find_with_filter(&pool, scan_id, "etp", false, true).await;
+    assert!(
+        include_names.iter().any(|n| n == ".etp.db"),
+        "include_system must surface .etp.db: {include_names:?}"
+    );
 }

@@ -505,10 +505,16 @@ pub fn stream_all_files(
     })
 }
 
-// Two query variants (scan_id vs no scan_id) are `&'static str` consts so the
-// streaming API can hand sqlx a static pointer without per-call gymnastics.
-// Both push the match into SQLite via the REGEXP UDF registered by
-// `with_regexp()`. Callers handle case folding by prefixing `(?i)` as needed.
+// Query variants differ on two axes — scan-id filter and system-file filter —
+// so there are four `&'static str` consts. The streaming API needs a static
+// pointer without per-call string allocation. Every variant pushes the user
+// match into SQLite via the REGEXP UDF registered by `with_regexp()`;
+// callers handle case folding by prefixing `(?i)` as needed.
+//
+// The `*_NO_SYS` variants add `AND NOT (<full_path>) REGEXP ?` so system
+// files (@eaDir, .etp.db, etc.) are discarded at the B-tree layer rather
+// than crossing into Rust. SQLite short-circuits AND chains, so rows that
+// don't match the user pattern never hit the system regex.
 const FIND_REGEXP_ALL: &str = "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
      FROM files f
      JOIN directories d ON f.dir_id = d.id
@@ -520,26 +526,51 @@ const FIND_REGEXP_SCAN: &str = "SELECT s.root_path, d.path, f.filename, f.size, 
      JOIN scans s ON d.scan_id = s.id
      WHERE d.scan_id = ?
        AND (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) REGEXP ?";
+const FIND_REGEXP_ALL_NO_SYS: &str = "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+     FROM files f
+     JOIN directories d ON f.dir_id = d.id
+     JOIN scans s ON d.scan_id = s.id
+     WHERE (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) REGEXP ?
+       AND NOT ((s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) REGEXP ?)";
+const FIND_REGEXP_SCAN_NO_SYS: &str = "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
+     FROM files f
+     JOIN directories d ON f.dir_id = d.id
+     JOIN scans s ON d.scan_id = s.id
+     WHERE d.scan_id = ?
+       AND (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) REGEXP ?
+       AND NOT ((s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) REGEXP ?)";
 
-/// List files whose reconstructed full path matches `pattern` (a regex). Pass
-/// `scan_id: Some(id)` to search a single scan, or `None` to search all
-/// scans. Case sensitivity is controlled by the pattern itself — callers that
-/// want case-insensitive matching should prefix `(?i)`.
+fn find_query_str(has_scan_id: bool, has_system_re: bool) -> &'static str {
+    match (has_scan_id, has_system_re) {
+        (true, true) => FIND_REGEXP_SCAN_NO_SYS,
+        (true, false) => FIND_REGEXP_SCAN,
+        (false, true) => FIND_REGEXP_ALL_NO_SYS,
+        (false, false) => FIND_REGEXP_ALL,
+    }
+}
+
+/// List files whose reconstructed full path matches `pattern` (a regex).
+///
+/// - `scan_id: Some(id)` searches a single scan; `None` searches all scans.
+/// - `exclude_system_re: Some(r)` adds `AND NOT path REGEXP r` to the WHERE
+///   clause, so system files are filtered out at the SQL layer.
+/// - Case sensitivity is controlled by the pattern itself — callers that
+///   want case-insensitive matching should prefix `(?i)`.
 pub async fn list_files_matching(
     pool: &SqlitePool,
     scan_id: Option<i64>,
     pattern: &str,
+    exclude_system_re: Option<&str>,
 ) -> Result<Vec<FileRecord>, sqlx::Error> {
-    let query = if scan_id.is_some() {
-        FIND_REGEXP_SCAN
-    } else {
-        FIND_REGEXP_ALL
-    };
+    let query = find_query_str(scan_id.is_some(), exclude_system_re.is_some());
     let mut q = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(query);
     if let Some(id) = scan_id {
         q = q.bind(id);
     }
     q = q.bind(pattern);
+    if let Some(sys) = exclude_system_re {
+        q = q.bind(sys);
+    }
     let rows = q.fetch_all(pool).await?;
     Ok(rows
         .into_iter()
@@ -561,23 +592,23 @@ pub async fn list_files_matching(
 }
 
 /// Stream files whose reconstructed full path matches `pattern` (a regex).
-/// `scan_id: None` streams across all scans. See [`list_files_matching`] for
-/// case-sensitivity notes.
+/// See [`list_files_matching`] for parameter notes.
 pub fn stream_files_matching<'a>(
     pool: &'a SqlitePool,
     scan_id: Option<i64>,
     pattern: &str,
+    exclude_system_re: Option<&str>,
 ) -> Pin<Box<dyn Stream<Item = Result<FileRecord, sqlx::Error>> + Send + 'a>> {
-    let query = if scan_id.is_some() {
-        FIND_REGEXP_SCAN
-    } else {
-        FIND_REGEXP_ALL
-    };
+    let query = find_query_str(scan_id.is_some(), exclude_system_re.is_some());
     let mut q = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(query);
     if let Some(id) = scan_id {
         q = q.bind(id);
     }
-    let raw = q.bind(pattern.to_string()).fetch(pool);
+    q = q.bind(pattern.to_string());
+    if let Some(sys) = exclude_system_re {
+        q = q.bind(sys.to_string());
+    }
+    let raw = q.fetch(pool);
     Box::pin(MapStream {
         inner: Box::pin(raw),
     })
