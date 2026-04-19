@@ -81,33 +81,6 @@ pub fn compile_pattern(pattern: &str, case_insensitive: bool) -> anyhow::Result<
         .map_err(|e| anyhow::anyhow!("invalid regex '{}': {}", pattern, e))
 }
 
-/// Return true when the pattern contains no regex metacharacters, i.e. it's
-/// meant as a plain substring search.
-pub fn is_literal_pattern(pattern: &str) -> bool {
-    !pattern.chars().any(|c| {
-        matches!(
-            c,
-            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
-        )
-    })
-}
-
-/// Escape a literal substring for use with SQL `LIKE ... ESCAPE '\\'`.
-/// `%` and `_` are LIKE wildcards; `\\` is the escape character we use.
-pub fn escape_like_pattern(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' | '%' | '_' => {
-                out.push('\\');
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 /// Verify that a path is a directory.
 pub fn validate_directory(root: &Path) -> anyhow::Result<()> {
     if !root.is_dir() {
@@ -556,21 +529,14 @@ pub async fn render_du(pool: &SqlitePool, scan_id: i64, show_subs: bool) -> anyh
     Ok(())
 }
 
-/// Decide how to translate a user pattern + `-i` flag into SQL-level filtering.
-///
-/// `-i` always routes through the REGEXP UDF with `(?i)` prefixed so the
-/// regex crate does proper Unicode case folding. Without `-i`, literal
-/// substrings use SQL `LIKE` (cheap, pushed into SQLite) and regex patterns
-/// use REGEXP. The LIKE path is ASCII case-insensitive (SQLite default); the
-/// Rust-side post-check in `matches_pattern` re-verifies case-sensitive
-/// matching so user-facing behavior is still case-sensitive without `-i`.
-fn build_find_op(pattern: &str, insensitive: bool) -> dao::FindMatchOp {
+/// Build the regex pattern handed to SQLite's REGEXP UDF. `-i` prefixes
+/// `(?i)` so the Rust `regex` crate applies Unicode simple case folding;
+/// otherwise the pattern is used as-is and matches case-sensitively.
+fn regexp_pattern(pattern: &str, insensitive: bool) -> String {
     if insensitive {
-        dao::FindMatchOp::Regexp(format!("(?i){pattern}"))
-    } else if is_literal_pattern(pattern) {
-        dao::FindMatchOp::Like(format!("%{}%", escape_like_pattern(pattern)))
+        format!("(?i){pattern}")
     } else {
-        dao::FindMatchOp::Regexp(pattern.to_string())
+        pattern.to_string()
     }
 }
 
@@ -587,9 +553,8 @@ pub async fn stream_find_matches(
 ) -> anyhow::Result<(usize, u64)> {
     use futures_util::StreamExt;
 
-    let op = build_find_op(pattern, insensitive);
-    let verify = matches!(op, dao::FindMatchOp::Like(_)).then(|| pattern.to_string());
-    let mut stream = dao::stream_files_matching(pool, scan_id, &op);
+    let sql_pattern = regexp_pattern(pattern, insensitive);
+    let mut stream = dao::stream_files_matching(pool, scan_id, &sql_pattern);
 
     let mut count = 0;
     let mut total_size = 0u64;
@@ -602,13 +567,7 @@ pub async fn stream_find_matches(
         if !filter.should_show(&record.dir_path, &record.filename) {
             continue;
         }
-        let full_path = format!("{}/{}", record.dir_path, record.filename);
-        if let Some(ref needle) = verify
-            && !full_path.contains(needle.as_str())
-        {
-            continue;
-        }
-        println!("{full_path}");
+        println!("{}/{}", record.dir_path, record.filename);
         total_size += record.size;
         count += 1;
     }
@@ -627,9 +586,8 @@ pub async fn collect_find_matches(
     exclude: &[String],
     filter: &FilterConfig,
 ) -> anyhow::Result<Vec<crate::finder::FindMatch>> {
-    let op = build_find_op(pattern, insensitive);
-    let verify = matches!(op, dao::FindMatchOp::Like(_)).then(|| pattern.to_string());
-    let files = dao::list_files_matching(pool, scan_id, &op)
+    let sql_pattern = regexp_pattern(pattern, insensitive);
+    let files = dao::list_files_matching(pool, scan_id, &sql_pattern)
         .await
         .context("reading from database")?;
 
@@ -637,19 +595,11 @@ pub async fn collect_find_matches(
         .into_iter()
         .filter(|record| !is_excluded_path(&record.dir_path, exclude))
         .filter(|record| filter.should_show(&record.dir_path, &record.filename))
-        .filter_map(|record| {
-            let full_path = format!("{}/{}", record.dir_path, record.filename);
-            if let Some(ref needle) = verify
-                && !full_path.contains(needle.as_str())
-            {
-                return None;
-            }
-            Some(crate::finder::FindMatch {
-                full_path,
-                size: record.size,
-                ctime: record.ctime,
-                mtime: record.mtime,
-            })
+        .map(|record| crate::finder::FindMatch {
+            full_path: format!("{}/{}", record.dir_path, record.filename),
+            size: record.size,
+            ctime: record.ctime,
+            mtime: record.mtime,
         })
         .collect())
 }
@@ -740,62 +690,15 @@ mod tests {
     }
 
     #[test]
-    fn is_literal_pattern_plain_ascii() {
-        assert!(is_literal_pattern("swans"));
-        assert!(is_literal_pattern("Hello World"));
-        assert!(is_literal_pattern("path/to/file"));
+    fn regexp_pattern_passes_through_without_i() {
+        assert_eq!(super::regexp_pattern("swans", false), "swans");
+        assert_eq!(super::regexp_pattern("sw.*ns", false), "sw.*ns");
     }
 
     #[test]
-    fn is_literal_pattern_unicode_is_literal() {
-        assert!(is_literal_pattern("日本語"));
-        assert!(is_literal_pattern("Ångström"));
-    }
-
-    #[test]
-    fn is_literal_pattern_catches_all_metachars() {
-        for m in [
-            ".", "^", "$", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|", "\\",
-        ] {
-            let pat = format!("abc{m}def");
-            assert!(
-                !is_literal_pattern(&pat),
-                "metachar {m} not caught in {pat}"
-            );
-        }
-    }
-
-    #[test]
-    fn escape_like_pattern_escapes_wildcards() {
-        assert_eq!(escape_like_pattern("foo"), "foo");
-        assert_eq!(escape_like_pattern("50%"), r"50\%");
-        assert_eq!(escape_like_pattern("a_b"), r"a\_b");
-        assert_eq!(escape_like_pattern(r"a\b"), r"a\\b");
-        assert_eq!(escape_like_pattern(r"50%_\x"), r"50\%\_\\x");
-    }
-
-    #[test]
-    fn build_find_op_insensitive_always_regexp() {
-        let op = super::build_find_op("swans", true);
-        assert!(matches!(op, dao::FindMatchOp::Regexp(ref p) if p == "(?i)swans"));
-    }
-
-    #[test]
-    fn build_find_op_literal_case_sensitive_is_like() {
-        let op = super::build_find_op("swans", false);
-        assert!(matches!(op, dao::FindMatchOp::Like(ref p) if p == "%swans%"));
-    }
-
-    #[test]
-    fn build_find_op_regex_without_i_is_regexp() {
-        let op = super::build_find_op("sw.*ns", false);
-        assert!(matches!(op, dao::FindMatchOp::Regexp(ref p) if p == "sw.*ns"));
-    }
-
-    #[test]
-    fn build_find_op_like_escapes_wildcards() {
-        let op = super::build_find_op("50% off", false);
-        assert!(matches!(op, dao::FindMatchOp::Like(ref p) if p == r"%50\% off%"));
+    fn regexp_pattern_prefixes_i_flag() {
+        assert_eq!(super::regexp_pattern("swans", true), "(?i)swans");
+        assert_eq!(super::regexp_pattern("Björk", true), "(?i)Björk");
     }
 
     #[test]

@@ -505,34 +505,10 @@ pub fn stream_all_files(
     })
 }
 
-/// How to match the reconstructed full path when narrowing rows at the SQL
-/// layer. Both variants push filtering into SQLite so Rust only sees rows
-/// that already passed the pattern test.
-pub enum FindMatchOp {
-    /// SQL `LIKE pattern ESCAPE '\\'`. SQLite's built-in `LIKE` is ASCII
-    /// case-insensitive; the caller can re-verify in Rust to enforce
-    /// case-sensitive behavior.
-    Like(String),
-    /// SQL `REGEXP pattern` — uses the `regex` crate via sqlx's REGEXP UDF,
-    /// registered per-connection by `with_regexp()`.
-    Regexp(String),
-}
-
-// The 4 query variants (scan_id × match op) are defined as `&'static str`
-// consts so the streaming API can hand sqlx a `&'static str` without
-// per-call leaks or owned-string gymnastics. All four share the SELECT and
-// JOIN shape; only the WHERE clause differs.
-const FIND_LIKE_ALL: &str = "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
-     FROM files f
-     JOIN directories d ON f.dir_id = d.id
-     JOIN scans s ON d.scan_id = s.id
-     WHERE (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) LIKE ? ESCAPE '\\'";
-const FIND_LIKE_SCAN: &str = "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
-     FROM files f
-     JOIN directories d ON f.dir_id = d.id
-     JOIN scans s ON d.scan_id = s.id
-     WHERE d.scan_id = ?
-       AND (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) LIKE ? ESCAPE '\\'";
+// Two query variants (scan_id vs no scan_id) are `&'static str` consts so the
+// streaming API can hand sqlx a static pointer without per-call gymnastics.
+// Both push the match into SQLite via the REGEXP UDF registered by
+// `with_regexp()`. Callers handle case folding by prefixing `(?i)` as needed.
 const FIND_REGEXP_ALL: &str = "SELECT s.root_path, d.path, f.filename, f.size, f.ctime, f.mtime
      FROM files f
      JOIN directories d ON f.dir_id = d.id
@@ -545,34 +521,25 @@ const FIND_REGEXP_SCAN: &str = "SELECT s.root_path, d.path, f.filename, f.size, 
      WHERE d.scan_id = ?
        AND (s.root_path || CASE WHEN d.path = '' THEN '' ELSE '/' || d.path END || '/' || f.filename) REGEXP ?";
 
-fn find_query_str(op: &FindMatchOp, has_scan_id: bool) -> &'static str {
-    match (op, has_scan_id) {
-        (FindMatchOp::Like(_), true) => FIND_LIKE_SCAN,
-        (FindMatchOp::Like(_), false) => FIND_LIKE_ALL,
-        (FindMatchOp::Regexp(_), true) => FIND_REGEXP_SCAN,
-        (FindMatchOp::Regexp(_), false) => FIND_REGEXP_ALL,
-    }
-}
-
-fn find_pattern(op: &FindMatchOp) -> &str {
-    match op {
-        FindMatchOp::Like(p) | FindMatchOp::Regexp(p) => p.as_str(),
-    }
-}
-
-/// List files matching a pattern pushed down to SQL. `scan_id: None` searches
-/// all scans. Returns full `FileRecord`s exactly like `list_files`.
+/// List files whose reconstructed full path matches `pattern` (a regex). Pass
+/// `scan_id: Some(id)` to search a single scan, or `None` to search all
+/// scans. Case sensitivity is controlled by the pattern itself — callers that
+/// want case-insensitive matching should prefix `(?i)`.
 pub async fn list_files_matching(
     pool: &SqlitePool,
     scan_id: Option<i64>,
-    op: &FindMatchOp,
+    pattern: &str,
 ) -> Result<Vec<FileRecord>, sqlx::Error> {
-    let query = find_query_str(op, scan_id.is_some());
+    let query = if scan_id.is_some() {
+        FIND_REGEXP_SCAN
+    } else {
+        FIND_REGEXP_ALL
+    };
     let mut q = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(query);
     if let Some(id) = scan_id {
         q = q.bind(id);
     }
-    q = q.bind(find_pattern(op));
+    q = q.bind(pattern);
     let rows = q.fetch_all(pool).await?;
     Ok(rows
         .into_iter()
@@ -593,22 +560,24 @@ pub async fn list_files_matching(
         .collect())
 }
 
-/// Stream files matching a pattern pushed down to SQL. `scan_id: None`
-/// streams across all scans.
+/// Stream files whose reconstructed full path matches `pattern` (a regex).
+/// `scan_id: None` streams across all scans. See [`list_files_matching`] for
+/// case-sensitivity notes.
 pub fn stream_files_matching<'a>(
     pool: &'a SqlitePool,
     scan_id: Option<i64>,
-    op: &FindMatchOp,
+    pattern: &str,
 ) -> Pin<Box<dyn Stream<Item = Result<FileRecord, sqlx::Error>> + Send + 'a>> {
-    let query = find_query_str(op, scan_id.is_some());
-    let pattern = match op {
-        FindMatchOp::Like(p) | FindMatchOp::Regexp(p) => p.clone(),
+    let query = if scan_id.is_some() {
+        FIND_REGEXP_SCAN
+    } else {
+        FIND_REGEXP_ALL
     };
     let mut q = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(query);
     if let Some(id) = scan_id {
         q = q.bind(id);
     }
-    let raw = q.bind(pattern).fetch(pool);
+    let raw = q.bind(pattern.to_string()).fetch(pool);
     Box::pin(MapStream {
         inner: Box::pin(raw),
     })
