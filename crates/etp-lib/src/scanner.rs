@@ -5,8 +5,26 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
+
+/// Verbose progress cadence for long phases (walk, reconcile match loop).
+const PROGRESS_EVERY: Duration = Duration::from_secs(30);
+
+/// Log a completed phase when `verbose` is true. `detail` may be empty.
+fn log_phase(verbose: bool, name: &str, elapsed: Duration, detail: &str) {
+    if !verbose {
+        return;
+    }
+    if detail.is_empty() {
+        eprintln!("phase: {name} done in {:.2}s", elapsed.as_secs_f64());
+    } else {
+        eprintln!(
+            "phase: {name} done in {:.2}s — {detail}",
+            elapsed.as_secs_f64()
+        );
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
@@ -58,13 +76,12 @@ pub async fn scan_to_db(
     // Bulk-load all cached mtimes in one query instead of per-directory SELECTs.
     let phase = Instant::now();
     let cached_mtimes: HashMap<String, i64> = dao::all_directory_mtimes(pool, scan_id).await?;
-    if verbose {
-        eprintln!(
-            "phase: all_directory_mtimes done in {:.2}s — {} entries",
-            phase.elapsed().as_secs_f64(),
-            cached_mtimes.len(),
-        );
-    }
+    log_phase(
+        verbose,
+        "all_directory_mtimes",
+        phase.elapsed(),
+        &format!("{} entries", cached_mtimes.len()),
+    );
 
     // Walk without sorting — order doesn't matter for scanning (output reads
     // from DB with its own sort). Skipping sort avoids buffering + extra
@@ -74,7 +91,6 @@ pub async fn scan_to_db(
     const BATCH_SIZE: usize = 64;
     let walk_start = Instant::now();
     let mut last_progress = Instant::now();
-    const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
     for entry in WalkDir::new(root)
         .sort_by(|_, _| std::cmp::Ordering::Equal)
@@ -172,24 +188,21 @@ pub async fn scan_to_db(
         let phase = Instant::now();
         let removed = flush_pending(pool, scan_id, &mut pending).await?;
         all_removed.extend(removed);
-        if verbose {
-            eprintln!(
-                "phase: final flush_pending done in {:.2}s",
-                phase.elapsed().as_secs_f64()
-            );
-        }
+        log_phase(verbose, "final flush_pending", phase.elapsed(), "");
     }
 
-    if verbose {
-        eprintln!(
-            "phase: walk complete in {:.2}s — dirs_scanned={}, dirs_cached={}, removed_files_accum={}, seen_paths={}",
-            walk_start.elapsed().as_secs_f64(),
+    log_phase(
+        verbose,
+        "walk",
+        walk_start.elapsed(),
+        &format!(
+            "dirs_scanned={}, dirs_cached={}, removed_files_accum={}, seen_paths={}",
             stats.dirs_scanned,
             stats.dirs_cached,
             all_removed.len(),
             seen_paths.len(),
-        );
-    }
+        ),
+    );
 
     // If nothing was scanned, every directory matched its cached mtime —
     // the DB is already in sync and no directories can be stale.
@@ -200,27 +213,27 @@ pub async fn scan_to_db(
         (0, Vec::new())
     };
     stats.dirs_removed = dir_removed;
-    if verbose {
-        eprintln!(
-            "phase: remove_stale_directories done in {:.2}s — dir_removed={}, stale_orphans={}",
-            phase.elapsed().as_secs_f64(),
-            dir_removed,
-            stale_orphans.len(),
-        );
-    }
+    log_phase(
+        verbose,
+        "remove_stale_directories",
+        phase.elapsed(),
+        &format!(
+            "dir_removed={dir_removed}, stale_orphans={}",
+            stale_orphans.len()
+        ),
+    );
 
     // Move-tracking: match removed files against newly appeared files by
     // size, then verify with BLAKE3 hash. Matched files get their dir_id
     // and filename updated; unmatched files are deleted.
     let phase = Instant::now();
     let orphan_hashes = reconcile_moves(pool, root, &mut all_removed, verbose).await?;
-    if verbose {
-        eprintln!(
-            "phase: reconcile_moves done in {:.2}s — orphan_hashes={}",
-            phase.elapsed().as_secs_f64(),
-            orphan_hashes.len(),
-        );
-    }
+    log_phase(
+        verbose,
+        "reconcile_moves",
+        phase.elapsed(),
+        &format!("orphan_hashes={}", orphan_hashes.len()),
+    );
 
     // Clean up CAS blobs orphaned by unmatched deletions + stale dirs
     let phase = Instant::now();
@@ -230,22 +243,16 @@ pub async fn scan_to_db(
             blobs_removed += 1;
         }
     }
-    if verbose {
-        eprintln!(
-            "phase: cas blob cleanup done in {:.2}s — blobs_removed={}",
-            phase.elapsed().as_secs_f64(),
-            blobs_removed,
-        );
-    }
+    log_phase(
+        verbose,
+        "cas blob cleanup",
+        phase.elapsed(),
+        &format!("blobs_removed={blobs_removed}"),
+    );
 
     let phase = Instant::now();
     dao::finish_scan(pool, scan_id).await?;
-    if verbose {
-        eprintln!(
-            "phase: finish_scan done in {:.2}s",
-            phase.elapsed().as_secs_f64(),
-        );
-    }
+    log_phase(verbose, "finish_scan", phase.elapsed(), "");
 
     stats.elapsed_ms = start.elapsed().as_millis();
 
@@ -430,7 +437,7 @@ async fn reconcile_moves(
         };
         hashes_computed += 1;
 
-        if verbose && match_last_progress.elapsed() >= std::time::Duration::from_secs(30) {
+        if verbose && match_last_progress.elapsed() >= PROGRESS_EVERY {
             eprintln!(
                 "  reconcile: matching at {:.1}s — matched={}, hashes_computed={}",
                 match_start.elapsed().as_secs_f64(),

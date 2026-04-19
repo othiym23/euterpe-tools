@@ -71,8 +71,6 @@ struct Cli {
 async fn run(cli: Cli) -> Result<()> {
     let config = etp_lib::config::RuntimeConfig::load_or_default();
 
-    // Validate the regex once up front so we fail fast on bad syntax; SQLite
-    // will also refuse bad regex at query time, but this gives a cleaner error.
     ops::compile_pattern(&cli.pattern, cli.insensitive)?;
 
     // Resolve nicknames on -R/--root and/or --db.
