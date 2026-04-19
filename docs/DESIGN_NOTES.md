@@ -55,7 +55,9 @@ Library crate (`crates/etp-lib/src/lib.rs`) re-exports shared modules:
 - `scanner.rs` — walkdir-based scanning; skips unchanged directories by mtime
 - `csv_writer.rs` — sorted CSV output (`path,size,ctime,mtime`)
 - `tree.rs` — tree rendering with ICU4X collation for Unicode-aware sorting
-- `finder.rs` — regex matching against file records
+- `finder.rs` — `FindMatch` struct returned by the DAO-layer match path. The
+  actual regex evaluation runs inside SQLite via the REGEXP UDF (see "Search
+  (etp-find)" below).
 - `metadata.rs` — media metadata reading with dual backend: lofty for audio
   formats, mediainfo subprocess for video (MKV, MP4, AVI) and gap audio (WMA,
   MKA). Extension-based dispatch. Extracts audio properties (duration, bitrate,
@@ -67,7 +69,9 @@ Library crate (`crates/etp-lib/src/lib.rs`) re-exports shared modules:
 - `db/mod.rs` — SQLite connection factory (WAL mode, foreign keys, cache
   pragmas); dual-path init: new databases use clean `schema.sql`, existing
   databases use incremental `migrations/`. FK enforcement disabled during
-  migrations for table recreation compatibility.
+  migrations for table recreation compatibility. `.with_regexp()` registers
+  sqlx's Rust-regex-backed `REGEXP` UDF on every connection so DAO queries can
+  push pattern matching into SQLite (see "Search (etp-find)" below).
 - `db/dao.rs` — all database queries (scan CRUD, file UPSERT, metadata, blobs,
   images, cue sheets, move tracking). `FULL_PATH_SQL` constant for path
   reconstruction used across query functions.
@@ -288,6 +292,59 @@ streaming BLAKE3 hash. Matched files get an UPDATE to `dir_id` + `filename`,
 preserving their ID and all dependent metadata. Unmatched files are deleted with
 dependent cleanup.
 
+### Scanner diagnostics
+
+`scan_to_db` emits `phase: <name> done in <n>s — <stats>` markers on stderr when
+`-v` is passed, covering every post-walk step (stale-directory sweep, move
+reconciliation, CAS blob cleanup, `finish_scan`). The walk loop and the
+reconcile match loop emit a `progress:` / `reconcile:` line every 30 seconds so
+long-running scans report liveness. The markers exist so a scan that appears
+stuck can be triaged in a single re-run rather than guessed at. The
+`csv-verbose` trycmd snapshot pins the format.
+
+## Search (etp-find)
+
+`etp-find` pushes its pattern match into SQLite through the REGEXP UDF
+registered on every connection by `.with_regexp()`. The DAO functions
+`list_files_matching` and `stream_files_matching` issue
+`SELECT … WHERE (<full_path>) REGEXP ?`, where `<full_path>` is the SQL
+concatenation of `root_path`, `directories.path`, and `files.filename`. Only
+matching rows cross the sqlx boundary into Rust.
+
+`-i` is expressed as a `(?i)` prefix on the pattern string before binding, so
+the Rust `regex` crate handles case folding inside the UDF. There is no separate
+case-insensitive SQL operator. Case-sensitivity of `etp-find` is therefore a
+property of the compiled regex:
+
+|              | ASCII case | non-ASCII 1:1 | `ß` ↔ `SS` (1:2) |
+| ------------ | ---------- | ------------- | ---------------- |
+| without `-i` | strict     | strict        | no               |
+| with `-i`    | folded     | folded        | no               |
+
+The `ß` ↔ `SS` 1:2 mapping is _full_ case folding, which the `regex` crate does
+not implement (it does Unicode _simple_ case folding only — see the fixture and
+tests in `crates/etp-lib/tests/find_sql_pushdown.rs`).
+
+When `FilterConfig::include_system_files` is false, the query also gets
+`AND NOT (<full_path>) REGEXP ?` with a second pattern built from
+`filter.system_patterns` via `regex::escape` and component anchors
+(`(?:^|/)…(?:$|/)`). SQLite short-circuits `AND` chains, so rows rejected by the
+user pattern never incur the system-regex evaluation. The compiled regex is
+cached in sqlx-sqlite's per-statement auxdata, so both patterns compile exactly
+once per query.
+
+`ops::stream_find_matches` and `collect_find_matches` take
+`(pattern: &str, insensitive: bool)` and build the final SQL pattern via
+`regexp_pattern()`. After rows arrive, `FilterConfig::should_show_post_sql`
+applies the dotfile and user-exclude checks on the filename alone — it skips the
+expensive `is_system_path` component walk because the SQL layer has already
+applied the system filter (or, when `include_system_files` is true,
+intentionally did not).
+
+See `docs/adrs/2026-04-19-01-regexp-pushdown-for-find.md` for the rationale,
+benchmarks, and the evolution from a dual LIKE+REGEXP dispatch to the single
+REGEXP path.
+
 ## Display Filtering
 
 The scanner indexes everything on disk. Filtering happens at display time via
@@ -313,8 +370,10 @@ System files are exempt from both dotfile hiding and user exclude matching.
 
 `FilterConfig` in `ops.rs` bundles all filter state: system patterns, user
 excludes, `include_system_files`, and `show_hidden`. It provides `should_show()`
-(for full path + filename checks) and `should_show_name()` (for individual name
-checks in tree rendering).
+(for full path + filename checks), `should_show_name()` (for individual name
+checks in tree rendering), and `should_show_post_sql()` (a lean variant used by
+`etp-find` when the SQL layer has already filtered system paths — see "Search
+(etp-find)" above).
 
 ## Runtime Configuration (config.kdl)
 
