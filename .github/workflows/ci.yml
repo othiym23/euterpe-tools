@@ -28,8 +28,8 @@ jobs:
         run: uv python install 3.14
       - name: Sync deps
         run: uv sync
-      - uses: astral-sh/ruff-action@v3
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@v4.0.0
+      - uses: astral-sh/ruff-action@v4.0.0
         with:
           args: "format --check"
       - name: Pyright
