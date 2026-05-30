@@ -10,7 +10,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from etp_lib.paths import cache_dir
-from etp_lib.types import CACHE_MAX_AGE_SECONDS, AnimeInfo, Episode, EpisodeType
+from etp_lib.types import (
+    CACHE_MAX_AGE_SECONDS,
+    AnimeInfo,
+    Episode,
+    EpisodeType,
+    dedup_titles,
+)
 
 # AniDB's HTTP API only supports plaintext HTTP on port 9001 — there is no
 # HTTPS endpoint.  The "client" and "clientver" params are a registered app
@@ -65,7 +71,6 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
     en_synonym = ""
     main_title_fallback = ""
     all_aliases: list[str] = []
-    seen_aliases: set[str] = set()
     for title_elem in root.findall("titles/title"):
         lang = title_elem.get("{http://www.w3.org/XML/1998/namespace}lang", "")
         ttype = title_elem.get("type", "")
@@ -77,8 +82,7 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         # Collect main/official/synonym title variants in any language so
         # the matcher can recognize romaji and alternate transliterations.
         # "short" titles (e.g. "FMA") are excluded — too prone to collision.
-        if ttype in ("main", "official", "synonym") and text not in seen_aliases:
-            seen_aliases.add(text)
+        if ttype in ("main", "official", "synonym"):
             all_aliases.append(text)
 
         if ttype == "main" and not main_title_fallback:
@@ -100,6 +104,10 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
 
     title_ja = ja_official or ja_main or jat_main or main_title_fallback
     title_en = en_official or en_main or en_synonym
+
+    # Entry type — AniDB reports "Movie" for theatrical features, which the
+    # manifest routes to the series root instead of a Season NN/ subdir.
+    is_movie = root.findtext("type", "").strip() == "Movie"
 
     # Year from startdate
     year = 0
@@ -169,7 +177,8 @@ def _parse_anidb_xml(xml_text: str, aid: int) -> AnimeInfo:
         title_en=title_en,
         year=year,
         title_romaji=jat_main,
-        aliases=all_aliases,
+        aliases=dedup_titles(all_aliases),
+        is_movie=is_movie,
         episodes=episodes,
     )
 

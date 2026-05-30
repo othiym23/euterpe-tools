@@ -145,6 +145,64 @@ class TestBuildManifestEntries:
         # No sticky defaults -- f2 has no group, stays empty
         assert entries[1].source.parsed.release_group == ""
 
+    def test_movie_routed_to_series_root(self, tmp_path, monkeypatch):
+        """An AniDB movie entry lands at the series root, not Season NN/."""
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+        f = tmp_path / "Akira (1988) [BD 1080p].mkv"
+        f.write_bytes(b"x")
+        info = AnimeInfo(
+            anidb_id=28,
+            tvdb_id=None,
+            title_ja="アキラ",
+            title_en="Akira",
+            year=1988,
+            is_movie=True,
+            episodes=[Episode(1, EpisodeType.REGULAR, "Akira", "", "")],
+        )
+        series_dir = tmp_path / "アキラ [Akira] (1988)"
+        entries = build_manifest_entries(
+            [SourceFile(path=f, parsed=ParsedMetadata(series_name="Akira", season=1))],
+            info,
+            "Akira",
+            series_dir,
+            verbose=False,
+        )
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.is_movie is True
+        assert entry.is_todo is False
+        assert entry.dest_path.parent == series_dir  # root, no Season NN/
+        assert "complete movie" in entry.dest_path.name
+
+    def test_multi_episode_per_part_tba_replaced(self, tmp_path, monkeypatch):
+        """A per-episode TBA in a multi-episode join is replaced, not leaked."""
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+        f = tmp_path / "Show - 03-04.mkv"
+        f.write_bytes(b"x")
+        info = AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="S",
+            title_en="Show",
+            year=2020,
+            episodes=[
+                Episode(3, EpisodeType.REGULAR, "TBA", "", ""),
+                Episode(4, EpisodeType.REGULAR, "Real Title", "", ""),
+            ],
+        )
+        sf = SourceFile(
+            path=f,
+            parsed=ParsedMetadata(
+                series_name="Show", season=1, episode=3, episodes=[3, 4]
+            ),
+        )
+        entries = build_manifest_entries(
+            [sf], info, "Show", tmp_path / "dest", verbose=False
+        )
+        name = entries[0].dest_path.name
+        assert "TBA" not in name
+        assert "Episode 3 + Real Title" in name
+
 
 class TestWriteManifest:
     """Tests for KDL manifest file writing."""
@@ -154,7 +212,7 @@ class TestWriteManifest:
             path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
         )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
-        entry = ManifestEntry(source=sf, dest_path=dest_path)
+        entry = ManifestEntry(source=sf, dest_path=dest_path, season=1)
         info = AnimeInfo(
             anidb_id=42,
             tvdb_id=None,
@@ -179,7 +237,7 @@ class TestWriteManifest:
             path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=0, season=1)
         )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
-        entry = ManifestEntry(source=sf, dest_path=dest_path, is_todo=True)
+        entry = ManifestEntry(source=sf, dest_path=dest_path, season=1, is_todo=True)
         info = AnimeInfo(
             anidb_id=1,
             tvdb_id=None,
@@ -200,7 +258,9 @@ class TestWriteManifest:
             path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
         )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
-        entry = ManifestEntry(source=sf, dest_path=dest_path, hash_failed=True)
+        entry = ManifestEntry(
+            source=sf, dest_path=dest_path, season=1, hash_failed=True
+        )
         info = AnimeInfo(
             anidb_id=1,
             tvdb_id=None,
@@ -225,10 +285,14 @@ class TestWriteManifest:
         )
         entries = [
             ManifestEntry(
-                source=sf1, dest_path=tmp_path / "series" / "Season 01" / "ep1.mkv"
+                source=sf1,
+                dest_path=tmp_path / "series" / "Season 01" / "ep1.mkv",
+                season=1,
             ),
             ManifestEntry(
-                source=sf2, dest_path=tmp_path / "series" / "Season 02" / "ep1.mkv"
+                source=sf2,
+                dest_path=tmp_path / "series" / "Season 02" / "ep1.mkv",
+                season=2,
             ),
         ]
         info = AnimeInfo(
@@ -243,6 +307,27 @@ class TestWriteManifest:
         try:
             content = path.read_text(encoding="utf-8")
             assert "season 1 {" in content
+            assert "season 2 {" in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_grouping_uses_entry_season_not_dir_name(self, tmp_path):
+        """Grouping keys off ManifestEntry.season, not the dest dir basename."""
+        sf = SourceFile(
+            path=tmp_path / "x.mkv", parsed=ParsedMetadata(episode=1, season=2)
+        )
+        # Destination dir name intentionally inconsistent with the season.
+        entry = ManifestEntry(
+            source=sf,
+            dest_path=tmp_path / "series" / "Whatever" / "x.mkv",
+            season=2,
+        )
+        info = AnimeInfo(
+            anidb_id=1, tvdb_id=None, title_ja="t", title_en="T", year=2020
+        )
+        path = write_manifest([entry], info, "T", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
             assert "season 2 {" in content
         finally:
             path.unlink(missing_ok=True)

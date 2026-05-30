@@ -6,10 +6,28 @@ from pathlib import Path
 
 from etp_lib.naming import (
     build_metadata_block,
+    extras_relpath,
     format_episode_filename,
     format_series_dirname,
 )
 from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
+
+
+class TestExtrasRelpath:
+    """`extras_relpath` identifies Extras subtrees and their relative path."""
+
+    def test_not_under_extras_returns_none(self):
+        assert extras_relpath(Path("/dl/Batch/ep01.mkv")) is None
+
+    def test_under_extras_preserves_substructure(self):
+        rel = extras_relpath(Path("/dl/Batch/Extras/OST/Disc 1/track01.flac"))
+        assert rel == Path("OST/Disc 1/track01.flac")
+
+    def test_directly_in_extras(self):
+        assert extras_relpath(Path("/dl/Batch/Extras/NCOP.mkv")) == Path("NCOP.mkv")
+
+    def test_case_insensitive(self):
+        assert extras_relpath(Path("/dl/Batch/extras/scan.png")) == Path("scan.png")
 
 
 class TestMetadataBlock:

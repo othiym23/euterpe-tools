@@ -4,7 +4,8 @@ ARG USERNAME=ogd
 ARG USER_UID=501
 ARG USER_GID=20
 
-ENV RUST_VERSION=1.94.1
+ENV CLAUDE_VERSION=2.1.158
+ENV RUST_VERSION=1.96
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 
@@ -14,7 +15,7 @@ RUN apk update && apk add --no-cache \
     uv \
     gh \
     just \
-    nodejs-22 \
+    nodejs-24 \
     npm \
     bun \
     neovim \
@@ -51,7 +52,7 @@ RUN { grep -q ":${USER_GID}:" /etc/group || addgroup -g ${USER_GID} staff; } && 
     echo "${USERNAME} ALL=(root) NOPASSWD: /usr/bin/dockerd" > /etc/sudoers.d/${USERNAME}
 
 # Install npm-based tools globally
-RUN npm install -g @anthropic-ai/claude-code prettier ccstatusline
+RUN npm install -g prettier ccstatusline
 
 # Hand rustup/cargo directories to the container user so they can
 # download crates and add targets without root.
@@ -79,5 +80,9 @@ RUN uv python install 3.14 && \
     uv tool install ruff && \
     uv tool install pyright && \
     uv tool install ty
+
+# Install Claude at a pinned version. Runs as ${USERNAME} so install.sh
+# lands the binary in /home/${USERNAME}/.local/bin (already on PATH).
+RUN curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_VERSION}
 
 WORKDIR /workspaces/euterpe-tools

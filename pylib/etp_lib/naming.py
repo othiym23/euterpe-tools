@@ -8,6 +8,24 @@ from pathlib import Path
 from etp_lib.types import AudioTrack, SourceFile
 
 
+def extras_relpath(path: Path) -> Path | None:
+    """If *path* lives under a directory named ``Extras``, return its path
+    relative to that directory (preserving any substructure); otherwise None.
+
+    Shared by the triage scanner (to pull Extras videos out of the episode
+    pool) and the manifest writer (to preserve ``Extras/`` subtree structure
+    under the destination ``Extras/``) so both agree on what counts as an
+    Extras subtree.
+    """
+    parts = path.parts
+    lowered = [p.lower() for p in parts]
+    if "extras" not in lowered:
+        return None
+    idx = lowered.index("extras")
+    tail = parts[idx + 1 :]
+    return Path(*tail) if tail else Path(path.name)
+
+
 def unique_audio_codecs(tracks: list[AudioTrack]) -> list[str]:
     """Return deduplicated non-commentary audio codec names in order."""
     seen: set[str] = set()

@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+
+
+def dedup_titles(titles: Iterable[str]) -> list[str]:
+    """Return *titles* deduplicated, preserving first-seen order.
+
+    Empty/blank strings are dropped. Shared by the AniDB and TVDB parsers
+    and :meth:`AnimeInfo.all_titles` so the alias-dedup invariant lives in
+    one place.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in titles:
+        if t and t not in seen:
+            seen.add(t)
+            result.append(t)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +101,10 @@ class AnimeInfo:
     title_romaji: str = ""  # x-jat romanization (e.g. "Youjo Senki")
     aliases: list[str] = field(default_factory=list)
     """All known title variants — synonyms, alternate language names, romaji."""
+    is_movie: bool = False
+    """True when the metadata provider classifies this entry as a movie
+    (AniDB ``<type>Movie</type>``). Routes files to the manifest ``movie``
+    block at the series root rather than a ``Season NN/`` subdir."""
     episodes: list[Episode] = field(default_factory=list)
 
     def all_titles(self) -> list[str]:
@@ -92,13 +113,9 @@ class AnimeInfo:
         English/Japanese/romaji main titles come first, followed by any
         additional aliases. Empty strings are filtered out.
         """
-        seen: set[str] = set()
-        result: list[str] = []
-        for t in (self.title_en, self.title_ja, self.title_romaji, *self.aliases):
-            if t and t not in seen:
-                seen.add(t)
-                result.append(t)
-        return result
+        return dedup_titles(
+            (self.title_en, self.title_ja, self.title_romaji, *self.aliases)
+        )
 
     def find_episode_title(self, ep_number: int, season: int = 1) -> str:
         """Find the episode title by number and season.
@@ -183,6 +200,7 @@ class MatchedFile:
 
     source: SourceFile
     episode: int | None = None
+    episodes: list[int] | None = None  # None = use source.parsed.episodes
     season: int | None = None
     is_special: bool = False
     special_tag: str = ""
@@ -214,6 +232,19 @@ class MatchedFile:
     @property
     def effective_episode(self) -> int | None:
         return self.episode if self.episode is not None else self.source.parsed.episode
+
+    @property
+    def effective_episodes(self) -> list[int]:
+        """Multi-episode list with overrides applied.
+
+        When the matcher renumbers a file (multi-cour splits), it sets both
+        ``episode`` and ``episodes`` so the range tag (``s1e02-e03``) and
+        per-episode title lookups use entry-local numbers, not the absolute
+        source numbers.
+        """
+        if self.episodes is not None:
+            return self.episodes
+        return list(self.source.parsed.episodes)
 
     @property
     def effective_season(self) -> int | None:
@@ -279,7 +310,7 @@ class MatchedFile:
             release_group=self.effective_release_group,
             is_dual_audio=self.effective_is_dual_audio,
             is_uncensored=self.effective_is_uncensored,
-            episodes=list(self.source.parsed.episodes),
+            episodes=self.effective_episodes,
         )
         return SourceFile(
             path=self.source.path,
@@ -313,6 +344,10 @@ class ManifestEntry:
     is_todo: bool = False
     hash_failed: bool = False
     episode_name: str = ""
+    season: int = 0
+    """Destination season number. Drives manifest grouping directly so the
+    writer never has to reverse-parse it from the ``Season NN`` directory
+    name. Ignored for ``is_special``/``is_movie`` entries."""
     is_special: bool = False
     special_tag: str = ""
     is_movie: bool = False

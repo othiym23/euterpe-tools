@@ -23,6 +23,7 @@ from etp_lib.conflicts import (
 )
 from etp_lib.media_parser import normalize_for_matching, parse_component
 from etp_lib.naming import (
+    extras_relpath,
     format_episode_filename,
     format_series_dirname,
     season_subdir,
@@ -198,10 +199,15 @@ def match_episodes(
         elif ep_number is not None and not is_special:
             if sf.parsed.episodes and len(sf.parsed.episodes) > 1:
                 # Sonarr uses " + " between titles in multi-episode filenames.
-                episode_name = " + ".join(
-                    info.find_episode_title(n, season) or f"Episode {n}"
-                    for n in sf.parsed.episodes
-                )
+                # Normalize each component so a per-episode "TBA"/"Episode N"
+                # placeholder doesn't leak into the joined title.
+                parts: list[str] = []
+                for n in sf.parsed.episodes:
+                    part = info.find_episode_title(n, season)
+                    if _is_generic_episode_title(part, n):
+                        part = f"Episode {n}"
+                    parts.append(part)
+                episode_name = " + ".join(parts)
             else:
                 episode_name = info.find_episode_title(ep_number, season)
             # Replace missing / TBA / generic "Episode N" placeholders with
@@ -282,7 +288,30 @@ def match_episodes(
                 sf.parsed.episode = ep_number
                 sf.parsed.season = 0
 
-        if ep_number is None:
+        if info.is_movie and not is_special:
+            # Movies land at the series root with a "complete movie" filename.
+            # AniDB movie entries have a single episode, so a missing episode
+            # number just means "the movie" — no (todo) needed.
+            filename = format_episode_filename(
+                concise_name=concise_name,
+                season=season,
+                episode=ep_number or 1,
+                episode_name="",
+                source=sf,
+                is_movie=True,
+                movie_dir_name=series_dir.name,
+            )
+            entries.append(
+                ManifestEntry(
+                    source=sf,
+                    dest_path=series_dir / filename,
+                    hash_failed=False,
+                    episode_name=episode_name,
+                    season=season,
+                    is_movie=True,
+                )
+            )
+        elif ep_number is None:
             placeholder = format_episode_filename(
                 concise_name=concise_name,
                 season=season,
@@ -301,6 +330,7 @@ def match_episodes(
                     is_todo=True,
                     hash_failed=False,
                     episode_name=episode_name,
+                    season=season,
                     is_special=is_special,
                     special_tag=special_tag,
                 )
@@ -324,6 +354,7 @@ def match_episodes(
                     is_todo=is_unmatched_special,
                     hash_failed=False,
                     episode_name=episode_name,
+                    season=season,
                     is_special=is_special,
                     special_tag=special_tag,
                 )
@@ -381,10 +412,15 @@ def enrich_manifest_entries(
                 is_special=entry.is_special,
                 special_tag=entry.special_tag,
                 episodes=sf.parsed.episodes if not entry.is_special else None,
+                is_movie=entry.is_movie,
+                movie_dir_name=series_dir.name if entry.is_movie else "",
             )
-            entry.dest_path = (
-                season_subdir(series_dir, season, entry.is_special) / filename
-            )
+            if entry.is_movie:
+                entry.dest_path = series_dir / filename
+            else:
+                entry.dest_path = (
+                    season_subdir(series_dir, season, entry.is_special) / filename
+                )
 
 
 def build_manifest_entries(
@@ -422,19 +458,18 @@ def write_manifest(
 
     dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
 
-    # Group entries by season/specials/movie
+    # Group entries by season/specials/movie. Keys are derived from the
+    # entry's own flags and season number — never reverse-parsed from the
+    # destination directory name — so the on-disk layout stays owned solely
+    # by season_subdir().
     groups: dict[str, list[ManifestEntry]] = {}
     for entry in entries:
         if entry.is_movie:
             key = "movie"
+        elif entry.is_special:
+            key = "specials"
         else:
-            # Determine group key from the destination path
-            dest_parent = entry.dest_path.parent.name
-            if dest_parent == "Specials":
-                key = "specials"
-            else:
-                # "Season 01" -> season number
-                key = dest_parent
+            key = f"season:{entry.season}"
         groups.setdefault(key, []).append(entry)
 
     # Build KDL document as text (easier than constructing Node objects
@@ -463,8 +498,8 @@ def write_manifest(
         elif group_key == "movie":
             lines.append("movie {")
         else:
-            # "Season 01" -> season 1
-            season_num = group_key.replace("Season ", "").lstrip("0") or "0"
+            # "season:1" -> season 1
+            season_num = group_key.split(":", 1)[1]
             lines.append(f"season {season_num} {{")
 
         for entry in group_entries:
@@ -501,15 +536,9 @@ def write_manifest(
     if extras:
         lines.append("extras {")
         for f in sorted(extras, key=lambda p: str(p)):
-            # Try to preserve subdirectory structure from an Extras/ parent
-            dest_name = f.name
-            parts = f.parts
-            try:
-                extras_idx = [p.lower() for p in parts].index("extras")
-                rel = Path(*parts[extras_idx + 1 :])
-                dest_name = str(rel)
-            except ValueError:
-                pass
+            # Preserve subdirectory structure from an Extras/ parent.
+            rel = extras_relpath(f)
+            dest_name = str(rel) if rel is not None else f.name
             lines.append(f'  file "{escape_kdl(str(f))}" {{')
             lines.append(f'    dest "{escape_kdl(dest_name)}"')
             lines.append("  }")
@@ -778,11 +807,11 @@ class ManifestWorkflow:
 
         wf = ManifestWorkflow(parsed, info, concise_name, series_dir,
                               verbose=True, analyze_file_fn=analyze_file)
-        success, failed, triaged = wf.run(
+        result = wf.run_workflow(
             dry_run=False,
             extras=extras,
             parse_source_filename_fn=parse_source_filename,
-        )
+        )  # -> BatchResult
     """
 
     def __init__(
