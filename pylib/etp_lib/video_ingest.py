@@ -221,6 +221,8 @@ def _scan_managed_file(
         part_match = _RE_PART_SUFFIX.search(path.stem)
         edition_match = _RE_COMPLETE_MOVIE.search(path.stem)
         edition = edition_match.group("edition").strip(" -") if edition_match else ""
+        if not edition and sf.parsed.is_criterion:
+            edition = "Criterion Collection"
         if edition and not scanned.edition:
             scanned.edition = edition
         return ScannedFile(
@@ -246,6 +248,86 @@ def _scan_managed_file(
         episodes=list(sf.parsed.episodes),
         episode_title=sf.parsed.episode_title,
     )
+
+
+def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
+    """Group downloads-directory files into per-title groups (best effort).
+
+    The downloads directory mixes anime, television, and movies under
+    torrent-style naming, so this is deliberately conservative: files are
+    grouped by parsed title, files that don't look like the target kind
+    (episode markers for TV, their absence for movies) are left out, and
+    the resolution confidence ladder does the real gatekeeping — anything
+    questionable lands in the manifest as ``needs-id``, never a guessed
+    destination.
+    """
+    groups: dict[str, ScannedTitle] = {}
+    for path in sorted(iter_media_files(roots)):
+        sf = parse_source_filename(path.name)
+        sf.path = path
+        pm = sf.parsed
+
+        title = pm.series_name
+        alt = pm.series_name_alt
+        year = pm.year or 0
+        if path.parent not in roots:
+            # A torrent directory often carries the descriptive name while
+            # the file inside is abbreviated. Prefer the directory when the
+            # filename gave nothing, or (for movies) when only the directory
+            # parse found a release year.
+            dir_pm = media_parser.parse_component(path.parent.name)
+            use_dir = not title or (
+                kind is MediaKind.MOVIE
+                and not year
+                and dir_pm.series_name
+                and dir_pm.year
+            )
+            if use_dir:
+                title = dir_pm.series_name
+                alt = dir_pm.series_name_alt
+                year = dir_pm.year or 0
+
+        if not title:
+            continue
+        looks_episodic = (
+            pm.episode is not None or pm.season is not None or pm.is_special
+        )
+        if (kind is MediaKind.TV) != looks_episodic:
+            continue
+
+        key = _norm_title(title)
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = ScannedTitle(
+                raw_title=title, title=title, year=year, alt_title=alt
+            )
+        if year and not group.year:
+            group.year = year
+
+        if kind is MediaKind.TV:
+            season = pm.season
+            if season is None:
+                season = 0 if pm.is_special else 1
+            group.files.append(
+                ScannedFile(
+                    source=sf,
+                    season=season,
+                    episode=pm.episode,
+                    episodes=list(pm.episodes),
+                    episode_title=pm.episode_title,
+                )
+            )
+        else:
+            if pm.is_criterion and not group.edition:
+                group.edition = "Criterion Collection"
+            part_match = _RE_PART_SUFFIX.search(path.stem)
+            group.files.append(
+                ScannedFile(
+                    source=sf,
+                    part=int(part_match.group(1)) if part_match else None,
+                )
+            )
+    return [groups[key] for key in sorted(groups)]
 
 
 # ---------------------------------------------------------------------------
@@ -932,13 +1014,18 @@ def run_plan(
         source_root = config.television_source_dir
         dest_root = config.television_dest_dir
         mappings = config.series_mappings
+    # anime-ingest convention: --source values are the downloads dirs in
+    # downloads mode, and the first value also overrides the managed root.
+    downloads_dirs = opts.sources or [config.downloads_dir]
     if opts.sources:
         source_root = opts.sources[0]
 
     # Fail fast before any provider calls or scanning.
     problems = []
-    if not source_root.is_dir():
+    if opts.managed and not source_root.is_dir():
         problems.append(f"source directory not found: {source_root}")
+    if opts.downloads and not any(d.is_dir() for d in downloads_dirs):
+        problems.append(f"downloads directory not found: {downloads_dirs[0]}")
     if not dest_root.is_dir():
         problems.append(f"destination directory not found: {dest_root}")
     # Only require the binary when the real analyzer will run (tests inject).
@@ -958,7 +1045,14 @@ def run_plan(
             print(f"error: {e}", file=sys.stderr)
             return 1
 
-    scanned = scan_managed_tree(source_root, kind)
+    scanned: list[ScannedTitle] = []
+    modes: list[str] = []
+    if opts.managed:
+        scanned.extend(scan_managed_tree(source_root, kind))
+        modes.append(kind.managed_mode)
+    if opts.downloads:
+        scanned.extend(scan_downloads(downloads_dirs, kind))
+        modes.append("downloads")
     if opts.pattern:
         needle = opts.pattern.lower()
         scanned = [t for t in scanned if needle in t.raw_title.lower()]
@@ -979,7 +1073,7 @@ def run_plan(
     manifest = PlanManifest(
         kind=kind,
         created=datetime.now(UTC).isoformat(timespec="seconds"),
-        source_mode=kind.managed_mode,
+        source_mode="+".join(modes),
         dest_root=str(dest_root),
     )
 

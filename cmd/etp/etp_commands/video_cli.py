@@ -67,11 +67,17 @@ def build_parser(kind: MediaKind) -> argparse.ArgumentParser:
         help=f"Plan from the {kind.managed_mode.capitalize()}-managed source tree",
     )
     plan.add_argument(
+        "--downloads",
+        action="store_true",
+        help="Plan from the shared downloads directory (best-effort parsing)",
+    )
+    plan.add_argument(
         "--source",
         type=Path,
         action="append",
         metavar="DIR",
-        help="Override the source directory (repeatable)",
+        help="Override source directories (repeatable for --downloads; the"
+        f" first value also overrides the --{kind.managed_mode} scan root)",
     )
     plan.add_argument(
         "--force",
@@ -138,9 +144,10 @@ def build_parser(kind: MediaKind) -> argparse.ArgumentParser:
 
 
 def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
-    if not args.managed:
+    if not (args.managed or args.downloads):
         print(
-            f"error: specify a source mode: --{kind.managed_mode}",
+            f"error: specify at least one source mode:"
+            f" --{kind.managed_mode} and/or --downloads",
             file=sys.stderr,
         )
         return 1
@@ -159,6 +166,7 @@ def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
     config = load_media_config(args.config)
     opts = PlanOptions(
         managed=args.managed,
+        downloads=args.downloads,
         sources=args.source or [],
         pattern=args.pattern or "",
         force=args.force,

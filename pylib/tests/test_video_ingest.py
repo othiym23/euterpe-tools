@@ -845,3 +845,75 @@ class TestRunApply:
         summary = _last_json(capsys)
         assert summary["counts"]["skipped"] == 1
         assert summary["counts"]["copied"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Downloads mode
+# ---------------------------------------------------------------------------
+
+
+class TestScanDownloads:
+    def test_tv_groups_by_title(self, tmp_path):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "The.Expanse.S02E01.1080p.WEB-DL.mkv")
+        _mkfile(dl / "The.Expanse.S02E02.1080p.WEB-DL.mkv")
+        _mkfile(dl / "Heat.1995.1080p.BluRay.x264-GRP.mkv")  # not episodic
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.TV)
+        assert len(titles) == 1
+        t = titles[0]
+        assert t.title == "The Expanse"
+        assert {(f.season, f.episode) for f in t.files} == {(2, 1), (2, 2)}
+
+    def test_movies_exclude_episodic(self, tmp_path):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Heat.1995.1080p.BluRay.x264-GRP.mkv")
+        _mkfile(dl / "The.Expanse.S02E01.1080p.WEB-DL.mkv")  # episodic
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 1
+        t = titles[0]
+        assert t.title == "Heat"
+        assert t.year == 1995
+
+    def test_batch_dir_name_fallback(self, tmp_path):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Heat.1995.1080p.BluRay.x264-GRP" / "heat-grp.mkv")
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 1
+        assert titles[0].title == "Heat"
+        assert titles[0].year == 1995
+
+
+class TestRunPlanDownloads:
+    def test_tv_downloads_mode(self, tmp_path, register):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Severance.S01E01.1080p.WEB-DL.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(downloads_dir=dl, television_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.TV, config, opts, tv_providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.source_mode == "downloads"
+        block = manifest.blocks[0]
+        assert block.tvdb_id == 371980
+        entry = block.entries[0]
+        assert entry.status is EntryStatus.READY
+        assert entry.dest.startswith(
+            "Season 01/Severance (2022) - s01e01 - Good News About Hell ["
+        )
+
+    def test_downloads_dir_missing_fails_fast(self, tmp_path, register):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(
+            downloads_dir=tmp_path / "nope", television_dest_dir=dest
+        )
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        assert run_plan(MediaKind.TV, config, opts, tv_providers()) == 1

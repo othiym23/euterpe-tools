@@ -40,6 +40,8 @@ def parse_source_filename(filename: str) -> SourceFile:
             series_name_alt=pm.series_name_alt,
             episodes=pm.episodes,
             streaming_service=pm.streaming_service,
+            year=pm.year,
+            is_criterion=pm.is_criterion,
         ),
     )
 

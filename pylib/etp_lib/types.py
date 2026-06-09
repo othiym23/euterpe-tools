@@ -231,6 +231,8 @@ class ParsedMetadata:
     series_name_alt: str = ""  # alternate-language title
     episodes: list[int] = field(default_factory=list)  # multi-episode
     streaming_service: str = ""  # "AMZN", "CR", "NF", etc.
+    year: int | None = None  # release year token from the filename
+    is_criterion: bool = False  # Criterion Collection release
 
 
 @dataclass
