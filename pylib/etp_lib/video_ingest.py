@@ -416,6 +416,9 @@ class TitleBlock:
 
     raw_title: str
     title: str = ""
+    original_title: str = ""
+    """Original-language title; leads the directory name when it differs
+    from the English title (library convention: ``Original [English]``)."""
     year: int = 0
     tmdb_id: int | None = None
     tvdb_id: int | None = None
@@ -465,6 +468,8 @@ def write_plan_manifest(manifest: PlanManifest, path: Path) -> None:
         lines.append(f'{kind.block_name} "{escape_kdl(block.raw_title)}" {{')
         if block.title:
             lines.append(f'  title "{escape_kdl(block.title)}"')
+        if block.original_title:
+            lines.append(f'  original-title "{escape_kdl(block.original_title)}"')
         if block.year:
             lines.append(f"  year {block.year}")
         if block.tmdb_id:
@@ -570,6 +575,8 @@ def parse_plan_manifest(path: Path) -> PlanManifest:
             name = child.name
             if name == "title":
                 block.title = str(_first_arg(child))
+            elif name == "original-title":
+                block.original_title = str(_first_arg(child))
             elif name == "year":
                 block.year = _to_int(_first_arg(child, 0))
             elif name == "tmdb":
@@ -746,6 +753,8 @@ def _resolve_movie(
     block.tmdb_id = info.tmdb_id
     block.imdb_id = info.imdb_id
     block.title = info.title
+    if info.original_title != info.title:
+        block.original_title = info.original_title
     block.year = info.year or scanned.year
 
     # Cross-check: does TheTVDB know a movie with this title and year?
@@ -812,6 +821,11 @@ def _resolve_series(
 
     block.tvdb_id = info.tvdb_id
     block.title = info.title_en or info.title_ja
+    # TheTVDB's Japanese translation is the original-language title for the
+    # CJK shows in this library; TMDB's original_name (any language) fills
+    # the gap below when the cross-check resolves.
+    if info.title_ja and info.title_ja != block.title:
+        block.original_title = info.title_ja
     block.year = info.year or scanned.year
 
     # Cross-check: TMDB's record for this series should point back at the
@@ -833,6 +847,8 @@ def _resolve_series(
 
     external_tvdb = tv_info.tvdb_id
     block.tmdb_id = tv_info.tmdb_id
+    if not block.original_title and tv_info.original_title != block.title:
+        block.original_title = tv_info.original_title
     if external_tvdb is None:
         block.cross_check = CrossCheck.UNAVAILABLE
     elif external_tvdb == tvdb_id:
@@ -891,7 +907,11 @@ def _build_movie_block(
     titles = [block.title, info.original_title, *info.aliases]
     existing = _existing_dest_dir(dest_index, titles, block.year)
     block.dest_dir = existing or format_movie_dirname(
-        block.title, block.year, block.tmdb_id, block.edition
+        block.title,
+        block.year,
+        block.tmdb_id,
+        block.edition,
+        original_title=block.original_title,
     )
     if existing:
         block.note = "reusing existing library directory"
@@ -922,10 +942,10 @@ def _build_series_block(
             block.entries.append(_needs_id_entry(f))
         return
 
-    titles = [block.title, info.title_ja, *info.aliases]
+    titles = [block.title, block.original_title, info.title_ja, *info.aliases]
     existing = _existing_dest_dir(dest_index, titles, block.year)
     block.dest_dir = existing or format_tv_series_dirname(
-        block.title, block.year, block.tvdb_id
+        block.title, block.year, block.tvdb_id, original_title=block.original_title
     )
     if existing:
         block.note = "reusing existing library directory"

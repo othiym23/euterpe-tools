@@ -307,6 +307,7 @@ def _sample_manifest(kind: MediaKind) -> PlanManifest:
     block = TitleBlock(
         raw_title="Severance (2022)" if kind is MediaKind.TV else "Heat [Heat] (1995)",
         title="Severance" if kind is MediaKind.TV else "Heat",
+        original_title="" if kind is MediaKind.TV else "올드보이",
         year=2022 if kind is MediaKind.TV else 1995,
         tmdb_id=95396,
         tvdb_id=371980,
@@ -948,3 +949,105 @@ class TestManagedScanGroupCleanup:
         titles = scan_managed_tree(src, MediaKind.MOVIE)
         duel = next(t for t in titles if t.title == "Duel")
         assert duel.files[0].source.parsed.release_group == ""
+
+
+class TestOriginalTitleNaming:
+    """Directory names lead with the original-language title."""
+
+    def test_movie_dual_title_dest_dir(self, tmp_path, register):
+        src = tmp_path / "movies"
+        _mkfile(
+            src
+            / "Oldboy (2003)"
+            / "Oldboy (2003) - complete movie - [X Bluray-1080p,,x265,8bit,AAC].mkv"
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        providers = movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TMDB, 670, "Oldboy", 2003)
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: MovieInfo(
+                tmdb_id=670,
+                title="Oldboy",
+                year=2003,
+                original_title="올드보이",
+                aliases=["Oldboy", "올드보이"],
+            ),
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+        rc = run_plan(
+            MediaKind.MOVIE, movie_config(src, dest), plan_opts(tmp_path), providers
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        assert block.original_title == "올드보이"
+        assert block.dest_dir == "올드보이 [Oldboy] (2003) {tmdb-670}"
+        assert block.entries[0].dest.startswith("올드보이 [Oldboy] (2003) {tmdb-670} [")
+
+    def test_tv_dual_title_from_tvdb_translation(self, tmp_path, register):
+        src = tmp_path / "television"
+        show = src / "Ayaka (2024)"
+        _mkfile(show / "Season 01" / "Ayaka - S01E01 - First WEBDL-1080p.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = AnimeInfo(
+            anidb_id=None,
+            tvdb_id=443158,
+            title_ja="彩香ちゃんは弘子先輩に恋してる",
+            title_en="Ayaka is in Love with Hiroko!",
+            year=2024,
+            episodes=[Episode(1, EpisodeType.REGULAR, "First", "", "", season=1)],
+        )
+        providers = tv_providers(
+            tvdb_search_series=lambda q, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TVDB, 443158, "Ayaka", 2024)
+            ],
+            tvdb_fetch_series=lambda i, key, no_cache=False: info,
+            tmdb_search_tv=lambda q, y, key, no_cache=False: [],
+        )
+        rc = run_plan(
+            MediaKind.TV, tv_config(src, dest), plan_opts(tmp_path), providers
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        assert block.original_title == "彩香ちゃんは弘子先輩に恋してる"
+        assert block.dest_dir == (
+            "彩香ちゃんは弘子先輩に恋してる [Ayaka is in Love with Hiroko!]"
+            " (2024) {tvdb-443158}"
+        )
+        # Episode files keep the concise English title (anime convention).
+        assert block.entries[0].dest.startswith(
+            "Season 01/Ayaka is in Love with Hiroko! (2024) - s01e01"
+        )
+
+    def test_existing_native_dir_reused(self, tmp_path, register):
+        src = tmp_path / "movies"
+        _mkfile(
+            src
+            / "Oldboy (2003)"
+            / "Oldboy (2003) - complete movie - [X Bluray-1080p].mkv"
+        )
+        dest = tmp_path / "dest"
+        (dest / "올드보이 [Oldboy] (2003)").mkdir(parents=True)
+        providers = movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TMDB, 670, "Oldboy", 2003)
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: MovieInfo(
+                tmdb_id=670,
+                title="Oldboy",
+                year=2003,
+                original_title="올드보이",
+            ),
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+        rc = run_plan(
+            MediaKind.MOVIE, movie_config(src, dest), plan_opts(tmp_path), providers
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.blocks[0].dest_dir == "올드보이 [Oldboy] (2003)"
+        assert manifest.blocks[0].note == "reusing existing library directory"

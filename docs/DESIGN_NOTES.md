@@ -342,8 +342,10 @@ ingest plan --radarr|--sonarr and/or --downloads
                        movies: TheTVDB movie search by exact title+year
   enrich               mediainfo per file (quality block in dest names)
   place                reuse existing `Title (Year)` library dir, else
-                       `Title (Year) {tmdb-NNN}` / `{tvdb-NNN}` (+ {edition-X});
-                       existing dest file -> status "conflict", conflict "keep"
+                       `Original [English] (Year) {tmdb-NNN}` / `{tvdb-NNN}`
+                       (+ {edition-X}); English-only when the original title
+                       doesn't differ; existing dest file -> status
+                       "conflict", conflict "keep"
   write                KDL plan manifest (schema-version 1) + JSON summary
 
 ingest apply MANIFEST

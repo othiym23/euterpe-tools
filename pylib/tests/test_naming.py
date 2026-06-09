@@ -7,6 +7,7 @@ from pathlib import Path
 from etp_lib.naming import (
     build_metadata_block,
     extras_relpath,
+    format_display_title,
     format_episode_filename,
     format_movie_dirname,
     format_movie_filename,
@@ -615,3 +616,64 @@ class TestFormatTvEpisodeFilename:
             "Show", 2020, 1, 1, "Either/Or: Part 1", source
         )
         assert " - Either - Or- Part 1 " in result
+
+
+class TestFormatDisplayTitle:
+    """Directory names lead with the original-language title."""
+
+    def test_native_with_english_bracketed(self):
+        assert format_display_title("올드보이", "Oldboy") == "올드보이 [Oldboy]"
+
+    def test_identical_titles_no_brackets(self):
+        assert format_display_title("Heat", "Heat") == "Heat"
+
+    def test_punctuation_only_difference_no_brackets(self):
+        assert format_display_title("WALL·E", "WALL-E") == "WALL-E"
+
+    def test_case_only_difference_no_brackets(self):
+        assert format_display_title("ONE PIECE", "One Piece") == "One Piece"
+
+    def test_missing_original_falls_back(self):
+        assert format_display_title("", "Severance") == "Severance"
+
+    def test_missing_english_falls_back(self):
+        assert format_display_title("血は渇いてる", "") == "血は渇いてる"
+
+    def test_latin_original_differs(self):
+        assert format_display_title("La Haine", "Hate") == "La Haine [Hate]"
+
+
+class TestDualTitleDirnames:
+    def test_movie_dirname_with_original(self):
+        result = format_movie_dirname("Oldboy", 2003, 670, original_title="올드보이")
+        assert result == "올드보이 [Oldboy] (2003) {tmdb-670}"
+
+    def test_movie_dirname_with_original_and_edition(self):
+        result = format_movie_dirname(
+            "Blood Is Dry",
+            1960,
+            99,
+            edition="4K Remaster",
+            original_title="血は渇いてる",
+        )
+        assert result == (
+            "血は渇いてる [Blood Is Dry] (1960) {tmdb-99} {edition-4K Remaster}"
+        )
+
+    def test_tv_dirname_with_original(self):
+        result = format_tv_series_dirname(
+            "Ayaka is in Love with Hiroko!",
+            2024,
+            443158,
+            original_title="彩香ちゃんは弘子先輩に恋してる",
+        )
+        assert result == (
+            "彩香ちゃんは弘子先輩に恋してる [Ayaka is in Love with Hiroko!]"
+            " (2024) {tvdb-443158}"
+        )
+
+    def test_identical_original_unchanged(self):
+        assert (
+            format_movie_dirname("Heat", 1995, 949, original_title="Heat")
+            == "Heat (1995) {tmdb-949}"
+        )

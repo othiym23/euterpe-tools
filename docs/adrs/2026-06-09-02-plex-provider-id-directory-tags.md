@@ -26,6 +26,17 @@ exactly one provider ID, in Plex brace syntax, from the kind's primary provider:
 - Movies: `Title (Year) {tmdb-NNN}`
 - Television: `Title (Year) {tvdb-NNN}`
 
+Titles lead with the original language, following the library's existing
+`Original [English]` convention (the movie/TV counterpart of the anime `JA [EN]`
+format): when the original-language title genuinely differs from the English
+title, the directory name is `Original [English] (Year) {tmdb-NNN}` — e.g.
+`올드보이 [Oldboy] (2003) {tmdb-670}`. Pairs differing only in case or
+punctuation don't earn brackets. The original title comes from TMDB's
+`original_title`/`original_name` (movies, and TV via the cross-check) or
+TheTVDB's Japanese translation (TV). Episode _filenames_ keep the concise
+English title, matching the anime convention where the directory carries the
+dual name and files stay short.
+
 Editions use Plex's documented marker in both the folder and file name:
 `Title (Year) {tmdb-NNN} {edition-Final Cut}`. The cross-check provider's ID
 (and IMDb ID when known) is recorded in the plan manifest only, never in

@@ -252,15 +252,47 @@ def _title_year(title: str, year: int) -> str:
     return f"{title} ({year})" if year else title
 
 
-def format_movie_dirname(
-    title: str, year: int, tmdb_id: int | None, edition: str = ""
-) -> str:
-    """Build a movie directory name: ``Title (Year) {tmdb-NNN} {edition-X}``.
+def _norm_for_compare(text: str) -> str:
+    """Casefolded alphanumeric words, for near-identical title detection."""
+    cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in text.casefold())
+    return " ".join(cleaned.split())
 
+
+def format_display_title(original_title: str, english_title: str) -> str:
+    """``Original [English]`` when both exist and genuinely differ.
+
+    Library convention: directory names lead with the original-language
+    title, with the English title bracketed after it (the movie/TV
+    counterpart of the anime ``JA [EN]`` convention). Falls back to
+    whichever title exists; pairs that differ only in case or punctuation
+    don't earn brackets.
+    """
+    original_title = _sanitize_path(original_title)
+    english_title = _sanitize_path(english_title)
+    if (
+        original_title
+        and english_title
+        and _norm_for_compare(original_title) != _norm_for_compare(english_title)
+    ):
+        return f"{original_title} [{english_title}]"
+    return english_title or original_title
+
+
+def format_movie_dirname(
+    title: str,
+    year: int,
+    tmdb_id: int | None,
+    edition: str = "",
+    original_title: str = "",
+) -> str:
+    """Build a movie directory name.
+
+    ``Original [English] (Year) {tmdb-NNN} {edition-X}`` — the bracketed
+    English title appears only when *original_title* genuinely differs.
     Plex recommends edition markers of at most 32 characters; longer ones
     are embedded as-is and left to plan-time validation to flag.
     """
-    name = _title_year(title, year)
+    name = _title_year(format_display_title(original_title, title), year)
     if tmdb_id:
         name += f" {{tmdb-{tmdb_id}}}"
     if edition:
@@ -282,9 +314,15 @@ def format_movie_filename(movie_dirname: str, source: SourceFile) -> str:
     return f"{movie_dirname}{meta_str}{hash_str}{ext}"
 
 
-def format_tv_series_dirname(title: str, year: int, tvdb_id: int | None) -> str:
-    """Build a series directory name: ``Title (Year) {tvdb-NNN}``."""
-    name = _title_year(title, year)
+def format_tv_series_dirname(
+    title: str, year: int, tvdb_id: int | None, original_title: str = ""
+) -> str:
+    """Build a series directory name.
+
+    ``Original [English] (Year) {tvdb-NNN}`` — the bracketed English title
+    appears only when *original_title* genuinely differs.
+    """
+    name = _title_year(format_display_title(original_title, title), year)
     if tvdb_id:
         name += f" {{tvdb-{tvdb_id}}}"
     return name
