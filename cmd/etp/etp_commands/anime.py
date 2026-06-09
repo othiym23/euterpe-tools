@@ -18,7 +18,6 @@ Environment:   ~/.config/euterpe-tools/anime.env (API credentials)
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -49,7 +48,10 @@ from etp_lib.download_cache import (
     save_cache,
     scan_dir_mtimes,
 )
+from etp_lib.envfile import load_env_file
+from etp_lib.ingest_register import load_register, save_register
 from etp_lib.manifest import ManifestWorkflow, copy_subtitle_sidecars, escape_kdl
+from etp_lib.media_scanner import iter_media_files as _iter_media_files
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
@@ -84,25 +86,10 @@ VERSION = "0.1.0"
 
 
 def _load_env_file() -> None:
-    """Load environment variables from the anime.env config file if it exists.
-
-    Uses paths.py for platform-aware config directory resolution.
-    Supports simple KEY=VALUE lines (no quoting, no interpolation).
-    Lines starting with # are ignored. Existing env vars are not overwritten.
-    """
+    """Load API credentials from the anime.env config file if it exists."""
     from etp_lib import paths as etp_paths
 
-    env_path = etp_paths.anime_env()
-    if not env_path.is_file():
-        return
-
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+    load_env_file(etp_paths.anime_env())
 
 
 # ---------------------------------------------------------------------------
@@ -559,61 +546,8 @@ def resolve_series_directory(
 
 
 # ---------------------------------------------------------------------------
-# Triage tracking manifest
-# ---------------------------------------------------------------------------
-
-
-def _triage_manifest_path() -> Path:
-    """Path to the triage manifest tracking copied files."""
-    return _cache_dir("triage") / "copied.json"
-
-
-def _load_triage_manifest() -> set[str]:
-    """Load the set of previously copied file paths."""
-    path = _triage_manifest_path()
-    if path.exists():
-        try:
-            return set(json.loads(path.read_text(encoding="utf-8")))
-        except json.JSONDecodeError, TypeError:
-            return set()
-    return set()
-
-
-def _save_triage_manifest(copied: set[str]) -> None:
-    """Persist the set of copied file paths."""
-    path = _triage_manifest_path()
-    path.write_text(json.dumps(sorted(copied), ensure_ascii=False), encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
 # Source file discovery
 # ---------------------------------------------------------------------------
-
-
-def _iter_media_files(
-    source_dirs: list[Path], include_audio: bool = False
-) -> list[Path]:
-    """Walk source directories recursively for media files.
-
-    By default only video files are returned.  Set *include_audio* to
-    also collect audio files (for the QA tool or extras detection).
-
-    Skips download-client working directories (``temp``, ``incomplete``,
-    etc.) — files there are still being downloaded and shouldn't be
-    triaged.
-    """
-    extensions = _MEDIA_EXTENSIONS if include_audio else _VIDEO_EXTENSIONS
-    results: list[Path] = []
-    for source_dir in source_dirs:
-        if not source_dir.is_dir():
-            continue
-        for root, dirs, files in os.walk(source_dir):
-            # Prune excluded directories in place so os.walk skips them
-            dirs[:] = [d for d in dirs if d.lower() not in _SCAN_EXCLUDE_DIRS]
-            for name in files:
-                if Path(name).suffix.lower() in extensions:
-                    results.append(Path(root) / name)
-    return results
 
 
 def _extract_series_name(text: str) -> str:
@@ -1949,7 +1883,7 @@ def _process_pool(
         if not dry_run:
             for sf in pool:
                 already_copied.add(_resolve(sf.path))
-            _save_triage_manifest(already_copied)
+            save_register(already_copied)
         print(f"  Marked {len(pool)} file(s) as done.")
         pool.clear()
 
@@ -2133,7 +2067,7 @@ def _process_pool(
         if batch.triaged and not dry_run:
             for p in batch.triaged:
                 already_copied.add(_resolve(p))
-            _save_triage_manifest(already_copied)
+            save_register(already_copied)
 
     # Count remaining pool files as skipped
     totals.skipped += len(pool)
@@ -2206,7 +2140,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
         )
 
     # Load triage manifest for tracking
-    already_copied = _load_triage_manifest()
+    already_copied = load_register()
     force = args.force
     id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
@@ -2401,7 +2335,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     total_files = sum(len(files) for files in groups.values())
 
     # Load manifest of previously copied files
-    already_copied = _load_triage_manifest()
+    already_copied = load_register()
     manifest_size_at_start = len(already_copied)
     force = args.force
 
@@ -2548,7 +2482,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
 
         if quit_all:
             if not args.dry_run and len(already_copied) > manifest_size_at_start:
-                _save_triage_manifest(already_copied)
+                save_register(already_copied)
             return 0
 
         groups_processed += 1
@@ -2556,7 +2490,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     # Write manifest once at end (skip for dry-run).
     # Save if anything was processed -- including files marked 'd' for done.
     if not args.dry_run and len(already_copied) > manifest_size_at_start:
-        _save_triage_manifest(already_copied)
+        save_register(already_copied)
 
     print(f"\n{'=' * 60}")
     print(
