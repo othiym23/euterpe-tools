@@ -282,7 +282,7 @@ if set, otherwise the original `source.parsed.*` value. Batch-level overrides
 Before passing to the manifest workflow, `to_source_snapshot()` bakes all
 effective values into a `SourceFile` copy.
 
-### Download matching (`etp anime series`)
+### Download matching (`etp anime ingest --sonarr`)
 
 #### Index construction
 

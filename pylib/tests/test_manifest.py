@@ -18,6 +18,7 @@ from etp_lib.manifest import (
 from etp_lib.manifest import _match_bonus_to_anidb_special
 from etp_lib.types import (
     AnimeInfo,
+    ConflictAction,
     Episode,
     EpisodeType,
     ManifestEntry,
@@ -144,6 +145,64 @@ class TestBuildManifestEntries:
         # No sticky defaults -- f2 has no group, stays empty
         assert entries[1].source.parsed.release_group == ""
 
+    def test_movie_routed_to_series_root(self, tmp_path, monkeypatch):
+        """An AniDB movie entry lands at the series root, not Season NN/."""
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+        f = tmp_path / "Akira (1988) [BD 1080p].mkv"
+        f.write_bytes(b"x")
+        info = AnimeInfo(
+            anidb_id=28,
+            tvdb_id=None,
+            title_ja="アキラ",
+            title_en="Akira",
+            year=1988,
+            is_movie=True,
+            episodes=[Episode(1, EpisodeType.REGULAR, "Akira", "", "")],
+        )
+        series_dir = tmp_path / "アキラ [Akira] (1988)"
+        entries = build_manifest_entries(
+            [SourceFile(path=f, parsed=ParsedMetadata(series_name="Akira", season=1))],
+            info,
+            "Akira",
+            series_dir,
+            verbose=False,
+        )
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.is_movie is True
+        assert entry.is_todo is False
+        assert entry.dest_path.parent == series_dir  # root, no Season NN/
+        assert "complete movie" in entry.dest_path.name
+
+    def test_multi_episode_per_part_tba_replaced(self, tmp_path, monkeypatch):
+        """A per-episode TBA in a multi-episode join is replaced, not leaked."""
+        monkeypatch.setattr(_manifest_mod, "verify_hash", lambda _: None)
+        f = tmp_path / "Show - 03-04.mkv"
+        f.write_bytes(b"x")
+        info = AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="S",
+            title_en="Show",
+            year=2020,
+            episodes=[
+                Episode(3, EpisodeType.REGULAR, "TBA", "", ""),
+                Episode(4, EpisodeType.REGULAR, "Real Title", "", ""),
+            ],
+        )
+        sf = SourceFile(
+            path=f,
+            parsed=ParsedMetadata(
+                series_name="Show", season=1, episode=3, episodes=[3, 4]
+            ),
+        )
+        entries = build_manifest_entries(
+            [sf], info, "Show", tmp_path / "dest", verbose=False
+        )
+        name = entries[0].dest_path.name
+        assert "TBA" not in name
+        assert "Episode 3 + Real Title" in name
+
 
 class TestWriteManifest:
     """Tests for KDL manifest file writing."""
@@ -153,7 +212,7 @@ class TestWriteManifest:
             path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
         )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
-        entry = ManifestEntry(source=sf, dest_path=dest_path)
+        entry = ManifestEntry(source=sf, dest_path=dest_path, season=1)
         info = AnimeInfo(
             anidb_id=42,
             tvdb_id=None,
@@ -178,7 +237,7 @@ class TestWriteManifest:
             path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=0, season=1)
         )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
-        entry = ManifestEntry(source=sf, dest_path=dest_path, is_todo=True)
+        entry = ManifestEntry(source=sf, dest_path=dest_path, season=1, is_todo=True)
         info = AnimeInfo(
             anidb_id=1,
             tvdb_id=None,
@@ -199,7 +258,9 @@ class TestWriteManifest:
             path=tmp_path / "src.mkv", parsed=ParsedMetadata(episode=1, season=1)
         )
         dest_path = tmp_path / "series" / "Season 01" / "dst.mkv"
-        entry = ManifestEntry(source=sf, dest_path=dest_path, hash_failed=True)
+        entry = ManifestEntry(
+            source=sf, dest_path=dest_path, season=1, hash_failed=True
+        )
         info = AnimeInfo(
             anidb_id=1,
             tvdb_id=None,
@@ -224,10 +285,14 @@ class TestWriteManifest:
         )
         entries = [
             ManifestEntry(
-                source=sf1, dest_path=tmp_path / "series" / "Season 01" / "ep1.mkv"
+                source=sf1,
+                dest_path=tmp_path / "series" / "Season 01" / "ep1.mkv",
+                season=1,
             ),
             ManifestEntry(
-                source=sf2, dest_path=tmp_path / "series" / "Season 02" / "ep1.mkv"
+                source=sf2,
+                dest_path=tmp_path / "series" / "Season 02" / "ep1.mkv",
+                season=2,
             ),
         ]
         info = AnimeInfo(
@@ -242,6 +307,27 @@ class TestWriteManifest:
         try:
             content = path.read_text(encoding="utf-8")
             assert "season 1 {" in content
+            assert "season 2 {" in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_grouping_uses_entry_season_not_dir_name(self, tmp_path):
+        """Grouping keys off ManifestEntry.season, not the dest dir basename."""
+        sf = SourceFile(
+            path=tmp_path / "x.mkv", parsed=ParsedMetadata(episode=1, season=2)
+        )
+        # Destination dir name intentionally inconsistent with the season.
+        entry = ManifestEntry(
+            source=sf,
+            dest_path=tmp_path / "series" / "Whatever" / "x.mkv",
+            season=2,
+        )
+        info = AnimeInfo(
+            anidb_id=1, tvdb_id=None, title_ja="t", title_en="T", year=2020
+        )
+        path = write_manifest([entry], info, "T", tmp_path / "series")
+        try:
+            content = path.read_text(encoding="utf-8")
             assert "season 2 {" in content
         finally:
             path.unlink(missing_ok=True)
@@ -436,6 +522,50 @@ class TestParseManifest:
         assert len(entries) == 1
         assert entries[0][1] == series_dir / "Specials" / "special.mkv"
 
+    def test_movie_group_lands_at_series_root(self, tmp_path):
+        """``movie`` node skips Season NN/Specials subdir — dest is series_dir/<name>."""
+        sf = SourceFile(path=Path("/src/film.mkv"))
+        manifest = tmp_path / "manifest.kdl"
+        manifest.write_text(
+            'movie {\n  episode 1 {\n    source "film.mkv"\n'
+            '    dest "My Movie (2024).mkv"\n  }\n}\n',
+            encoding="utf-8",
+        )
+        series_dir = tmp_path / "series"
+        entries, errors, _extras, _renames = parse_manifest(
+            manifest, {"film.mkv": sf}, series_dir
+        )
+        assert errors == []
+        assert len(entries) == 1
+        assert entries[0][1] == series_dir / "My Movie (2024).mkv"
+
+    def test_movie_group_writer_emits_movie_block(self, tmp_path):
+        """Writer groups entries flagged ``is_movie`` under a ``movie`` block."""
+        sf = SourceFile(path=Path("/src/film.mkv"))
+        entry = ManifestEntry(
+            source=sf,
+            dest_path=tmp_path / "series" / "Film.mkv",
+            is_movie=True,
+        )
+        info = AnimeInfo(
+            anidb_id=9999,
+            tvdb_id=None,
+            title_ja="映画",
+            title_en="Film",
+            year=2024,
+        )
+        manifest = write_manifest(
+            entries=[entry],
+            info=info,
+            concise_name="Film",
+            series_dir=tmp_path / "series",
+        )
+        content = manifest.read_text(encoding="utf-8")
+        assert "movie {" in content
+        # No season or specials block for a pure-movie manifest
+        assert "season " not in content
+        assert "specials {" not in content
+
     def test_invalid_season_number(self, tmp_path):
         """Non-integer season number should produce an error, not crash."""
         manifest = tmp_path / "manifest.kdl"
@@ -608,10 +738,11 @@ class TestExecuteManifest:
             (sf2, Path("/dst/b.mkv")),
         ]
 
-        success, failed, copied = execute_manifest(entries, dry_run=True, verbose=False)
-        assert success == 2
-        assert failed == 0
-        assert len(copied) == 2
+        result = execute_manifest(entries, dry_run=True, verbose=False)
+        assert result.success == 2
+        assert result.failed == 0
+        assert result.skipped == 0
+        assert len(result.triaged) == 2
 
     def test_failure_counting(self, monkeypatch):
         call_count = 0
@@ -628,11 +759,9 @@ class TestExecuteManifest:
             (SourceFile(path=Path("/src/b.mkv")), Path("/dst/b.mkv")),
             (SourceFile(path=Path("/src/c.mkv")), Path("/dst/c.mkv")),
         ]
-        success, failed, copied = execute_manifest(
-            entries, dry_run=False, verbose=False
-        )
-        assert success == 2
-        assert failed == 1
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.success == 2
+        assert result.failed == 1
 
     def test_both_action_crc_disambiguation(self, tmp_path, monkeypatch):
         """'both' action with existing dest appends CRC32 to filename."""
@@ -649,15 +778,14 @@ class TestExecuteManifest:
 
         sf = SourceFile(path=src, parsed=ParsedMetadata(episode=1, season=1))
 
-        # Mock handle_conflict to return "both"
-        monkeypatch.setattr(_manifest_mod, "handle_conflict", lambda *a, **kw: "both")
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.BOTH
+        )
         monkeypatch.setattr(_manifest_mod, "copy_reflink", lambda *a, **kw: True)
 
         entries = [(sf, dest_path)]
-        success, failed, copied = execute_manifest(
-            entries, dry_run=False, verbose=False
-        )
-        assert success == 1
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.success == 1
         # CRC32 should have been computed and stashed
         assert sf.parsed.hash_code != ""
         assert len(sf.parsed.hash_code) == 8
@@ -673,7 +801,9 @@ class TestExecuteManifest:
 
         sf = SourceFile(path=src, parsed=ParsedMetadata(episode=1, season=1))
 
-        monkeypatch.setattr(_manifest_mod, "handle_conflict", lambda *a, **kw: "both")
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.BOTH
+        )
 
         copied_to: list[Path] = []
 
@@ -686,6 +816,111 @@ class TestExecuteManifest:
         execute_manifest([(sf, dest_path)], dry_run=False, verbose=False)
         # Should copy to original path (no CRC suffix)
         assert copied_to[0] == dest_path
+
+    def test_copy_error_counted_as_failed(self, monkeypatch):
+        """OSError during copy counts as failed, not skipped."""
+
+        def failing_copy(*_a: object, **_kw: object) -> bool:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_manifest_mod, "copy_reflink", failing_copy)
+
+        entries = [
+            (SourceFile(path=Path("/src/ep01.mkv")), Path("/dst/ep01.mkv")),
+        ]
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.failed == 1
+        assert result.skipped == 0
+        assert result.success == 0
+
+    def test_subtitle_sidecars_ride_along(self, tmp_path, monkeypatch):
+        """Co-located subs copy to the dest base: untagged→en, tagged kept."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        video = src_dir / "Show - 01.mkv"
+        video.write_bytes(b"v")
+        (src_dir / "Show - 01.srt").write_bytes(b"s")  # untagged → .en
+        (src_dir / "Show - 01.en.forced.ass").write_bytes(b"s")  # tagged → kept
+
+        dest = tmp_path / "dst" / "Frieren - s1e01 - Title [MTBB].mkv"
+
+        copied: list[tuple[Path, Path]] = []
+        monkeypatch.setattr(
+            _manifest_mod,
+            "copy_reflink",
+            lambda s, d, **kw: copied.append((s, d)) or True,
+        )
+
+        sf = SourceFile(path=video, parsed=ParsedMetadata(episode=1, season=1))
+        result = execute_manifest([(sf, dest)], dry_run=True, verbose=False)
+        assert result.success == 1
+        names = {d.name for _s, d in copied}
+        assert names == {
+            "Frieren - s1e01 - Title [MTBB].mkv",
+            "Frieren - s1e01 - Title [MTBB].en.srt",
+            "Frieren - s1e01 - Title [MTBB].en.forced.ass",
+        }
+
+    def test_subtitle_follows_crc_disambiguation(self, tmp_path, monkeypatch):
+        """The sub tracks the video's FINAL name, incl. the [crc] 'both' suffix."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        video = src_dir / "ep01.mkv"
+        video.write_bytes(b"source content here")
+        (src_dir / "ep01.srt").write_bytes(b"s")
+
+        dest_dir = tmp_path / "dst"
+        dest_dir.mkdir()
+        dest_path = dest_dir / "Show - s1e01 [Group].mkv"
+        dest_path.write_bytes(b"existing")  # force a conflict → 'both'
+
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.BOTH
+        )
+        copied: list[tuple[Path, Path]] = []
+        monkeypatch.setattr(
+            _manifest_mod,
+            "copy_reflink",
+            lambda s, d, **kw: copied.append((s, d)) or True,
+        )
+
+        sf = SourceFile(path=video, parsed=ParsedMetadata(episode=1, season=1))
+        execute_manifest([(sf, dest_path)], dry_run=False, verbose=False)
+
+        crc = sf.parsed.hash_code
+        assert crc and len(crc) == 8
+        sub_dest = next(d for _s, d in copied if d.suffix == ".srt")
+        assert sub_dest.name == f"Show - s1e01 [Group] [{crc}].en.srt"
+
+    def test_skip_conflict_counted_as_skipped(self, monkeypatch):
+        """ConflictAction.SKIP counts as skipped, not failed."""
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.SKIP
+        )
+
+        entries = [
+            (SourceFile(path=Path("/src/ep01.mkv")), Path("/dst/ep01.mkv")),
+        ]
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.skipped == 1
+        assert result.failed == 0
+        assert result.success == 0
+        assert len(result.triaged) == 1  # still tracked as processed
+
+    def test_keep_conflict_counted_as_success(self, monkeypatch):
+        """ConflictAction.KEEP counts as success (existing file is fine)."""
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.KEEP
+        )
+
+        entries = [
+            (SourceFile(path=Path("/src/ep01.mkv")), Path("/dst/ep01.mkv")),
+        ]
+        result = execute_manifest(entries, dry_run=False, verbose=False)
+        assert result.success == 1
+        assert result.skipped == 0
+        assert result.failed == 0
+        assert len(result.triaged) == 1
 
 
 class TestBonusToAnidbMatching:

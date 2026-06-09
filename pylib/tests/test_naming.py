@@ -6,10 +6,94 @@ from pathlib import Path
 
 from etp_lib.naming import (
     build_metadata_block,
+    extras_relpath,
     format_episode_filename,
     format_series_dirname,
+    subtitle_sidecars,
 )
 from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
+
+
+class TestSubtitleSidecars:
+    """`subtitle_sidecars` maps co-located subs onto the dest video's name."""
+
+    @staticmethod
+    def _touch(path: Path) -> Path:
+        path.write_bytes(b"")
+        return path
+
+    def test_untagged_defaults_to_en(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        self._touch(tmp_path / "Show - 01.srt")
+        dest = tmp_path / "dest" / "Frieren - s1e01 - Title [MTBB].mkv"
+        assert subtitle_sidecars(video, dest) == [
+            (
+                tmp_path / "Show - 01.srt",
+                tmp_path / "dest" / "Frieren - s1e01 - Title [MTBB].en.srt",
+            )
+        ]
+
+    def test_custom_default_lang(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        self._touch(tmp_path / "Show - 01.srt")
+        dest = tmp_path / "Frieren - s1e01.mkv"
+        pairs = subtitle_sidecars(video, dest, default_lang="ja")
+        assert pairs[0][1].name == "Frieren - s1e01.ja.srt"
+
+    def test_tagged_tokens_preserved(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        self._touch(tmp_path / "Show - 01.en.forced.srt")
+        dest = tmp_path / "Frieren - s1e01.mkv"
+        pairs = subtitle_sidecars(video, dest, default_lang="ja")
+        # An explicit token wins over the default language.
+        assert pairs[0][1].name == "Frieren - s1e01.en.forced.srt"
+
+    def test_prefix_boundary_not_matched(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        self._touch(tmp_path / "Show - 011.srt")  # episode 11, not 1
+        dest = tmp_path / "Frieren - s1e01.mkv"
+        assert subtitle_sidecars(video, dest) == []
+
+    def test_non_subtitle_siblings_ignored(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        self._touch(tmp_path / "Show - 01.nfo")
+        self._touch(tmp_path / "Show - 01.txt")
+        dest = tmp_path / "Frieren - s1e01.mkv"
+        assert subtitle_sidecars(video, dest) == []
+
+    def test_multiple_extensions(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        self._touch(tmp_path / "Show - 01.ass")
+        self._touch(tmp_path / "Show - 01.sub")
+        self._touch(tmp_path / "Show - 01.idx")
+        dest = tmp_path / "Frieren - s1e01.mkv"
+        names = sorted(d.name for _s, d in subtitle_sidecars(video, dest))
+        assert names == [
+            "Frieren - s1e01.en.ass",
+            "Frieren - s1e01.en.idx",
+            "Frieren - s1e01.en.sub",
+        ]
+
+    def test_no_sidecars_returns_empty(self, tmp_path):
+        video = self._touch(tmp_path / "Show - 01.mkv")
+        assert subtitle_sidecars(video, tmp_path / "Frieren - s1e01.mkv") == []
+
+
+class TestExtrasRelpath:
+    """`extras_relpath` identifies Extras subtrees and their relative path."""
+
+    def test_not_under_extras_returns_none(self):
+        assert extras_relpath(Path("/dl/Batch/ep01.mkv")) is None
+
+    def test_under_extras_preserves_substructure(self):
+        rel = extras_relpath(Path("/dl/Batch/Extras/OST/Disc 1/track01.flac"))
+        assert rel == Path("OST/Disc 1/track01.flac")
+
+    def test_directly_in_extras(self):
+        assert extras_relpath(Path("/dl/Batch/Extras/NCOP.mkv")) == Path("NCOP.mkv")
+
+    def test_case_insensitive(self):
+        assert extras_relpath(Path("/dl/Batch/extras/scan.png")) == Path("scan.png")
 
 
 class TestMetadataBlock:
@@ -191,6 +275,33 @@ class TestFormatEpisodeFilename:
         assert result == (
             "Eden of the East - s1e05 [NH BD,1080p,AVC,10bit,x264,aac].mkv"
         )
+
+    def test_multi_episode_range(self):
+        sf = self._make_source()
+        result = format_episode_filename(
+            concise_name="Panty and Stocking",
+            season=1,
+            episode=2,
+            episode_name="A + B + C",
+            source=sf,
+            episodes=[2, 3, 4],
+        )
+        assert result == (
+            "Panty and Stocking - s1e02-e04 - A + B + C "
+            "[NH BD,1080p,AVC,10bit,x264,aac].mkv"
+        )
+
+    def test_multi_episode_single_element_uses_scalar(self):
+        sf = self._make_source()
+        result = format_episode_filename(
+            concise_name="Show",
+            season=1,
+            episode=5,
+            episode_name="Foo",
+            source=sf,
+            episodes=[5],
+        )
+        assert " - s1e05 - " in result
 
     def test_special_episode(self):
         sf = self._make_source()

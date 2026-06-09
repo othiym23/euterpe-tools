@@ -179,17 +179,37 @@ Interactive CLI for managing an anime collection on the NAS: fetches metadata
 from AniDB or TheTVDB, analyzes source files with mediainfo, constructs properly
 named episode files, and copies them using Btrfs COW reflinks.
 
-Three subcommands share a common pipeline:
+Subcommands:
 
-- `etp anime triage` — bulk import from downloads directory (auto-groups by
-  series name, including CJK/Latin alt-title merging)
-- `etp anime series` — sync from Sonarr-managed anime directory (uses ID files
-  - config mappings, download index for metadata enrichment)
+- `etp anime ingest --sonarr` — sync from Sonarr-managed anime directory (uses
+  ID files + config mappings, download index for metadata enrichment)
+- `etp anime ingest --downloads` — triage files from downloads directory
+  (auto-groups by series name, including CJK/Latin alt-title merging)
+- `etp anime ingest --sonarr --downloads` — both in sequence (Sonarr first, then
+  triage for leftovers)
 - `etp anime episode` — single-file import
 
-Both `triage` and `series` delegate to a shared `_process_pool()` function that
-handles the interactive ID-prompt → metadata-fetch → season-match → manifest
-workflow loop.
+The `ingest` command (which replaced the former `triage` and `series`
+subcommands) delegates to a shared `_process_pool()` function that handles the
+interactive ID-prompt → metadata-fetch → season-match → manifest workflow loop.
+
+Extras handling: non-video files from BD batch `Extras/` subdirectories are
+copied wholesale to the destination `Extras/` directory, preserving the source
+subtree structure. Video files found in `Extras/` prompt the user to choose:
+copy as extras, route to Specials for manifest editing, or skip.
+
+Subtitle sidecars: external subtitle files co-located with a source video and
+sharing its exact base name (`Episode 01.srt` next to `Episode 01.mkv`) ride
+along with that episode, renamed to the video's final destination base using the
+Jellyfin/Plex external-subtitle convention `<base>.<lang>[.<flags>].<ext>`
+(which ShokoFin replicates verbatim into its VFS, keyed on the shared base name;
+see the [Shoko runbook](shoko-runbook.md)). Recognized extensions:
+`.srt .ass .ssa .vtt .sub .idx .sup`. Tagged sidecars keep their language/flag
+tokens; untagged sidecars default to the language from `--sub-lang` (`en`).
+Matching is a literal base-name string test with a `.` boundary so `Show - 01`
+never grabs `Show - 011.srt` — the media parser is not involved (see the design
+decision below). Both `ingest` and `episode` use the shared
+`naming.subtitle_sidecars()` helper.
 
 ### Data flow
 
@@ -201,7 +221,8 @@ workflow loop.
    returns `MatchedFile` wrappers with renumbered episodes) or TVDB all-at-once
 4. **Manifest workflow** (`ManifestWorkflow`): build entries (mediainfo + CRC32
    verification + special matching) → write KDL → open `$EDITOR` → parse →
-   execute copies
+   execute copies. Subtitle sidecars are copied during execution — after each
+   video lands — named from that video's _final_ destination path.
 
 ### Non-mutating episode matching
 
@@ -270,6 +291,23 @@ field; the default is progressive.
 parser but only the major integer is stored (`version=2`). The decimal portion
 is intentionally discarded — if quality ranking needs it, the `version` field
 type should change from `int` to `str` or `float`.
+
+**Subtitle sidecars are parser-free and derived at execute time.** Subtitle
+handling deliberately sits _outside_ the media parser: sidecars are matched to a
+video by literal source base-name equality (never tokenized), their
+language/flag tokens are carried through verbatim, and the only inference is the
+trivial "untagged → `--sub-lang` default". The one real constraint is ordering —
+a sidecar's destination name is the video's _final_ `dest_path` stem, which
+isn't known until after enrichment (mediainfo/CRC may rewrite the filename),
+manifest editing (the user may rename), and conflict handling (the `both` action
+appends `[crc]`). So `execute_manifest` (and the single-file `_process_file`)
+derive and copy sidecars _after_ a successful video copy, not at parse/build
+time. The payoff: a sidecar always follows whatever final name its video gets,
+with no separate manifest entry to keep in sync — avoiding the Sonarr "loses the
+language code on rename" failure mode. The cost: an orphan subtitle — one whose
+base matches no source video, including a video/sub `vN` mismatch
+(`Show - 01v2.mkv` vs `Show - 01.srt`) — is silently skipped. It is neither a
+sidecar nor an extra, since `_EXTRAS_EXTENSIONS` excludes subtitle extensions.
 
 ## Database
 

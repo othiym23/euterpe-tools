@@ -30,6 +30,7 @@ from etp_lib.media_vocab import (  # noqa: F401 (re-exports)
     _HDR_KEYWORDS,
     _LANGUAGES,
     _MEDIA_EXTENSIONS,
+    _SCAN_EXCLUDE_DIRS,
     _VIDEO_EXTENSIONS,
     _METADATA_KINDS,
     _SOURCE_TYPE_MAP,

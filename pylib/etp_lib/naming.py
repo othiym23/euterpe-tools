@@ -8,6 +8,74 @@ from pathlib import Path
 from etp_lib.types import AudioTrack, SourceFile
 
 
+def extras_relpath(path: Path) -> Path | None:
+    """If *path* lives under a directory named ``Extras``, return its path
+    relative to that directory (preserving any substructure); otherwise None.
+
+    Shared by the triage scanner (to pull Extras videos out of the episode
+    pool) and the manifest writer (to preserve ``Extras/`` subtree structure
+    under the destination ``Extras/``) so both agree on what counts as an
+    Extras subtree.
+    """
+    parts = path.parts
+    lowered = [p.lower() for p in parts]
+    if "extras" not in lowered:
+        return None
+    idx = lowered.index("extras")
+    tail = parts[idx + 1 :]
+    return Path(*tail) if tail else Path(path.name)
+
+
+# Sidecar subtitle extensions recognized by Jellyfin/Plex/Emby (and imported
+# by Sonarr/Radarr's "import extra files"). A sidecar sharing a video's base
+# name is carried alongside the renamed destination video.
+SUBTITLE_EXTENSIONS = frozenset(
+    {".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup"}
+)
+
+
+def subtitle_sidecars(
+    source_video: Path,
+    dest_video: Path,
+    default_lang: str = "en",
+) -> list[tuple[Path, Path]]:
+    """Map subtitle sidecars next to *source_video* to destinations by *dest_video*.
+
+    A sidecar is a file in the same directory whose name is the source video's
+    base name followed by ``.<ext>`` (untagged) or ``.<tokens>.<ext>`` (tagged
+    with a language and/or flags like ``en`` / ``en.forced`` / ``en.sdh``),
+    where ``<ext>`` is a known subtitle extension. The ``.`` boundary after the
+    base prevents ``Show - 01`` from matching ``Show - 011.srt``.
+
+    Each match is mapped to a destination next to *dest_video*, named
+    ``<dest-base>.<lang>[.<flags>].<ext>`` per Jellyfin's external-subtitle
+    convention (which ShokoFin replicates verbatim into its VFS, keyed on the
+    shared base name). Tagged sidecars keep their tokens; untagged sidecars get
+    *default_lang* inserted. Returns ``(src, dst)`` pairs sorted by source name.
+    """
+    src_base = source_video.stem
+    dest_base = dest_video.stem
+    pairs: list[tuple[Path, Path]] = []
+    try:
+        siblings = source_video.parent.iterdir()
+    except OSError:
+        return []
+    for cand in siblings:
+        ext = cand.suffix.lower()
+        if ext not in SUBTITLE_EXTENSIONS or not cand.is_file():
+            continue
+        if not cand.name.startswith(src_base):
+            continue
+        remainder = cand.name[len(src_base) :]  # ".srt" or ".en.forced.srt"
+        if not remainder.startswith("."):  # boundary: skip "Show - 011.srt"
+            continue
+        # Tokens between base and extension: "" (untagged) or "en"/"en.forced".
+        tokens = remainder.removesuffix(cand.suffix).removeprefix(".")
+        dst = dest_video.parent / f"{dest_base}.{tokens or default_lang}{ext}"
+        pairs.append((cand, dst))
+    return sorted(pairs)
+
+
 def unique_audio_codecs(tracks: list[AudioTrack]) -> list[str]:
     """Return deduplicated non-commentary audio codec names in order."""
     seen: set[str] = set()
@@ -113,6 +181,19 @@ def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Pa
     return series_dir / f"Season {season:02d}"
 
 
+def _format_episode_tag(season: int, episode: int, episodes: list[int] | None) -> str:
+    """Format the sXeYY portion of an episode filename.
+
+    For multi-episode files uses the Sonarr-style ``s1e02-e03`` range form
+    (first and last episode), matching HamaTV/Plex conventions.
+    """
+    if episodes and len(episodes) > 1:
+        first = episodes[0]
+        last = episodes[-1]
+        return f"s{season}e{first:02d}-e{last:02d}"
+    return f"s{season}e{episode:02d}"
+
+
 def format_episode_filename(
     concise_name: str,
     season: int,
@@ -123,6 +204,7 @@ def format_episode_filename(
     movie_dir_name: str = "",
     is_special: bool = False,
     special_tag: str = "",
+    episodes: list[int] | None = None,
 ) -> str:
     """Build the full episode filename."""
     ext = source.path.suffix or ".mkv"
@@ -148,7 +230,7 @@ def format_episode_filename(
         return f"{concise_name} - {special_tag}{meta_str}{hash_str}{ext}"
 
     # Regular episode: `Name - sXeYY - Episode Name [metadata] [hash].ext`
-    ep_tag = f"s{season}e{episode:02d}"
+    ep_tag = _format_episode_tag(season, episode, episodes)
     if episode_name:
         return f"{concise_name} - {ep_tag} - {episode_name}{meta_str}{hash_str}{ext}"
     return f"{concise_name} - {ep_tag}{meta_str}{hash_str}{ext}"

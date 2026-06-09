@@ -94,6 +94,15 @@ class TestAnidbParsing:
         assert info.title_en == "Akira"
         assert info.year == 1988
 
+    def test_movie_type_sets_is_movie(self):
+        """AniDB <type>Movie</type> flags the entry as a movie."""
+        info = _parse_anidb_xml(ANIDB_XML_SAMPLE, 28)
+        assert info.is_movie is True
+
+    def test_tv_series_type_is_not_movie(self):
+        info = _parse_anidb_xml(ANIDB_XML_SERIES, 1234)
+        assert info.is_movie is False
+
     def test_episode_types(self):
         info = _parse_anidb_xml(ANIDB_XML_SAMPLE, 28)
         types = {e.ep_type for e in info.episodes}

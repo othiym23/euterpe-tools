@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from etp_commands import anime
-from etp_lib.types import EpisodeType
+from etp_lib.types import EpisodeType, dedup_titles
 
 
 # ===================================================================
@@ -276,6 +276,188 @@ class TestScanDestIds:
     def test_ignores_files_in_dest(self, tmp_path):
         (tmp_path / "somefile.txt").write_text("hello")
         assert anime.scan_dest_ids(tmp_path) == {}
+
+
+class TestNotifyIfDestExists:
+    """`_notify_if_dest_exists` warns when an ID's series dir already exists."""
+
+    def test_anidb_match_prints_existing_path(self, capsys):
+        id_map = {("anidb", 42): Path("/dest/Existing Series")}
+        anime._notify_if_dest_exists(id_map, anidb_id=42, tvdb_id=None)
+        out = capsys.readouterr().out
+        assert "anidb 42" in out
+        assert "/dest/Existing Series" in out
+
+    def test_tvdb_match_prints_existing_path(self, capsys):
+        id_map = {("tvdb", 99): Path("/dest/Other")}
+        anime._notify_if_dest_exists(id_map, anidb_id=None, tvdb_id=99)
+        out = capsys.readouterr().out
+        assert "tvdb 99" in out
+
+    def test_no_match_is_silent(self, capsys):
+        id_map = {("anidb", 1): Path("/dest/X")}
+        anime._notify_if_dest_exists(id_map, anidb_id=99, tvdb_id=99)
+        assert capsys.readouterr().out == ""
+
+    def test_anidb_takes_precedence_over_tvdb(self, capsys):
+        # Both IDs present and both have matches — anidb wins (single notice).
+        id_map = {
+            ("anidb", 42): Path("/dest/Series-a"),
+            ("tvdb", 99): Path("/dest/Series-t"),
+        }
+        anime._notify_if_dest_exists(id_map, anidb_id=42, tvdb_id=99)
+        out = capsys.readouterr().out
+        assert out.count("note: existing series dir") == 1
+        assert "anidb 42" in out
+
+
+class TestDistinctConciseNames:
+    """`_distinct_concise_names` returns names sorted by file count desc."""
+
+    def test_empty_returns_empty_list(self):
+        assert anime._distinct_concise_names({}) == []
+
+    def test_single_name_single_subdir(self, tmp_path):
+        names_by_subdir = {tmp_path / "Season 01": {"Frieren": [Path("a.mkv")]}}
+        assert anime._distinct_concise_names(names_by_subdir) == [("Frieren", 1)]
+
+    def test_multiple_names_sorted_by_count(self, tmp_path):
+        names_by_subdir = {
+            tmp_path / "Season 01": {
+                "Frieren": [Path("a.mkv"), Path("b.mkv"), Path("c.mkv")]
+            },
+            tmp_path / "Season 02": {"Sousou no Frieren": [Path("d.mkv")]},
+        }
+        result = anime._distinct_concise_names(names_by_subdir)
+        assert result == [("Frieren", 3), ("Sousou no Frieren", 1)]
+
+    def test_same_name_across_subdirs_aggregates(self, tmp_path):
+        names_by_subdir = {
+            tmp_path / "Season 01": {"Show": [Path("a.mkv")]},
+            tmp_path / "Season 02": {"Show": [Path("b.mkv"), Path("c.mkv")]},
+        }
+        assert anime._distinct_concise_names(names_by_subdir) == [("Show", 3)]
+
+
+class TestResolveConciseNameTarget:
+    """`_resolve_concise_name_from_existing` renames toward the target name."""
+
+    def test_renames_toward_explicit_target_not_most_common(
+        self, tmp_path, monkeypatch
+    ):
+        """A user-picked (non-most-common) target wins over the most common.
+
+        Regression: existing files were renamed to the most common name even
+        when the batch settled on a different (user-picked) name, producing a
+        split-brain directory.
+        """
+        monkeypatch.setattr(anime, "prompt_confirm", lambda *a, **k: True)
+        season_dir = tmp_path / "Season 01"
+        # "Frieren" is most common (2 files); "Sousou no Frieren" has 1.
+        names_by_subdir = {
+            season_dir: {
+                "Frieren": [
+                    season_dir / "Frieren - s1e01.mkv",
+                    season_dir / "Frieren - s1e02.mkv",
+                ],
+                "Sousou no Frieren": [season_dir / "Sousou no Frieren - s1e03.mkv"],
+            }
+        }
+        resolved, renames = anime._resolve_concise_name_from_existing(
+            names_by_subdir, tmp_path, target_name="Sousou no Frieren"
+        )
+        assert resolved == "Sousou no Frieren"
+        # The two "Frieren" files are renamed toward the target, not the
+        # other way around.
+        new_names = {new.name for _old, new in renames}
+        assert new_names == {
+            "Sousou no Frieren - s1e01.mkv",
+            "Sousou no Frieren - s1e02.mkv",
+        }
+
+    def test_defaults_to_most_common_without_target(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(anime, "prompt_confirm", lambda *a, **k: True)
+        season_dir = tmp_path / "Season 01"
+        names_by_subdir = {
+            season_dir: {
+                "Frieren": [
+                    season_dir / "Frieren - s1e01.mkv",
+                    season_dir / "Frieren - s1e02.mkv",
+                ],
+                "Alt": [season_dir / "Alt - s1e03.mkv"],
+            }
+        }
+        resolved, renames = anime._resolve_concise_name_from_existing(
+            names_by_subdir, tmp_path
+        )
+        assert resolved == "Frieren"
+        assert {new.name for _old, new in renames} == {"Frieren - s1e03.mkv"}
+
+
+class TestDedupTitles:
+    """`dedup_titles` preserves order, drops empties and duplicates."""
+
+    def test_dedup_and_order(self):
+        assert dedup_titles(["A", "B", "A", "", "C", "B"]) == ["A", "B", "C"]
+
+    def test_all_empty(self):
+        assert dedup_titles(["", ""]) == []
+
+
+class TestIndexSafeTitles:
+    """`_index_safe_titles` keeps canonical titles, drops short aliases."""
+
+    def _info(self, **aliases):
+        return anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="葬送のフリーレン",
+            title_en="Frieren",
+            year=2023,
+            aliases=aliases.get("aliases", []),
+        )
+
+    def test_short_alias_excluded_canonical_kept(self):
+        info = self._info(aliases=["RG", "Sousou no Frieren"])
+        safe = anime._index_safe_titles(info)
+        assert "Frieren" in safe
+        assert "葬送のフリーレン" in safe
+        assert "Sousou no Frieren" in safe  # long alias kept
+        assert "RG" not in safe  # short alias dropped
+
+    def test_two_series_sharing_short_alias_not_merged(self):
+        from etp_lib import media_parser
+
+        idx = media_parser.TitleAliasIndex()
+        a = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="葬送のフリーレン",
+            title_en="Frieren",
+            year=2023,
+            aliases=["RG"],
+        )
+        b = anime.AnimeInfo(
+            anidb_id=2,
+            tvdb_id=None,
+            title_ja="Re:ゼロ",
+            title_en="Re:Zero",
+            year=2016,
+            aliases=["RG"],
+        )
+        idx.add_series(anime._index_safe_titles(a))
+        idx.add_series(anime._index_safe_titles(b))
+        # The shared short alias must NOT conflate the two series.
+        assert idx.same_series("Frieren", "Re:Zero") is False
+
+    def test_long_alias_still_enables_cross_variant_match(self):
+        from etp_lib import media_parser
+
+        idx = media_parser.TitleAliasIndex()
+        info = self._info(aliases=["Sousou no Frieren"])
+        idx.add_series(anime._index_safe_titles(info))
+        # A discriminating alias still links the romaji variant to the name.
+        assert idx.same_series("Frieren", "Sousou no Frieren") is True
 
 
 class TestResolveSeriesDirectory:
@@ -751,6 +933,61 @@ class TestGroupDefaults:
         assert sf.parsed.release_group == "MTBB"
         assert defaults.release_group == "MTBB"
 
+    def test_process_file_copies_subtitle_sidecars(self, tmp_path, monkeypatch):
+        """A single-file import carries co-located subs (untagged → en)."""
+        monkeypatch.setattr(
+            anime,
+            "analyze_file",
+            lambda _: anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+        monkeypatch.setattr(anime, "prompt_confirm", lambda *a, **k: True)
+        monkeypatch.setattr("builtins.input", lambda _="": "")
+        copied: list[tuple[Path, Path]] = []
+
+        def tracker(s, d, **kw):
+            copied.append((s, d))
+            return True
+
+        # The video copies via anime.copy_reflink; sidecars via the shared
+        # manifest.copy_subtitle_sidecars → manifest's copy_reflink binding.
+        monkeypatch.setattr(anime, "copy_reflink", tracker)
+        monkeypatch.setattr("etp_lib.manifest.copy_reflink", tracker)
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        video = src_dir / "[MTBB] Show - 01.mkv"
+        video.write_bytes(b"v")
+        (src_dir / "[MTBB] Show - 01.srt").write_bytes(b"s")  # untagged → .en
+        (src_dir / "[MTBB] Show - 01.en.forced.ass").write_bytes(b"s")  # kept
+
+        sf = anime.parse_source_filename(video.name)
+        sf.path = video
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[],
+        )
+        assert anime._process_file(
+            sf, info, "Show", tmp_path / "out", dry_run=True, verbose=False
+        )
+
+        video_dest = next(d for _s, d in copied if d.suffix == ".mkv")
+        sub_dests = sorted(d.name for _s, d in copied if d.suffix != ".mkv")
+        assert sub_dests == [
+            f"{video_dest.stem}.en.forced.ass",
+            f"{video_dest.stem}.en.srt",
+        ]
+
     def test_defaults_carry_to_next_file(self, monkeypatch):
         """Defaults set for one file are offered for the next."""
         # First file: user types "MTBB" at release group prompt
@@ -1161,6 +1398,45 @@ class TestSubSeriesTitleFiltering:
         assert matched[0].effective_season == 1
         assert len(remaining) == 2
 
+    def test_short_alias_does_not_prefix_match_unrelated(self, monkeypatch):
+        """A short (<4 char) alias must not prefix-match an unrelated title.
+
+        Regression: widening the match set to all_titles() let short TVDB
+        aliases prefix-match unrelated series via startswith(), e.g. alias
+        'Reg' pulling in 'Regular Show'.
+        """
+        monkeypatch.setattr("builtins.input", lambda _: "1")
+        pool = [
+            anime.SourceFile(
+                path=Path("Frieren - 01.mkv"),
+                parsed=anime.ParsedMetadata(season=1, episode=1, series_name="Frieren"),
+            ),
+            anime.SourceFile(
+                path=Path("Regular Show - 01.mkv"),
+                parsed=anime.ParsedMetadata(
+                    season=1, episode=2, series_name="Regular Show"
+                ),
+            ),
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=17617,
+            tvdb_id=None,
+            title_ja="フリーレン",
+            title_en="Frieren",
+            year=2023,
+            aliases=["Reg"],  # short noise alias
+            episodes=[
+                anime.Episode(1, EpisodeType.REGULAR, "Ep 1", "", ""),
+                anime.Episode(2, EpisodeType.REGULAR, "Ep 2", "", ""),
+            ],
+        )
+        matched, remaining = anime._match_files_to_season(pool, info)
+        matched_names = {m.path.name for m in matched}
+        remaining_names = {sf.path.name for sf in remaining}
+        assert "Frieren - 01.mkv" in matched_names
+        assert "Regular Show - 01.mkv" not in matched_names
+        assert "Regular Show - 01.mkv" in remaining_names
+
     def test_different_series_title_excluded(self, monkeypatch):
         """Files from ふたりは and 探偵歌劇TD must not match 探偵オペラ."""
         inputs = iter(["1"])
@@ -1488,6 +1764,47 @@ class TestMatchFilesToSeason:
         # Original pool data is preserved (not mutated)
         assert pool[0].parsed.episode == 13
         assert pool[-1].parsed.episode == 24
+
+    def test_multi_cour_renumbers_multi_episode_list(self, monkeypatch):
+        """A multi-episode file in a renumbered cour renumbers BOTH the scalar
+        episode and the episodes list, so the range tag (s1e01-e02) and the
+        per-episode title lookups use entry-local numbers.
+
+        Regression: the episodes list was previously left at the absolute
+        source numbers, yielding e.g. s1e13-e14 instead of s1e01-e02.
+        """
+        monkeypatch.setattr("builtins.input", lambda _: "3")
+        pool = [
+            anime.SourceFile(
+                path=Path("s3e13-14.mkv"),
+                parsed=anime.ParsedMetadata(season=3, episode=13, episodes=[13, 14]),
+            )
+        ] + [
+            anime.SourceFile(
+                path=Path(f"s3e{i:02d}.mkv"),
+                parsed=anime.ParsedMetadata(season=3, episode=i),
+            )
+            for i in range(15, 25)
+        ]
+        info = anime.AnimeInfo(
+            anidb_id=201,
+            tvdb_id=None,
+            title_ja="テスト Part 2",
+            title_en="Test Part 2",
+            year=2025,
+            episodes=[
+                anime.Episode(i, EpisodeType.REGULAR, f"Ep {i}", "", "")
+                for i in range(1, 13)
+            ],
+        )
+        matched, _remaining = anime._match_files_to_season(pool, info)
+        multi = matched[0]
+        assert multi.effective_episode == 1
+        assert multi.effective_episodes == [1, 2]
+        # The snapshot used for naming carries the renumbered list
+        assert multi.to_source_snapshot().parsed.episodes == [1, 2]
+        # Original pool data is preserved (not mutated)
+        assert pool[0].parsed.episodes == [13, 14]
 
     def test_no_renumber_when_eps_fit(self, monkeypatch):
         """Ep 12 of a 12-episode entry stays as 12, not renumbered to 1."""

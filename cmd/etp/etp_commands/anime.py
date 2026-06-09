@@ -5,9 +5,11 @@ or TheTVDB, analyzes source files with mediainfo, constructs properly named
 episode files, and copies them using Btrfs COW reflinks.
 
 Subcommands:
-    etp anime triage [PATTERN]  — bulk import from downloads directory
-    etp anime series [PATTERN]  — sync from Sonarr-managed anime directory
-    etp anime episode FILE      — import a single episode or movie
+    etp anime ingest --sonarr|--downloads [PATTERN]  — unified import
+    etp anime episode FILE --anidb ID|--tvdb ID      — single-file import
+
+(`triage` and `series` remain as deprecated aliases for `ingest --downloads`
+and `ingest --sonarr`.)
 
 Configuration: ~/.config/euterpe-tools/anime-ingestion.kdl (paths + series IDs)
 Environment:   ~/.config/euterpe-tools/anime.env (API credentials)
@@ -47,10 +49,11 @@ from etp_lib.download_cache import (
     save_cache,
     scan_dir_mtimes,
 )
-from etp_lib.manifest import ManifestWorkflow, escape_kdl
+from etp_lib.manifest import ManifestWorkflow, copy_subtitle_sidecars, escape_kdl
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
+    extras_relpath,
     format_episode_filename,
     format_series_dirname,
     season_subdir,
@@ -60,6 +63,8 @@ from etp_lib.tvdb import fetch_tvdb_series
 from etp_lib.types import (
     AnimeConfig,
     AnimeInfo,
+    BatchResult,
+    BonusType,
     ConflictAction,
     DEFAULT_ANIME_SOURCE_DIR,  # noqa: F401 (re-export for tests)
     DEFAULT_DEST_DIR,  # noqa: F401 (re-export for tests)
@@ -156,6 +161,30 @@ def load_anime_config(path: Path | None = None) -> AnimeConfig:
     return config
 
 
+def save_concise_name(
+    name: str,
+    concise: str,
+    *,
+    path: Path | None = None,
+) -> None:
+    """Append a concise-name mapping for *name* to the config file.
+
+    Written as a bare ``series`` block with no provider IDs — the loader
+    picks up the ``concise`` child regardless of whether IDs are present,
+    and any later re-read will see this block's value override earlier
+    mappings for the same series name.
+    """
+    if path is None:
+        from etp_lib import paths as etp_paths
+
+        path = etp_paths.anime_config()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = f'\nseries "{escape_kdl(name)}" {{\n  concise "{escape_kdl(concise)}"\n}}\n'
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+
 def save_series_mapping(
     name: str,
     provider: str,
@@ -216,6 +245,27 @@ def _parse_id_input(raw: str) -> tuple[int | None, int | None]:
         return None, None
 
 
+def _notify_if_dest_exists(
+    id_map: dict[tuple[str, int], Path],
+    anidb_id: int | None,
+    tvdb_id: int | None,
+) -> None:
+    """Print a hint if a series directory with the given ID marker already
+    exists in the destination. Does not prompt — files will be merged into
+    the existing directory as usual.
+    """
+    for provider, pid in (
+        (MetadataProvider.ANIDB, anidb_id),
+        (MetadataProvider.TVDB, tvdb_id),
+    ):
+        if pid is None:
+            continue
+        existing = id_map.get((provider, pid))
+        if existing is not None:
+            print(f"  note: existing series dir for {provider} {pid}: {existing}")
+            return
+
+
 def _maybe_save_mapping(
     name: str,
     provider: str,
@@ -243,7 +293,13 @@ def _maybe_save_mapping(
 _MEDIA_EXTENSIONS = media_parser._MEDIA_EXTENSIONS
 _VIDEO_EXTENSIONS = media_parser._VIDEO_EXTENSIONS
 _AUDIO_EXTENSIONS = media_parser._AUDIO_EXTENSIONS
+_SCAN_EXCLUDE_DIRS = media_parser._SCAN_EXCLUDE_DIRS
 _EXTRAS_EXTENSIONS = frozenset({".rar", ".zip", ".7z", ".flac", ".wav", ".ape", ".txt"})
+
+# Minimum normalized-title length for sub-series prefix matching. Below this,
+# only exact matches count — short aliases would otherwise prefix-match
+# unrelated titles.
+_MIN_PREFIX_MATCH_LEN = 4
 
 
 def parse_source_filename(filename: str) -> SourceFile:
@@ -541,13 +597,19 @@ def _iter_media_files(
 
     By default only video files are returned.  Set *include_audio* to
     also collect audio files (for the QA tool or extras detection).
+
+    Skips download-client working directories (``temp``, ``incomplete``,
+    etc.) — files there are still being downloaded and shouldn't be
+    triaged.
     """
     extensions = _MEDIA_EXTENSIONS if include_audio else _VIDEO_EXTENSIONS
     results: list[Path] = []
     for source_dir in source_dirs:
         if not source_dir.is_dir():
             continue
-        for root, _dirs, files in os.walk(source_dir):
+        for root, dirs, files in os.walk(source_dir):
+            # Prune excluded directories in place so os.walk skips them
+            dirs[:] = [d for d in dirs if d.lower() not in _SCAN_EXCLUDE_DIRS]
             for name in files:
                 if Path(name).suffix.lower() in extensions:
                     results.append(Path(root) / name)
@@ -634,21 +696,60 @@ def _most_common_concise_name(
     return counts.most_common(1)[0][0] if counts else ""
 
 
+def _distinct_concise_names(
+    names_by_subdir: dict[Path, dict[str, list[Path]]],
+) -> list[tuple[str, int]]:
+    """Return every distinct concise name across *names_by_subdir*, sorted by
+    total file count descending. Each entry is ``(name, total_file_count)``.
+    """
+    counts: Counter[str] = Counter()
+    for names_in_dir in names_by_subdir.values():
+        for name, files in names_in_dir.items():
+            counts[name] += len(files)
+    return counts.most_common()
+
+
+def _prompt_pick_concise_name(candidates: list[tuple[str, int]]) -> str:
+    """Prompt the user to pick one of several concise names, or enter a
+    custom name. Returns the chosen name. Default is the first candidate
+    (which the caller should arrange to be the most common).
+    """
+    print("\n  Multiple concise names exist in this series directory:")
+    for idx, (name, count) in enumerate(candidates, start=1):
+        print(f"    {idx}. {name}  ({count} files)")
+    custom_idx = len(candidates) + 1
+    print(f"    {custom_idx}. enter a different name")
+    while True:
+        raw = input("\n  Choose [1]: ").strip() or "1"
+        if raw.isdigit():
+            choice = int(raw)
+            if 1 <= choice <= len(candidates):
+                return candidates[choice - 1][0]
+            if choice == custom_idx:
+                return prompt_value("  Concise series name", candidates[0][0])
+        print("  Invalid choice, try again.")
+
+
 def _resolve_concise_name_from_existing(
     existing_names: dict[Path, dict[str, list[Path]]],
     series_dir: Path,
+    target_name: str = "",
 ) -> tuple[str, list[tuple[Path, Path]]]:
     """Determine the default concise name from existing dest files.
 
     If all existing files use the same name, returns it silently.  If
     multiple names are found per season dir, warns the user and offers to
-    normalize by renaming existing files to use the most common name.
+    normalize by renaming existing files to a single name.
+
+    *target_name*, when given, is the name to normalize toward (e.g. the
+    name the caller already settled on for this batch, possibly a user
+    pick). When empty, the most common existing name is used.
 
     Returns ``(default_name, renames)`` where *renames* is a list of
     ``(old_path, new_path)`` for files that need renaming.
     """
-    most_common = _most_common_concise_name(existing_names)
-    if not most_common:
+    target = target_name or _most_common_concise_name(existing_names)
+    if not target:
         return "", []
     renames: list[tuple[Path, Path]] = []
 
@@ -662,21 +763,19 @@ def _resolve_concise_name_from_existing(
         for name, files in sorted(names_in_dir.items(), key=lambda kv: -len(kv[1])):
             print(f"    {name!r} ({len(files)} file(s))")
 
-        if not prompt_confirm(
-            f"  Rename all files in {rel_dir}/ to use {most_common!r}?"
-        ):
+        if not prompt_confirm(f"  Rename all files in {rel_dir}/ to use {target!r}?"):
             continue
 
         # Collect renames for files that don't match the target name
         for name, files in names_in_dir.items():
-            if name == most_common:
+            if name == target:
                 continue
             for old_path in files:
-                new_name = old_path.name.replace(name, most_common, 1)
+                new_name = old_path.name.replace(name, target, 1)
                 if new_name != old_path.name:
                     renames.append((old_path, old_path.parent / new_name))
 
-    return most_common, renames
+    return target, renames
 
 
 def _build_download_index(downloads_dir: Path) -> DownloadIndex:
@@ -948,6 +1047,13 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-cache", action="store_true", help="Bypass API response cache")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     p.add_argument("--config", type=Path, metavar="FILE", help="Config file path")
+    p.add_argument(
+        "--sub-lang",
+        default="en",
+        metavar="CODE",
+        help="Language assigned to untagged subtitle sidecars (default: en). "
+        "Sidecars already carrying a language/flag token keep it.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1002,6 +1108,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-process previously synced files and auto-replace conflicts",
     )
     _add_common_flags(s)
+
+    # ingest: unified import (replaces triage + series)
+    i = sub.add_parser(
+        "ingest",
+        help="Import anime from Sonarr and/or downloads",
+        description="Unified anime ingestion. Requires at least one of "
+        "--sonarr or --downloads to specify which sources to process.",
+    )
+    i.add_argument("pattern", nargs="?", help="Filter by name pattern")
+    i.add_argument(
+        "--sonarr",
+        action="store_true",
+        help="Process Sonarr-managed anime directory",
+    )
+    i.add_argument(
+        "--downloads",
+        action="store_true",
+        help="Triage files from downloads directory",
+    )
+    i.add_argument(
+        "--source",
+        type=Path,
+        action="append",
+        metavar="DIR",
+        help="Override source directory. Repeatable for --downloads; the "
+        "first value also overrides the --sonarr scan root.",
+    )
+    i.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-process previously ingested files",
+    )
+    _add_common_flags(i)
 
     # episode: single-file import
     e = sub.add_parser(
@@ -1093,8 +1232,13 @@ def _process_file(
     dry_run: bool,
     verbose: bool,
     defaults: GroupDefaults | None = None,
+    sub_lang: str = "en",
 ) -> bool:
-    """Process a single source file: analyze, name, copy."""
+    """Process a single source file: analyze, name, copy.
+
+    Any subtitle sidecars sharing the source's base name ride along, renamed to
+    the destination base (untagged sidecars default to *sub_lang*).
+    """
     print(f"\n--- {source.path.name} ---")
 
     # Prompt for release group if not parsed from filename
@@ -1211,12 +1355,34 @@ def _process_file(
     if not prompt_confirm("  Copy this file?"):
         return False
 
-    return copy_reflink(source.path, dest_path, dry_run=dry_run)
+    if not copy_reflink(source.path, dest_path, dry_run=dry_run):
+        return False
+
+    copy_subtitle_sidecars(source.path, dest_path, sub_lang, dry_run, verbose)
+    return True
 
 
 # ---------------------------------------------------------------------------
 # Batch triage (vidir-style manifest editing)
 # ---------------------------------------------------------------------------
+
+
+def _index_safe_titles(info: AnimeInfo) -> list[str]:
+    """Titles safe to register in the global :class:`TitleAliasIndex`.
+
+    Canonical titles (en/ja/romaji) are always included. Aliases are kept
+    only when their normalized form is long enough to be discriminating —
+    a short alias (e.g. TVDB's unfiltered 2–3 char aliases) that collides
+    with an unrelated series' title would merge the two series into one
+    index key, corrupting ``same_series`` and download re-matching.
+    """
+    titles = [info.title_en, info.title_ja, info.title_romaji]
+    titles += [
+        a
+        for a in info.aliases
+        if len(media_parser.normalize_for_matching(a)) >= _MIN_PREFIX_MATCH_LEN
+    ]
+    return [t for t in titles if t]
 
 
 def _match_files_to_season(
@@ -1239,12 +1405,14 @@ def _match_files_to_season(
     """
     regular_count = sum(1 for ep in info.episodes if ep.ep_type == EpisodeType.REGULAR)
 
-    # Filter pool by sub-series title similarity against AniDB entry.
-    # This prevents files from other sub-series in a batch from being
-    # mixed in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD).
-    # Try English first, then Japanese, then romaji — files may use any.
+    # Filter pool by sub-series title similarity against AniDB/TVDB entry.
+    # This prevents files from other sub-series in a batch from being mixed
+    # in (e.g. 探偵オペラ vs ふたりは vs 探偵歌劇TD). Use every known title
+    # variant (primary names + all aliases) so romaji transliterations like
+    # "Sousou no Frieren" match against the canonical "Frieren: Beyond
+    # Journey's End".
     known_titles: list[str] = []
-    for t in (info.title_en, info.title_ja, info.title_romaji):
+    for t in info.all_titles():
         norm = media_parser.normalize_for_matching(t)
         if norm and norm not in known_titles:
             known_titles.append(norm)
@@ -1257,7 +1425,12 @@ def _match_files_to_season(
                 # Can't determine series name — include by default
                 title_matched.append(sf)
             elif sf_title_norm in known_titles or any(
-                sf_title_norm.startswith(t) or t.startswith(sf_title_norm)
+                # Prefix matching only when BOTH sides are long enough to be
+                # discriminating — a short alias (e.g. TVDB's unfiltered
+                # 2–3 char aliases) must not prefix-match unrelated titles.
+                len(t) >= _MIN_PREFIX_MATCH_LEN
+                and len(sf_title_norm) >= _MIN_PREFIX_MATCH_LEN
+                and (sf_title_norm.startswith(t) or t.startswith(sf_title_norm))
                 for t in known_titles
             ):
                 title_matched.append(sf)
@@ -1409,13 +1582,37 @@ def _match_files_to_season(
     matched: list[MatchedFile] = []
     for sf in consumed:
         ep = sf.parsed.episode
+        episodes_override: list[int] | None = None
         if ep is not None and renumber_offset:
             ep = ep - renumber_offset
-        matched.append(MatchedFile(source=sf, episode=ep, season=sf.parsed.season))
+            # Renumber the multi-episode list in lockstep with the scalar so
+            # the range tag (s1e02-e03) and per-episode title lookups use the
+            # entry-local numbers, not the absolute source numbers.
+            if sf.parsed.episodes:
+                episodes_override = [n - renumber_offset for n in sf.parsed.episodes]
+        matched.append(
+            MatchedFile(
+                source=sf,
+                episode=ep,
+                episodes=episodes_override,
+                season=sf.parsed.season,
+            )
+        )
 
-    # Include unseasoned files as (todo) entries
+    # Include unseasoned files. In multi-season groupings (the pool held
+    # files from more than one non-zero season), these are almost always
+    # batch extras — route them through the Specials/bonus path so named
+    # bonuses (NCOP/NCED/etc.) resolve to a HamaTV s0e number automatically.
+    # Untitled bonuses still surface as (todo) for confirmation, but with a
+    # Specials default pre-filled rather than a bare placeholder.
+    is_multi_season_grouping = len([s for s in by_season if s > 0]) > 1
     for sf in no_season:
-        matched.append(MatchedFile(source=sf))
+        if is_multi_season_grouping:
+            matched.append(
+                MatchedFile(source=sf, is_special=True, bonus_type=BonusType.BONUS)
+            )
+        else:
+            matched.append(MatchedFile(source=sf))
 
     # Build remaining pool (everything not matched, leftover already included)
     consumed_with_extras = consumed + no_season
@@ -1545,7 +1742,9 @@ def _process_group_batch(
     season_override: int | None = None,
     extras: list[Path] | None = None,
     config: AnimeConfig | None = None,
-) -> tuple[int, int, list[Path]]:
+    allow_prompts: bool = True,
+    sub_lang: str = "en",
+) -> BatchResult:
     """Batch-process a group of files via an editable manifest.
 
     Uses a two-phase workflow: build a lightweight preview (episode matching
@@ -1581,6 +1780,24 @@ def _process_group_batch(
     )
     dest_scan = scan_dest_directory(proposed_dir)
     concise_name = _auto_resolve_concise_name(matched, dest_scan, config, group_key)
+
+    # If the dest dir has multiple distinct concise names and the config
+    # hasn't already pinned one, let the user choose; persist the choice
+    # so subsequent runs use it without re-prompting. Skipped in non-
+    # interactive (Sonarr auto-sync) mode, where input() would block/EOF.
+    if (
+        allow_prompts
+        and config is not None
+        and group_key
+        and not config.concise_names.get(group_key)
+        and dest_scan.names_by_subdir
+    ):
+        candidates = _distinct_concise_names(dest_scan.names_by_subdir)
+        if len(candidates) > 1:
+            concise_name = _prompt_pick_concise_name(candidates)
+            config.concise_names[group_key] = concise_name
+            if not dry_run:
+                save_concise_name(group_key, concise_name)
     detected_group = _auto_detect_release_group(matched)
     release_group = detected_group
     _apply_batch_traits(matched, release_group, detected_group)
@@ -1594,6 +1811,7 @@ def _process_group_batch(
         proposed_dir,
         verbose=verbose,
         analyze_file_fn=analyze_file,
+        sub_lang=sub_lang,
     )
     workflow.build_lightweight()
 
@@ -1603,7 +1821,7 @@ def _process_group_batch(
             proposed_dir, dir_exists, concise_name, release_group
         )
         if choice == "s":
-            return 0, len(matched), []
+            return BatchResult(skipped=len(matched))
         if choice == "e":
             concise_name = prompt_value(
                 "Concise series name for filenames", concise_name
@@ -1627,6 +1845,7 @@ def _process_group_batch(
                 proposed_dir,
                 verbose=verbose,
                 analyze_file_fn=analyze_file,
+                sub_lang=sub_lang,
             )
             workflow.build_lightweight()
             continue
@@ -1652,23 +1871,30 @@ def _process_group_batch(
 
     result = workflow.confirm_and_parse()
     if result is None:
-        return 0, file_count, []
+        return BatchResult(skipped=file_count)
     parsed_entries, extra_entries, rename_entries = result
 
-    # Check for naming inconsistencies — reuses the scan from phase 1
+    # Files removed during manifest editing count as skipped
+    edited_out = file_count - len(parsed_entries)
+
+    # Check for naming inconsistencies — reuses the scan from phase 1.
+    # Normalize existing files toward the name we're actually using for this
+    # batch (which may be a user pick), not just the most common one.
     if dest_scan.names_by_subdir:
         _resolved_name, extra_renames = _resolve_concise_name_from_existing(
-            dest_scan.names_by_subdir, series_dir
+            dest_scan.names_by_subdir, series_dir, target_name=concise_name
         )
         rename_entries.extend(extra_renames)
 
-    return workflow.execute(
+    batch = workflow.execute(
         parsed_entries,
         extra_entries,
         rename_entries,
         dry_run,
         parse_source_filename_fn=parse_source_filename,
     )
+    batch.skipped += edited_out
+    return batch
 
 
 # ---------------------------------------------------------------------------
@@ -1702,17 +1928,17 @@ def _process_pool(
     title_index: media_parser.TitleAliasIndex | None = None,
     resolved_paths: dict[Path, str] | None = None,
     auto_accept_ids: bool = False,
-) -> tuple[int, int, bool]:
+    sub_lang: str = "en",
+) -> tuple[BatchResult, bool]:
     """Process a file pool against metadata IDs interactively.
 
     Prompts the user for AniDB/TVDB IDs (using id_queue for pre-populated
     suggestions), fetches metadata, matches files to seasons, and delegates
     to ``_process_group_batch()`` for manifest editing and execution.
 
-    Returns ``(total_success, total_failed, quit_requested)``.
+    Returns ``(BatchResult, quit_requested)``.
     """
-    total_success = 0
-    total_failed = 0
+    totals = BatchResult()
 
     def _resolve(p: Path) -> str:
         if resolved_paths:
@@ -1769,7 +1995,7 @@ def _process_pool(
                     _mark_pool_done()
                     break
                 elif raw == "q":
-                    return total_success, total_failed, True
+                    return totals, True
 
         # If no ID yet, prompt for one
         if anidb_id is None and tvdb_id is None:
@@ -1790,7 +2016,7 @@ def _process_pool(
                 _mark_pool_done()
                 break
             if raw.lower() == "q":
-                return total_success, total_failed, True
+                return totals, True
             anidb_id, tvdb_id = _parse_id_input(raw)
             if anidb_id is None and tvdb_id is None:
                 print(f"  Invalid ID '{raw}', try again.")
@@ -1803,6 +2029,10 @@ def _process_pool(
             pid = anidb_id if anidb_id is not None else tvdb_id
             assert pid is not None
 
+        # Warn if a dest dir already exists for this ID so the user can
+        # spot collisions before metadata fetch.
+        _notify_if_dest_exists(id_map, anidb_id, tvdb_id)
+
         # Fetch metadata
         try:
             info = fetch_anime_info(
@@ -1812,9 +2042,10 @@ def _process_pool(
             print(f"  Error fetching metadata: {e}")
             continue
 
-        # Update title alias index and re-match downloads
+        # Update title alias index and re-match downloads. Feed only
+        # index-safe titles so short aliases don't merge unrelated series.
         if title_index is not None:
-            new_titles = [t for t in (info.title_ja, info.title_en) if t]
+            new_titles = _index_safe_titles(info)
             if new_titles:
                 title_index.add_series(new_titles)
         if download_index is not None and download_index.by_series:
@@ -1839,7 +2070,7 @@ def _process_pool(
             if not matched:
                 print("  No files matched. Try another ID.")
                 continue
-            success, failed, triaged = _process_group_batch(
+            batch = _process_group_batch(
                 [],
                 info,
                 id_map,
@@ -1851,10 +2082,12 @@ def _process_pool(
                 season_override=1,
                 extras=extras,
                 config=config,
+                allow_prompts=not auto_accept_ids,
+                sub_lang=sub_lang,
             )
             extras = None  # extras go with the first AniDB season only
         else:
-            success, failed, triaged = _process_group_batch(
+            batch = _process_group_batch(
                 [],
                 info,
                 id_map,
@@ -1865,15 +2098,25 @@ def _process_pool(
                 pre_parsed=pool,
                 extras=extras,
                 config=config,
+                allow_prompts=not auto_accept_ids,
+                sub_lang=sub_lang,
             )
+            # TVDB consumes the entire pool in one batch (no per-season
+            # splitting like AniDB).  Triaged paths are tracked via
+            # batch.triaged below — this just empties the loop's pool.
             pool = []
 
-        print(f"\n  Done: {success} copied, {failed} skipped/failed")
-        total_success += success
-        total_failed += failed
+        print(
+            f"\n  Done: {batch.success} copied,"
+            f" {batch.skipped} skipped, {batch.failed} failed"
+        )
+        totals.success += batch.success
+        totals.skipped += batch.skipped
+        totals.failed += batch.failed
+        totals.triaged.extend(batch.triaged)
 
         # Save config mapping only after successful copy
-        if success > 0:
+        if batch.success > 0:
             pid = anidb_id if anidb_id is not None else tvdb_id
             if pid is not None:
                 _maybe_save_mapping(
@@ -1887,12 +2130,15 @@ def _process_pool(
                     concise_name=_strip_year(group_name),
                 )
 
-        if triaged and not dry_run:
-            for p in triaged:
+        if batch.triaged and not dry_run:
+            for p in batch.triaged:
                 already_copied.add(_resolve(p))
             _save_triage_manifest(already_copied)
 
-    return total_success, total_failed, False
+    # Count remaining pool files as skipped
+    totals.skipped += len(pool)
+
+    return totals, False
 
 
 def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
@@ -1965,6 +2211,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
     id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
     total_success = 0
+    total_skipped = 0
     total_failed = 0
 
     for series_path in series_dirs:
@@ -2013,7 +2260,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
                 title_index=title_index,
             )
 
-        success, failed, quit_all = _process_pool(
+        pool_result, quit_all = _process_pool(
             pool,
             group_name=series_path.name,
             id_queue=id_queue,
@@ -2027,15 +2274,18 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
             download_index=download_index,
             title_index=title_index,
             auto_accept_ids=True,
+            sub_lang=args.sub_lang,
         )
-        total_success += success
-        total_failed += failed
+        total_success += pool_result.success
+        total_skipped += pool_result.skipped
+        total_failed += pool_result.failed
 
         if quit_all:
             break
 
     print(
-        f"\nSeries sync complete: {total_success} copied, {total_failed} skipped/failed"
+        f"\nSeries sync complete: {total_success} copied,"
+        f" {total_skipped} skipped, {total_failed} failed"
     )
     return 0 if total_failed == 0 else 1
 
@@ -2092,7 +2342,15 @@ def run_episode(args: argparse.Namespace, config: AnimeConfig) -> int:
 
     print(f"\nSeries directory: {series_dir}")
 
-    if _process_file(sf, info, concise_name, series_dir, args.dry_run, args.verbose):
+    if _process_file(
+        sf,
+        info,
+        concise_name,
+        series_dir,
+        args.dry_run,
+        args.verbose,
+        sub_lang=args.sub_lang,
+    ):
         print("\nDone: 1 file copied")
         return 0
     else:
@@ -2140,6 +2398,8 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         print("No media files found in source directories.")
         return 0
 
+    total_files = sum(len(files) for files in groups.values())
+
     # Load manifest of previously copied files
     already_copied = _load_triage_manifest()
     manifest_size_at_start = len(already_copied)
@@ -2154,17 +2414,18 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     # Filter out already-copied files unless --force
     if not force and already_copied:
         filtered_groups: dict[str, list[Path]] = {}
-        skipped_total = 0
+        skipped_files = 0
         for name, files in groups.items():
             remaining = [f for f in files if resolved_paths[f] not in already_copied]
-            skipped = len(files) - len(remaining)
-            skipped_total += skipped
+            skipped_files += len(files) - len(remaining)
             if remaining:
                 filtered_groups[name] = remaining
-        if skipped_total:
-            print(
-                f"Skipping {skipped_total} previously copied file(s) (use --force to re-process)."
-            )
+        skipped_groups = len(groups) - len(filtered_groups)
+        if skipped_files:
+            parts = [f"Skipping {skipped_files} previously copied file(s)"]
+            if skipped_groups:
+                parts.append(f"{skipped_groups} fully-processed group(s)")
+            print(f"{', '.join(parts)} (use --force to re-process).")
         groups = filtered_groups
 
     if not groups:
@@ -2174,7 +2435,11 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     # Scan destination for existing series (once, reused across groups)
     id_map = _cached_scan_dest_ids(args.dest, no_cache=args.no_cache)
 
-    print(f"\nFound {len(groups)} group(s):")
+    remaining_files = sum(len(files) for files in groups.values())
+    print(
+        f"\n{len(groups)} group(s), {remaining_files} file(s) to process"
+        f" (of {total_files} total):"
+    )
     group_list = list(groups.items())
     for i, (name, files) in enumerate(group_list, 1):
         count = len(files)
@@ -2182,6 +2447,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
 
     # Process each group
     total_success = 0
+    total_skipped = 0
     total_failed = 0
     groups_processed = 0
 
@@ -2192,24 +2458,76 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
         for f in files:
             print(f"  {colorize_path(f.name)}")
 
-        # Parse all files upfront for the group
-        pool = _parse_files(files)
+        # The recursive scan pulls every video into `files`, including ones
+        # nested under an Extras/ subtree. Partition those out so they go
+        # through the extras prompt below instead of being pooled (and
+        # double-handled) as regular episodes.
+        extras_video = [f for f in files if extras_relpath(f) is not None]
+        pool_files = [f for f in files if extras_relpath(f) is None]
+        pool = _parse_files(pool_files)
 
-        # Collect non-video extras from the same directory
-        group_dir = files[0].parent if files else None
+        # Collect non-video extras: loose files beside the episodes, plus the
+        # non-video contents of any Extras/ subtree (videos already split into
+        # extras_video above).
         group_extras: list[Path] = []
-        if group_dir and group_dir.is_dir():
-            group_extras = [
+        group_dirs = {f.parent for f in pool_files}
+        extras_roots: set[Path] = set()
+        for d in sorted(group_dirs):
+            if not d.is_dir():
+                continue
+            group_extras += [
                 f
-                for f in group_dir.iterdir()
+                for f in d.iterdir()
                 if f.is_file() and f.suffix.lower() in _EXTRAS_EXTENSIONS
             ]
+            cand = d / "Extras"
+            if cand.is_dir():
+                extras_roots.add(cand)
+        # Extras roots reachable only from the extras videos themselves
+        # (e.g. episodes in Season 01/ but Extras at the batch root).
+        for v in extras_video:
+            for parent in v.parents:
+                if parent.name.lower() == "extras":
+                    extras_roots.add(parent)
+                    break
+        for root in sorted(extras_roots):
+            for r, _dirs, fnames in os.walk(root):
+                for name in fnames:
+                    p = Path(r) / name
+                    if p.suffix.lower() not in _VIDEO_EXTENSIONS:
+                        group_extras.append(p)
+        group_extras = list(dict.fromkeys(group_extras))
+
+        # Prompt for video files found in Extras/
+        if extras_video:
+            print(f"\n  Found {len(extras_video)} video file(s) in Extras/:")
+            for v in extras_video[:5]:
+                print(f"    {colorize_path(v.name)}")
+            if len(extras_video) > 5:
+                print(f"    ... and {len(extras_video) - 5} more")
+            raw = (
+                input(
+                    "\n  [e]xtras (copy as-is)  [s]pecials (edit in manifest)  [S]kip: "
+                )
+                .strip()
+                .lower()
+            )
+            if raw in ("e", "extras"):
+                group_extras.extend(extras_video)
+            elif raw in ("s", "specials"):
+                # Add video files to the main pool as specials
+                for v in extras_video:
+                    sf = parse_source_filename(v.name)
+                    sf.path = v
+                    sf.parsed.is_special = True
+                    pool.append(sf)
+            # else: skip — don't copy them
 
         id_queue = build_id_queue(name, config)
         if id_queue:
             print(f"  Known IDs: {', '.join(f'{p} {i}' for p, i in id_queue)}")
 
-        success, failed, quit_all = _process_pool(
+        pool_result, quit_all = _process_pool(
             pool,
             group_name=name,
             id_queue=id_queue,
@@ -2222,9 +2540,11 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
             already_copied=already_copied,
             extras=group_extras,
             resolved_paths=resolved_paths,
+            sub_lang=args.sub_lang,
         )
-        total_success += success
-        total_failed += failed
+        total_success += pool_result.success
+        total_skipped += pool_result.skipped
+        total_failed += pool_result.failed
 
         if quit_all:
             if not args.dry_run and len(already_copied) > manifest_size_at_start:
@@ -2241,9 +2561,42 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
     print(f"\n{'=' * 60}")
     print(
         f"Triage complete: {groups_processed} groups processed, "
-        f"{total_success} files copied, {total_failed} skipped/failed"
+        f"{total_success} copied, {total_skipped} skipped, {total_failed} failed"
     )
     return 0 if total_failed == 0 else 1
+
+
+def run_ingest(args: argparse.Namespace, config: AnimeConfig) -> int:
+    """Unified anime ingestion from Sonarr and/or downloads.
+
+    Neither flag passed → run both (Sonarr sync, then downloads triage for
+    leftovers). Either flag alone → run just that portion. Both flags
+    explicit → same as passing neither.
+    """
+    if not args.sonarr and not args.downloads:
+        args.sonarr = True
+        args.downloads = True
+
+    total_result = 0
+
+    if args.sonarr:
+        print("=" * 60)
+        print("Sonarr sync")
+        print("=" * 60)
+        # run_series expects args.source as a single Path; --source is a
+        # repeatable list (its first value applies to the Sonarr scan).
+        series_args = argparse.Namespace(**vars(args))
+        series_args.source = args.source[0] if args.source else None
+        total_result = max(total_result, run_series(series_args, config))
+
+    if args.downloads:
+        if args.sonarr:
+            print(f"\n{'=' * 60}")
+            print("Downloads triage")
+            print("=" * 60)
+        total_result = max(total_result, run_triage(args, config))
+
+    return total_result
 
 
 def main() -> int:
@@ -2269,9 +2622,19 @@ def main() -> int:
     if not args.dest:
         args.dest = config.anime_dest_dir
 
-    if args.command == "triage":
+    if args.command == "ingest":
+        return run_ingest(args, config)
+    elif args.command == "triage":
+        print(
+            "warning: 'triage' is deprecated, use 'ingest --downloads' instead.",
+            file=sys.stderr,
+        )
         return run_triage(args, config)
     elif args.command == "series":
+        print(
+            "warning: 'series' is deprecated, use 'ingest --sonarr' instead.",
+            file=sys.stderr,
+        )
         return run_series(args, config)
     elif args.command == "episode":
         return run_episode(args, config)

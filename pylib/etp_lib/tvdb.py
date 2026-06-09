@@ -14,6 +14,7 @@ from etp_lib.types import (
     AnimeInfo,
     Episode,
     EpisodeType,
+    dedup_titles,
 )
 
 _TVDB_API_BASE = "https://api4.thetvdb.com/v4"
@@ -56,17 +57,29 @@ def _parse_tvdb_json(
     canonical names take priority over the primary name and alias list.
     """
     name = series_data.get("name", "")
-    aliases = series_data.get("aliases", [])
+    raw_aliases = series_data.get("aliases", [])
     translations = translations or {}
 
     # Canonical translations are preferred; fall back to primary name / aliases.
     title_ja = translations.get("jpn") or name
     title_en = translations.get("eng") or ""
     if not title_en:
-        for alias in aliases:
+        for alias in raw_aliases:
             if alias.get("language") == "eng":
                 title_en = alias.get("name") or ""
                 break
+
+    # Collect all alias names (primary name + every alias from any language)
+    # so the matcher can recognize alternate transliterations like
+    # "Sousou no Frieren" vs the canonical "Frieren: After the Funeral".
+    alias_set = dedup_titles(
+        (
+            name,
+            title_ja,
+            title_en,
+            *(alias.get("name") or "" for alias in raw_aliases),
+        )
+    )
 
     year_str = series_data.get("year") or ""
     year = int(year_str) if year_str else 0
@@ -113,6 +126,7 @@ def _parse_tvdb_json(
         title_ja=title_ja,
         title_en=title_en,
         year=year,
+        aliases=alias_set,
         episodes=episodes,
     )
 

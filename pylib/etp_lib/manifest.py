@@ -23,11 +23,14 @@ from etp_lib.conflicts import (
 )
 from etp_lib.media_parser import normalize_for_matching, parse_component
 from etp_lib.naming import (
+    extras_relpath,
     format_episode_filename,
     format_series_dirname,
     season_subdir,
+    subtitle_sidecars,
 )
 from etp_lib.types import (
+    BatchResult,
     ConflictAction,
     AnimeInfo,
     BonusType,
@@ -36,6 +39,19 @@ from etp_lib.types import (
     ManifestEntry,
     SourceFile,
 )
+
+
+def _is_generic_episode_title(title: str, ep_number: int) -> bool:
+    """Return True for empty, 'TBA', or 'Episode N' placeholders."""
+    if not title:
+        return True
+    stripped = title.strip()
+    if stripped.upper() == "TBA":
+        return True
+    if re.match(rf"Episode\s+{ep_number}$", stripped, re.IGNORECASE):
+        return True
+    return False
+
 
 # HamaTV-compatible special episode ranges (from ScudLee anime-lists):
 #   S (Specials) = s0e1+, C (Credits) = s0e101+, T (Trailers) = s0e151+,
@@ -182,19 +198,37 @@ def match_episodes(
                 special_tag = ep.special_tag
                 season = 0
         elif ep_number is not None and not is_special:
-            episode_name = info.find_episode_title(ep_number, season)
-            # Replace generic "Episode N" placeholders with the actual title
-            # from the downloaded or sonarr filename, in that order.
-            _is_generic = not episode_name or re.match(
-                rf"Episode\s+{ep_number}$", episode_name, re.IGNORECASE
-            )
-            if _is_generic:
+            if sf.parsed.episodes and len(sf.parsed.episodes) > 1:
+                # Sonarr uses " + " between titles in multi-episode filenames.
+                # Normalize each component so a per-episode "TBA"/"Episode N"
+                # placeholder doesn't leak into the joined title.
+                parts: list[str] = []
+                for n in sf.parsed.episodes:
+                    part = info.find_episode_title(n, season)
+                    if _is_generic_episode_title(part, n):
+                        part = f"Episode {n}"
+                    parts.append(part)
+                episode_name = " + ".join(parts)
+            else:
+                episode_name = info.find_episode_title(ep_number, season)
+            # Replace missing / TBA / generic "Episode N" placeholders with
+            # the title from the Sonarr-side source filename first (since
+            # Sonarr names tend to carry the canonical episode title), then
+            # fall back to the downloaded filename.
+            if _is_generic_episode_title(episode_name, ep_number):
                 download_title = ""
                 if sf.matched_download is not None:
                     download_title = parse_component(
                         sf.matched_download.name
                     ).episode_title
-                episode_name = download_title or episode_title or episode_name
+                sonarr_title = (
+                    episode_title
+                    if not _is_generic_episode_title(episode_title, ep_number)
+                    else ""
+                )
+                episode_name = (
+                    sonarr_title or download_title or episode_title or episode_name
+                )
         elif ep_number is not None and is_special and bonus_type:
             available = [
                 ep for ep in specials if ep.special_tag not in matched_special_tags
@@ -255,7 +289,30 @@ def match_episodes(
                 sf.parsed.episode = ep_number
                 sf.parsed.season = 0
 
-        if ep_number is None:
+        if info.is_movie and not is_special:
+            # Movies land at the series root with a "complete movie" filename.
+            # AniDB movie entries have a single episode, so a missing episode
+            # number just means "the movie" — no (todo) needed.
+            filename = format_episode_filename(
+                concise_name=concise_name,
+                season=season,
+                episode=ep_number or 1,
+                episode_name="",
+                source=sf,
+                is_movie=True,
+                movie_dir_name=series_dir.name,
+            )
+            entries.append(
+                ManifestEntry(
+                    source=sf,
+                    dest_path=series_dir / filename,
+                    hash_failed=False,
+                    episode_name=episode_name,
+                    season=season,
+                    is_movie=True,
+                )
+            )
+        elif ep_number is None:
             placeholder = format_episode_filename(
                 concise_name=concise_name,
                 season=season,
@@ -274,6 +331,7 @@ def match_episodes(
                     is_todo=True,
                     hash_failed=False,
                     episode_name=episode_name,
+                    season=season,
                     is_special=is_special,
                     special_tag=special_tag,
                 )
@@ -287,6 +345,7 @@ def match_episodes(
                 source=sf,
                 is_special=is_special,
                 special_tag=special_tag,
+                episodes=sf.parsed.episodes if not is_special else None,
             )
             dest_dir = season_subdir(series_dir, season, is_special)
             entries.append(
@@ -296,6 +355,7 @@ def match_episodes(
                     is_todo=is_unmatched_special,
                     hash_failed=False,
                     episode_name=episode_name,
+                    season=season,
                     is_special=is_special,
                     special_tag=special_tag,
                 )
@@ -352,10 +412,16 @@ def enrich_manifest_entries(
                 source=sf,
                 is_special=entry.is_special,
                 special_tag=entry.special_tag,
+                episodes=sf.parsed.episodes if not entry.is_special else None,
+                is_movie=entry.is_movie,
+                movie_dir_name=series_dir.name if entry.is_movie else "",
             )
-            entry.dest_path = (
-                season_subdir(series_dir, season, entry.is_special) / filename
-            )
+            if entry.is_movie:
+                entry.dest_path = series_dir / filename
+            else:
+                entry.dest_path = (
+                    season_subdir(series_dir, season, entry.is_special) / filename
+                )
 
 
 def build_manifest_entries(
@@ -393,16 +459,18 @@ def write_manifest(
 
     dirname = format_series_dirname(info.title_ja, info.title_en, info.year)
 
-    # Group entries by season/specials
+    # Group entries by season/specials/movie. Keys are derived from the
+    # entry's own flags and season number — never reverse-parsed from the
+    # destination directory name — so the on-disk layout stays owned solely
+    # by season_subdir().
     groups: dict[str, list[ManifestEntry]] = {}
     for entry in entries:
-        # Determine group key from the destination path
-        dest_parent = entry.dest_path.parent.name
-        if dest_parent == "Specials":
+        if entry.is_movie:
+            key = "movie"
+        elif entry.is_special:
             key = "specials"
         else:
-            # "Season 01" -> season number
-            key = dest_parent
+            key = f"season:{entry.season}"
         groups.setdefault(key, []).append(entry)
 
     # Build KDL document as text (easier than constructing Node objects
@@ -428,9 +496,11 @@ def write_manifest(
         )
         if group_key == "specials":
             lines.append("specials {")
+        elif group_key == "movie":
+            lines.append("movie {")
         else:
-            # "Season 01" -> season 1
-            season_num = group_key.replace("Season ", "").lstrip("0") or "0"
+            # "season:1" -> season 1
+            season_num = group_key.split(":", 1)[1]
             lines.append(f"season {season_num} {{")
 
         for entry in group_entries:
@@ -461,12 +531,17 @@ def write_manifest(
         lines.append("}")
         lines.append("")
 
-    # Non-video extras (CDs, scans, etc.) — user can delete entries to skip
+    # Non-video extras (CDs, scans, etc.) — user can delete entries to skip.
+    # Extras from nested subdirectories (e.g., Extras/OST/ED/track.flac)
+    # preserve their relative path structure under the destination Extras/.
     if extras:
         lines.append("extras {")
-        for f in sorted(extras, key=lambda p: p.name):
+        for f in sorted(extras, key=lambda p: str(p)):
+            # Preserve subdirectory structure from an Extras/ parent.
+            rel = extras_relpath(f)
+            dest_name = str(rel) if rel is not None else f.name
             lines.append(f'  file "{escape_kdl(str(f))}" {{')
-            lines.append(f'    dest "{escape_kdl(f.name)}"')
+            lines.append(f'    dest "{escape_kdl(dest_name)}"')
             lines.append("  }")
         lines.append("}")
         lines.append("")
@@ -580,6 +655,9 @@ def parse_manifest(
         # Determine destination subdirectory
         if group_node.name == "specials":
             dest_subdir = season_subdir(series_dir, 0, is_special=True)
+        elif group_node.name == "movie":
+            # Movies land at the series root — no Season NN / Specials subdir.
+            dest_subdir = series_dir
         elif group_node.name == "season" and group_node.args:
             try:
                 season_num = int(group_node.args[0])
@@ -657,24 +735,23 @@ def execute_manifest(
     verbose: bool,
     parse_source_filename_fn=None,
     analyze_file_fn=None,
-) -> tuple[int, int, list[Path]]:
+    sub_lang: str = "en",
+) -> BatchResult:
     """Execute the parsed manifest: copy each file to its destination.
 
-    Returns ``(success, failed, triaged_paths)`` -- triaged_paths includes
-    files that were kept, skipped, or copied (all are marked as processed).
+    After a video copies successfully, any subtitle sidecars sharing its source
+    base name ride along, renamed to the video's *final* destination base name
+    (so they follow manifest edits and conflict-suffixing). Untagged sidecars
+    are tagged with *sub_lang*.
     """
-    success = 0
-    failed = 0
-    triaged_paths: list[Path] = []
+    result = BatchResult()
 
     for sf, dest_path in entries:
-        # Check filename length before attempting any operations
         dest_path = _check_filename_length(dest_path)
 
         if verbose:
             print(f"  {sf.path.name} -> {dest_path}")
 
-        # Check for existing file at destination
         if not dry_run:
             action = handle_conflict(
                 sf,
@@ -682,17 +759,15 @@ def execute_manifest(
                 parse_source_filename_fn=parse_source_filename_fn,
                 analyze_file_fn=analyze_file_fn,
             )
-            if action in (ConflictAction.KEEP, ConflictAction.SKIP):
-                triaged_paths.append(sf.path)
-                if action == ConflictAction.SKIP:
-                    failed += 1
-                else:
-                    success += 1
+            if action == ConflictAction.SKIP:
+                result.skipped += 1
+                result.triaged.append(sf.path)
+                continue
+            if action == ConflictAction.KEEP:
+                result.success += 1
+                result.triaged.append(sf.path)
                 continue
             if action == ConflictAction.BOTH:
-                # Keep existing. If dest already exists (same filename from
-                # matching metadata), disambiguate by appending the source
-                # file's CRC32 to the filename.
                 if dest_path.exists():
                     crc = sf.parsed.hash_code
                     if not crc:
@@ -702,25 +777,52 @@ def execute_manifest(
                     ext = dest_path.suffix
                     dest_path = dest_path.parent / f"{stem} [{crc}]{ext}"
 
+        copied = False
         try:
             if copy_reflink(sf.path, dest_path, dry_run=dry_run):
-                success += 1
-                triaged_paths.append(sf.path)
+                result.success += 1
+                result.triaged.append(sf.path)
+                copied = True
             else:
-                failed += 1
+                result.failed += 1
         except OSError as e:
             if e.errno == errno.ENAMETOOLONG:
                 dest_path = _check_filename_length(dest_path)
                 if copy_reflink(sf.path, dest_path, dry_run=dry_run):
-                    success += 1
-                    triaged_paths.append(sf.path)
+                    result.success += 1
+                    result.triaged.append(sf.path)
+                    copied = True
                 else:
-                    failed += 1
+                    result.failed += 1
             else:
                 print(f"  error: {e}", file=sys.stderr)
-                failed += 1
+                result.failed += 1
 
-    return success, failed, triaged_paths
+        if copied:
+            copy_subtitle_sidecars(sf.path, dest_path, sub_lang, dry_run, verbose)
+
+    return result
+
+
+def copy_subtitle_sidecars(
+    source_video: Path,
+    dest_video: Path,
+    sub_lang: str,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    """Copy subtitle sidecars alongside an already-placed video.
+
+    Failures are reported but never abort the batch — a missing or
+    over-long sidecar must not stop the episodes from importing.
+    """
+    for sub_src, sub_dst in subtitle_sidecars(source_video, dest_video, sub_lang):
+        if verbose:
+            print(f"    subtitle: {sub_src.name} -> {sub_dst.name}")
+        try:
+            copy_reflink(sub_src, sub_dst, dry_run=dry_run)
+        except OSError as e:
+            print(f"    warning: subtitle copy failed: {sub_src.name}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -740,11 +842,11 @@ class ManifestWorkflow:
 
         wf = ManifestWorkflow(parsed, info, concise_name, series_dir,
                               verbose=True, analyze_file_fn=analyze_file)
-        success, failed, triaged = wf.run(
+        result = wf.run_workflow(
             dry_run=False,
             extras=extras,
             parse_source_filename_fn=parse_source_filename,
-        )
+        )  # -> BatchResult
     """
 
     def __init__(
@@ -755,6 +857,7 @@ class ManifestWorkflow:
         series_dir: Path,
         verbose: bool = False,
         analyze_file_fn=None,
+        sub_lang: str = "en",
     ) -> None:
         self.parsed = parsed
         self.info = info
@@ -762,6 +865,7 @@ class ManifestWorkflow:
         self.series_dir = series_dir
         self.verbose = verbose
         self.analyze_file_fn = analyze_file_fn
+        self.sub_lang = sub_lang
 
         self.entries: list[ManifestEntry] = []
         self.manifest_path: Path | None = None
@@ -902,7 +1006,7 @@ class ManifestWorkflow:
         rename_entries: list[tuple[Path, Path]],
         dry_run: bool,
         parse_source_filename_fn=None,
-    ) -> tuple[int, int, list[Path]]:
+    ) -> BatchResult:
         """Execute the manifest: copy files, extras, and renames."""
         print(f"\n  Copying {len(parsed_entries)} file(s)...")
         result = execute_manifest(
@@ -911,6 +1015,7 @@ class ManifestWorkflow:
             self.verbose,
             parse_source_filename_fn=parse_source_filename_fn,
             analyze_file_fn=self.analyze_file_fn,
+            sub_lang=self.sub_lang,
         )
 
         if extra_entries:
@@ -965,11 +1070,8 @@ class ManifestWorkflow:
         extras: list[Path] | None = None,
         renames: list[tuple[Path, Path]] | None = None,
         parse_source_filename_fn=None,
-    ) -> tuple[int, int, list[Path]]:
-        """Run the full workflow: build → write → edit → execute → cleanup.
-
-        Returns ``(success, failed, triaged_paths)``.
-        """
+    ) -> BatchResult:
+        """Run the full workflow: build → write → edit → execute → cleanup."""
         self.build()
         self.write(extras=extras, renames=renames)
         file_count = len(self.parsed)
@@ -979,7 +1081,7 @@ class ManifestWorkflow:
 
         result = self.confirm_and_parse()
         if result is None:
-            return 0, file_count, []
+            return BatchResult(skipped=file_count)
         parsed_entries, extra_entries, rename_entries = result
 
         return self.execute(

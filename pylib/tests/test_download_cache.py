@@ -111,6 +111,39 @@ class TestSaveAndLoad:
         assert loaded.groups == {"S": [Path("/s/ep.mkv")]}
         assert loaded.download_index.file_count == 1
 
+    def test_dir_mtimes_preserved_when_saving_dest_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving dest_ids doesn't clobber existing dir_mtimes for downloads."""
+        cache_file = tmp_path / "test.msgpack"
+        monkeypatch.setattr("etp_lib.download_cache.cache_path", lambda: cache_file)
+
+        # First save: download index with its dir_mtimes
+        save_cache(
+            DownloadCache(
+                download_index=DownloadIndex(
+                    by_series={"k": [(1, 1, Path("/dl/a.mkv"), 100)]}, file_count=1
+                ),
+                dir_mtimes={"/dl": 1000, "/dl/sub": 2000},
+            )
+        )
+
+        # Second save: dest_ids only (no dir_mtimes set)
+        save_cache(
+            DownloadCache(
+                dest_ids={("anidb", 1): "/dest/series"},
+                dest_mtimes={"/dest": 3000},
+            )
+        )
+
+        # The downloads dir_mtimes should still be there
+        loaded = load_cache()
+        assert loaded is not None
+        assert loaded.dir_mtimes == {"/dl": 1000, "/dl/sub": 2000}
+        assert loaded.dest_mtimes == {"/dest": 3000}
+        assert loaded.download_index.file_count == 1
+        assert loaded.dest_ids == {("anidb", 1): "/dest/series"}
+
     def test_dest_ids_round_trip(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
