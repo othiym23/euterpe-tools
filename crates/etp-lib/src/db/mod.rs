@@ -222,7 +222,7 @@ mod tests {
     /// representation: Vec of (column_name, type, notnull, default, pk).
     async fn table_columns(pool: &SqlitePool, table: &str) -> Vec<String> {
         let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
-            sqlx::query_as(&format!("PRAGMA table_info('{table}')"))
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("PRAGMA table_info('{table}')")))
                 .fetch_all(pool)
                 .await
                 .unwrap();

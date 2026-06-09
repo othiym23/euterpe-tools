@@ -524,7 +524,7 @@ fn bind_find_query(
     scan_id: Option<i64>,
     pattern: &str,
     exclude_system_re: Option<&str>,
-) -> sqlx::query::QueryAs<'static, sqlx::Sqlite, RawRow, sqlx::sqlite::SqliteArguments<'static>> {
+) -> sqlx::query::QueryAs<'static, sqlx::Sqlite, RawRow, sqlx::sqlite::SqliteArguments> {
     let query = find_query_str(scan_id.is_some(), exclude_system_re.is_some());
     let mut q = sqlx::query_as::<_, RawRow>(query);
     if let Some(id) = scan_id {
@@ -798,7 +798,8 @@ pub async fn files_needing_metadata_scan(
          ORDER BY d.path, f.filename"
     );
 
-    let mut q = sqlx::query_as::<_, (i64, String, String, String, i64)>(&query).bind(scan_id);
+    let mut q = sqlx::query_as::<_, (i64, String, String, String, i64)>(sqlx::AssertSqlSafe(query))
+        .bind(scan_id);
     for ext in extensions {
         q = q.bind(format!("%.{ext}"));
     }
@@ -1022,11 +1023,12 @@ pub async fn list_files_in_directory(
          JOIN scans s ON d.scan_id = s.id
          WHERE d.scan_id = ? AND {FULL_PATH_SQL} LIKE ?"
     );
-    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(&query)
-        .bind(scan_id)
-        .bind(&pattern)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<(String, String, String, i64, i64, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(scan_id)
+            .bind(&pattern)
+            .fetch_all(pool)
+            .await?;
     Ok(rows
         .into_iter()
         .map(|(root, dir_path, filename, size, ctime, mtime)| {
@@ -1063,7 +1065,7 @@ pub async fn find_file_id_by_path_suffix(
            AND ({FULL_PATH_SQL}) LIKE ?
          LIMIT 1"
     );
-    let row: Option<(i64,)> = sqlx::query_as(&query)
+    let row: Option<(i64,)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
         .bind(scan_id)
         .bind(&pattern)
         .fetch_optional(pool)
@@ -1109,7 +1111,7 @@ pub async fn find_files_by_tag(
         )
     };
 
-    let mut q = sqlx::query_as::<_, (String, String)>(&query);
+    let mut q = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(query));
     if needs_scan_id {
         q = q.bind(scan_id.unwrap());
     }
@@ -1172,7 +1174,9 @@ pub async fn query_files_where(
          WHERE {where_clause}
          ORDER BY d.path, f.filename"
     );
-    let rows: Vec<(String,)> = sqlx::query_as(&query).fetch_all(pool).await?;
+    let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+        .fetch_all(pool)
+        .await?;
     Ok(rows.into_iter().map(|(p,)| p).collect())
 }
 
