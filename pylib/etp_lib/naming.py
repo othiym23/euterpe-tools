@@ -237,6 +237,99 @@ def format_episode_filename(
 
 
 # ---------------------------------------------------------------------------
+# Movie / television naming (Plex conventions, Jellyfin-compatible)
+# ---------------------------------------------------------------------------
+#
+# Provider IDs use Plex's curly-brace syntax ({tmdb-NNN}, {tvdb-NNN}) with
+# only the primary provider's ID embedded: TMDB for movies, TheTVDB for
+# television. Editions use Plex's {edition-Name} marker. The bracketed
+# quality block is ignored by both Plex and Jellyfin during matching.
+
+
+def _title_year(title: str, year: int) -> str:
+    """``Title (Year)``, omitting the year suffix when it is unknown."""
+    title = _sanitize_path(_strip_redundant_year(title, year))
+    return f"{title} ({year})" if year else title
+
+
+def format_movie_dirname(
+    title: str, year: int, tmdb_id: int | None, edition: str = ""
+) -> str:
+    """Build a movie directory name: ``Title (Year) {tmdb-NNN} {edition-X}``.
+
+    Plex recommends edition markers of at most 32 characters; longer ones
+    are embedded as-is and left to plan-time validation to flag.
+    """
+    name = _title_year(title, year)
+    if tmdb_id:
+        name += f" {{tmdb-{tmdb_id}}}"
+    if edition:
+        name += f" {{edition-{_sanitize_path(edition)}}}"
+    return name
+
+
+def format_movie_filename(movie_dirname: str, source: SourceFile) -> str:
+    """Build a movie filename: the directory name plus the quality block.
+
+    Plex's movie naming wants the file named exactly after its folder;
+    the bracketed metadata block and any release hash are appended after
+    since bracketed text is ignored during matching.
+    """
+    ext = source.path.suffix or ".mkv"
+    metadata = build_metadata_block(source)
+    meta_str = f" [{metadata}]" if metadata else ""
+    hash_str = f" [{source.parsed.hash_code}]" if source.parsed.hash_code else ""
+    return f"{movie_dirname}{meta_str}{hash_str}{ext}"
+
+
+def format_tv_series_dirname(title: str, year: int, tvdb_id: int | None) -> str:
+    """Build a series directory name: ``Title (Year) {tvdb-NNN}``."""
+    name = _title_year(title, year)
+    if tvdb_id:
+        name += f" {{tvdb-{tvdb_id}}}"
+    return name
+
+
+def _format_padded_episode_tag(
+    season: int, episode: int, episodes: list[int] | None
+) -> str:
+    """Zero-padded ``s01e02`` tag (multi-episode files: ``s01e02-e03``).
+
+    Unlike the anime tag (``s1e02``), the season is zero-padded per the
+    Plex/Jellyfin TV naming examples; specials use season 0 (``s00e05``).
+    """
+    if episodes and len(episodes) > 1:
+        return f"s{season:02d}e{episodes[0]:02d}-e{episodes[-1]:02d}"
+    return f"s{season:02d}e{episode:02d}"
+
+
+def format_tv_episode_filename(
+    series_title: str,
+    year: int,
+    season: int,
+    episode: int,
+    episode_name: str,
+    source: SourceFile,
+    episodes: list[int] | None = None,
+) -> str:
+    """Build a TV episode filename.
+
+    ``Show (Year) - s01e01 - Episode Title [quality block] [hash].ext``
+    """
+    ext = source.path.suffix or ".mkv"
+    metadata = build_metadata_block(source)
+    meta_str = f" [{metadata}]" if metadata else ""
+    hash_str = f" [{source.parsed.hash_code}]" if source.parsed.hash_code else ""
+
+    base = f"{_title_year(series_title, year)} - "
+    base += _format_padded_episode_tag(season, episode, episodes)
+    episode_name = _sanitize_path(episode_name)
+    if episode_name:
+        base += f" - {episode_name}"
+    return f"{base}{meta_str}{hash_str}{ext}"
+
+
+# ---------------------------------------------------------------------------
 # Directory naming
 # ---------------------------------------------------------------------------
 

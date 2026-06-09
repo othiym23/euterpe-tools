@@ -8,10 +8,35 @@ from etp_lib.naming import (
     build_metadata_block,
     extras_relpath,
     format_episode_filename,
+    format_movie_dirname,
+    format_movie_filename,
     format_series_dirname,
+    format_tv_episode_filename,
+    format_tv_series_dirname,
     subtitle_sidecars,
 )
 from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
+
+
+def make_western_source(**parsed_overrides: object) -> SourceFile:
+    """A typical western-release source file for movie/TV naming tests."""
+    parsed = ParsedMetadata(release_group="NTb", source_type="Web")
+    for key, value in parsed_overrides.items():
+        setattr(parsed, key, value)
+    return SourceFile(
+        path=Path("source.mkv"),
+        parsed=parsed,
+        media=MediaInfo(
+            video_codec="AVC",
+            resolution="1080p",
+            width=1920,
+            height=1080,
+            bit_depth=8,
+            hdr_type="",
+            audio_tracks=[AudioTrack("EAC3", "en", "English", False)],
+            encoding_lib="x264",
+        ),
+    )
 
 
 class TestSubtitleSidecars:
@@ -470,3 +495,123 @@ class TestDirectoryNaming:
         result = format_series_dirname("BEASTARS", "", 2019)
         assert "[]" not in result
         assert result == "BEASTARS (2019)"
+
+
+class TestFormatMovieDirname:
+    """Tests for Plex-convention movie directory naming."""
+
+    def test_basic(self):
+        assert format_movie_dirname("Heat", 1995, 949) == "Heat (1995) {tmdb-949}"
+
+    def test_no_id(self):
+        assert format_movie_dirname("Heat", 1995, None) == "Heat (1995)"
+
+    def test_edition(self):
+        result = format_movie_dirname("Blade Runner", 1982, 78, edition="Final Cut")
+        assert result == "Blade Runner (1982) {tmdb-78} {edition-Final Cut}"
+
+    def test_edition_without_id(self):
+        result = format_movie_dirname("Blade Runner", 1982, None, edition="Final Cut")
+        assert result == "Blade Runner (1982) {edition-Final Cut}"
+
+    def test_unknown_year_omitted(self):
+        assert format_movie_dirname("Mystery", 0, 123) == "Mystery {tmdb-123}"
+
+    def test_sanitizes_title(self):
+        result = format_movie_dirname("Face/Off: Redux", 1997, 754)
+        assert result == "Face - Off- Redux (1997) {tmdb-754}"
+
+    def test_redundant_year_stripped(self):
+        assert format_movie_dirname("Heat (1995)", 1995, 949) == (
+            "Heat (1995) {tmdb-949}"
+        )
+
+
+class TestFormatMovieFilename:
+    """Tests for movie filenames (named exactly after the folder)."""
+
+    def test_dirname_plus_block(self):
+        source = make_western_source()
+        result = format_movie_filename("Heat (1995) {tmdb-949}", source)
+        assert result == "Heat (1995) {tmdb-949} [NTb Web,1080p,AVC,x264,EAC3].mkv"
+
+    def test_no_complete_movie_marker(self):
+        source = make_western_source()
+        result = format_movie_filename("Heat (1995) {tmdb-949}", source)
+        assert "complete movie" not in result
+
+    def test_hash_appended(self):
+        source = make_western_source(hash_code="ABCD1234")
+        result = format_movie_filename("Heat (1995) {tmdb-949}", source)
+        assert result.endswith("[ABCD1234].mkv")
+
+    def test_extension_from_source(self):
+        source = make_western_source()
+        source.path = Path("source.mp4")
+        assert format_movie_filename("Heat (1995)", source).endswith(".mp4")
+
+    def test_no_media_info(self):
+        source = make_western_source()
+        source.media = None
+        assert format_movie_filename("Heat (1995)", source) == "Heat (1995).mkv"
+
+
+class TestFormatTvSeriesDirname:
+    """Tests for Plex-convention series directory naming."""
+
+    def test_basic(self):
+        result = format_tv_series_dirname("Severance", 2022, 371980)
+        assert result == "Severance (2022) {tvdb-371980}"
+
+    def test_no_id(self):
+        assert format_tv_series_dirname("Severance", 2022, None) == "Severance (2022)"
+
+    def test_unknown_year_omitted(self):
+        assert format_tv_series_dirname("Mystery", 0, 5) == "Mystery {tvdb-5}"
+
+    def test_redundant_year_stripped(self):
+        result = format_tv_series_dirname("ONE PIECE (2023)", 2023, 393190)
+        assert result == "ONE PIECE (2023) {tvdb-393190}"
+
+
+class TestFormatTvEpisodeFilename:
+    """Tests for TV episode filenames (zero-padded season tags)."""
+
+    def test_basic(self):
+        source = make_western_source()
+        result = format_tv_episode_filename(
+            "Severance", 2022, 1, 1, "Good News About Hell", source
+        )
+        assert result == (
+            "Severance (2022) - s01e01 - Good News About Hell "
+            "[NTb Web,1080p,AVC,x264,EAC3].mkv"
+        )
+
+    def test_season_zero_padded(self):
+        source = make_western_source()
+        result = format_tv_episode_filename("Show", 2020, 12, 3, "Ep", source)
+        assert " - s12e03 - " in result
+
+    def test_specials_use_season_zero(self):
+        source = make_western_source()
+        result = format_tv_episode_filename("Show", 2020, 0, 5, "Bonus", source)
+        assert " - s00e05 - " in result
+
+    def test_multi_episode_range(self):
+        source = make_western_source()
+        result = format_tv_episode_filename(
+            "Show", 2020, 1, 5, "Two-Parter", source, episodes=[5, 6]
+        )
+        assert " - s01e05-e06 - " in result
+
+    def test_no_episode_title(self):
+        source = make_western_source()
+        result = format_tv_episode_filename("Show", 2020, 1, 1, "", source)
+        assert result == "Show (2020) - s01e01 [NTb Web,1080p,AVC,x264,EAC3].mkv"
+
+    def test_sanitizes_episode_title(self):
+        source = make_western_source()
+        result = format_tv_episode_filename(
+            "Show", 2020, 1, 1, "Either/Or: Part 1", source
+        )
+        assert " - Either - Or- Part 1 " in result
