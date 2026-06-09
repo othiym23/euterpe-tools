@@ -181,6 +181,15 @@ def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Pa
     return series_dir / f"Season {season:02d}"
 
 
+def crc_suffixed(dest: Path, crc: str) -> Path:
+    """Disambiguate *dest* with a CRC32 suffix: ``name [ABCD1234].ext``.
+
+    The keep-both convention shared by the anime manifest executor and
+    the movies/television apply path.
+    """
+    return dest.parent / f"{dest.stem} [{crc}]{dest.suffix}"
+
+
 def _format_episode_tag(season: int, episode: int, episodes: list[int] | None) -> str:
     """Format the sXeYY portion of an episode filename.
 

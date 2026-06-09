@@ -80,6 +80,10 @@ _MEDIA_EXTENSIONS = _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS
 # (qBittorrent, SABnzbd, etc.) use these for in-progress files that
 # shouldn't be triaged.
 _SCAN_EXCLUDE_DIRS = frozenset({"temp", ".tmp", "incomplete", ".incomplete"})
+
+# PVR tool names that their own naming templates leave where a release
+# group would appear ("[Radarr Remux-1080p,...]") — not real groups.
+_PVR_TOOL_NAMES = frozenset({"Radarr", "Sonarr"})
 _ALL_EXTENSIONS = frozenset(
     {".mkv", ".mp4", ".avi", ".rar", ".iso", ".zip", ".7z", ".webdl"}
 )

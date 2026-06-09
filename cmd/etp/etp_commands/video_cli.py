@@ -24,8 +24,8 @@ from pathlib import Path
 from etp_lib import paths as etp_paths
 from etp_lib.envfile import load_env_file
 from etp_lib.media_config import MediaConfigError, load_media_config
-from etp_lib.types import MetadataProvider
 from etp_lib.video_ingest import (
+    API_KEY_ENV,
     ApplyOptions,
     MediaKind,
     PlanOptions,
@@ -35,11 +35,6 @@ from etp_lib.video_ingest import (
 )
 
 VERSION = "0.1.0"
-
-_KEY_ENV = {
-    MetadataProvider.TMDB: "TMDB_API_KEY",
-    MetadataProvider.TVDB: "TVDB_API_KEY",
-}
 
 
 def build_parser(kind: MediaKind) -> argparse.ArgumentParser:
@@ -160,8 +155,8 @@ def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
 
     # Only the primary provider's key is required; without the secondary
     # key, cross-checks degrade to "unavailable" (a warning, never fatal).
-    primary = _KEY_ENV[kind.primary_provider]
-    secondary = next(v for v in _KEY_ENV.values() if v != primary)
+    primary = API_KEY_ENV[kind.primary_provider]
+    secondary = next(v for v in API_KEY_ENV.values() if v != primary)
     if not os.environ.get(primary):
         print(
             f"error: {primary} not set (configure in {etp_paths.media_env()})",

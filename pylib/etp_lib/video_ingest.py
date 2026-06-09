@@ -49,13 +49,15 @@ from etp_lib.ingest_register import load_register, save_register
 from etp_lib.manifest import _MAX_FILENAME_BYTES, copy_subtitle_sidecars, escape_kdl
 from etp_lib.media_config import lookup_mapping
 from etp_lib.media_scanner import iter_media_files, parse_source_filename
+from etp_lib.media_vocab import _PVR_TOOL_NAMES
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
+    crc_suffixed,
     format_movie_dirname,
-    normalize_title,
     format_movie_filename,
     format_tv_episode_filename,
     format_tv_series_dirname,
+    normalize_title,
     season_subdir,
 )
 from etp_lib.types import (
@@ -220,7 +222,7 @@ def _scan_managed_file(
     sf.path = path
     # Radarr/Sonarr naming templates leave their own name where a release
     # group would appear ("[Radarr Remux-1080p,...]"); it is not a group.
-    if sf.parsed.release_group in ("Radarr", "Sonarr"):
+    if sf.parsed.release_group in _PVR_TOOL_NAMES:
         sf.parsed.release_group = ""
 
     if kind is MediaKind.MOVIE:
@@ -276,19 +278,14 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         title = pm.series_name
         alt = pm.series_name_alt
         year = pm.year or 0
-        if path.parent not in roots:
-            # A torrent directory often carries the descriptive name while
-            # the file inside is abbreviated. Prefer the directory when the
-            # filename gave nothing, or (for movies) when only the directory
-            # parse found a release year.
+        # A torrent directory often carries the descriptive name while the
+        # file inside is abbreviated. Prefer the directory when the filename
+        # gave nothing, or (for movies) when only the directory parse finds
+        # a release year. Only parse the directory when it could matter.
+        dir_might_help = not title or (kind is MediaKind.MOVIE and not year)
+        if dir_might_help and path.parent not in roots:
             dir_pm = media_parser.parse_component(path.parent.name)
-            use_dir = not title or (
-                kind is MediaKind.MOVIE
-                and not year
-                and dir_pm.series_name
-                and dir_pm.year
-            )
-            if use_dir:
+            if not title or (dir_pm.series_name and dir_pm.year):
                 title = dir_pm.series_name
                 alt = dir_pm.series_name_alt
                 year = dir_pm.year or 0
@@ -339,6 +336,13 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
 # ---------------------------------------------------------------------------
 # Provider resolution
 # ---------------------------------------------------------------------------
+
+
+# Environment variable carrying each provider's API key (see media.env).
+API_KEY_ENV = {
+    MetadataProvider.TMDB: "TMDB_API_KEY",
+    MetadataProvider.TVDB: "TVDB_API_KEY",
+}
 
 
 @dataclass
@@ -875,11 +879,11 @@ def _episode_title(info: AnimeInfo, season: int, number: int | None) -> str:
 def _check_entry_placement(entry: FileEntry, dest_root: Path, dest_dir: str) -> None:
     """Plan-time checks shared by all entries: length limits, conflicts."""
     dest_path = dest_root / dest_dir / entry.dest
-    if len(dest_path.name.encode("utf-8")) > _MAX_FILENAME_BYTES:
+    name_bytes = len(dest_path.name.encode("utf-8"))
+    if name_bytes > _MAX_FILENAME_BYTES:
         entry.status = EntryStatus.SKIP
         entry.note = (
-            f"destination filename is {len(dest_path.name.encode('utf-8'))} bytes"
-            f" (max {_MAX_FILENAME_BYTES})"
+            f"destination filename is {name_bytes} bytes (max {_MAX_FILENAME_BYTES})"
         )
         return
     if dest_path.exists():
@@ -1181,6 +1185,14 @@ def run_plan(
     return 0
 
 
+def _dest_key(dest_dir: str, dest: str) -> tuple[str, str]:
+    """Collision key for a destination, shared by the plan and apply checks.
+
+    Casefolded so colliders are caught even on case-insensitive mounts.
+    """
+    return (dest_dir.casefold(), dest.casefold())
+
+
 def _mark_duplicate_dests(manifest: PlanManifest) -> None:
     """Skip entries whose destination collides with an earlier entry.
 
@@ -1197,8 +1209,7 @@ def _mark_duplicate_dests(manifest: PlanManifest) -> None:
                 continue
             if not entry.dest:
                 continue
-            key = (block.dest_dir.casefold(), entry.dest.casefold())
-            first = seen.setdefault(key, entry.source)
+            first = seen.setdefault(_dest_key(block.dest_dir, entry.dest), entry.source)
             if first != entry.source:
                 entry.status = EntryStatus.SKIP
                 entry.conflict = None
@@ -1287,10 +1298,10 @@ def _validate_apply(manifest: PlanManifest) -> tuple[list[str], int]:
             if not src.is_file():
                 problems.append(f"{e.source}: source file missing")
                 continue
-            if e.size and src.stat().st_size != e.size:
+            src_size = src.stat().st_size
+            if e.size and src_size != e.size:
                 problems.append(
-                    f"{e.source}: size changed since plan"
-                    f" ({src.stat().st_size} != {e.size})"
+                    f"{e.source}: size changed since plan ({src_size} != {e.size})"
                 )
                 continue
             if not block.dest_dir or not e.dest:
@@ -1298,8 +1309,7 @@ def _validate_apply(manifest: PlanManifest) -> tuple[list[str], int]:
                 continue
             # Two entries placing the same destination would silently
             # stack at execution time (the second sees an existing dest).
-            dest_key = (block.dest_dir.casefold(), e.dest.casefold())
-            first = seen_dests.setdefault(dest_key, e.source)
+            first = seen_dests.setdefault(_dest_key(block.dest_dir, e.dest), e.source)
             if first != e.source:
                 problems.append(
                     f"{e.source}: destination duplicates {first}"
@@ -1432,7 +1442,7 @@ def run_apply(kind: MediaKind, manifest_path: Path, opts: ApplyOptions) -> int:
                     # new one alongside it disambiguated by CRC32 (the anime
                     # ingest convention).
                     crc = compute_crc32(src)
-                    dest = dest.parent / f"{dest.stem} [{crc}]{dest.suffix}"
+                    dest = crc_suffixed(dest, crc)
                     place(e, src, dest, "both")
 
     if not opts.dry_run:

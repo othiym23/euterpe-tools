@@ -34,8 +34,17 @@ def _tvdb_request(endpoint: str, token: str) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+# Bearer tokens last weeks; cache them per key for the process lifetime so
+# a plan run logs in once instead of once per search/fetch call.
+_TOKEN_CACHE: dict[str, str] = {}
+
+
 def tvdb_login(api_key: str) -> str:
-    """Authenticate with TheTVDB and return a bearer token."""
+    """Authenticate with TheTVDB and return a bearer token (cached)."""
+    token = _TOKEN_CACHE.get(api_key)
+    if token is not None:
+        return token
+
     url = f"{_TVDB_API_BASE}/login"
     payload = json.dumps({"apikey": api_key}).encode("utf-8")
     req = urllib.request.Request(url, data=payload, method="POST")
@@ -44,7 +53,9 @@ def tvdb_login(api_key: str) -> str:
 
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return data["data"]["token"]
+    token = data["data"]["token"]
+    _TOKEN_CACHE[api_key] = token
+    return token
 
 
 def _parse_tvdb_json(
