@@ -8,11 +8,12 @@ Jellyfin (ShokoFin) on top, and a single source of truth for collections.
 
 ## Hard constraint: the import gate
 
-The initial Shoko import (~54,800 queued tasks, ~10,603 unrecognized files at
-time of writing) is expected to take ~1 month, and AniDB's rate limits mean
-**nothing in `etp` may talk to Shoko or AniDB until it finishes** and the
-post-import cleanup settles. Work splits cleanly into "can start now" (reads the
-current Plex, the filesystem, or TMDB) and "import-gated" (reads Shoko).
+The initial Shoko import (~54,800 queued tasks, ~10,603 unrecognized files as of
+2026-05-30 — point-in-time figures; re-run `scripts/shoko.py eta` for current
+numbers) is expected to take ~1 month, and AniDB's rate limits mean **nothing in
+`etp` may talk to Shoko or AniDB until it finishes** and the post-import cleanup
+settles. Work splits cleanly into "can start now" (reads the current Plex, the
+filesystem, or TMDB) and "import-gated" (reads Shoko).
 
 ## Phase 0 — Monitor the import (now)
 
@@ -27,21 +28,27 @@ current Plex, the filesystem, or TMDB) and "import-gated" (reads Shoko).
 
 ## Phase 1 — Collections SSOT + reconciliation (now; no Shoko)
 
-Goal: one English-named source of truth for the manual, concept-ordering
-collections, reconciled across the two current hand-built libraries.
+Goal: one source of truth for the manual, concept-ordering collections,
+reconciled across the two current hand-built libraries.
 
-- Read the current Plex **Anime** (EN) and **アニメ** (JA) libraries via
-  `python-plexapi`: enumerate manual collections and their members, and capture
-  each member's GUIDs (Hama exposes AniDB + TVDB + TMDB).
-- **Reconcile drift**: the two libraries' collections are meant to be identical
-  but were hand-maintained; diff their memberships and surface the deltas for
-  resolution.
-- Emit the SSOT (YAML): each collection has an English name, optional
-  poster/sort metadata, and a membership list keyed by **AniDB ID** (TVDB/TMDB
-  for the non-anime exiles). Keep mappings separate from the show files (no
-  reliance on per-show tags unless a target requires it).
+- [x] Read the current Plex **Anime** (EN) and **アニメ** (JA) libraries —
+      `scripts/plex_collections_export.py` reads the Plex SQLite database
+      directly (not `python-plexapi`, which is only needed for the future
+      _apply_ step) and extracts every collection + membership with AniDB IDs
+      from the legacy-agent GUIDs.
+- [x] **Reconcile drift** — member-set matching pairs same-concept collections
+      across the libraries (including renames); the deltas are recorded in
+      [collections/reconciliation-plan.yaml](../../collections/reconciliation-plan.yaml)
+      with **ja-canonical** names (アニメ is the primary library).
+- [x] Emit the SSOT (YAML) keyed by **AniDB ID** —
+      [collections/anime-collections.yaml](../../collections/anime-collections.yaml).
+- [ ] Review the flagged entries in the reconciliation plan (uncertain renames
+      and ja-canonical artifacts), then build the **apply step**
+      (`python-plexapi`, `--dry-run`/`--apply`) to execute the renames, member
+      syncs, and creates against Plex.
 - Open question: SSOT schema details (sort titles, poster sourcing, ordering
-  within a collection, nesting like "UC → epochs").
+  within a collection, nesting like "UC → epochs", and the final naming language
+  for the new Shoko-backed libraries).
 
 ## Phase 2 — SSOT → Plex/Kometa compiler (now; no Shoko)
 

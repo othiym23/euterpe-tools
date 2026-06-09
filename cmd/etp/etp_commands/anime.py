@@ -5,9 +5,11 @@ or TheTVDB, analyzes source files with mediainfo, constructs properly named
 episode files, and copies them using Btrfs COW reflinks.
 
 Subcommands:
-    etp anime triage [PATTERN]  — bulk import from downloads directory
-    etp anime series [PATTERN]  — sync from Sonarr-managed anime directory
-    etp anime episode FILE      — import a single episode or movie
+    etp anime ingest --sonarr|--downloads [PATTERN]  — unified import
+    etp anime episode FILE --anidb ID|--tvdb ID      — single-file import
+
+(`triage` and `series` remain as deprecated aliases for `ingest --downloads`
+and `ingest --sonarr`.)
 
 Configuration: ~/.config/euterpe-tools/anime-ingestion.kdl (paths + series IDs)
 Environment:   ~/.config/euterpe-tools/anime.env (API credentials)
