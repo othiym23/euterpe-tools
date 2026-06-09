@@ -51,7 +51,10 @@ from etp_lib.download_cache import (
 from etp_lib.envfile import load_env_file
 from etp_lib.ingest_register import load_register, save_register
 from etp_lib.manifest import ManifestWorkflow, copy_subtitle_sidecars, escape_kdl
-from etp_lib.media_scanner import iter_media_files as _iter_media_files
+from etp_lib.media_scanner import (
+    iter_media_files as _iter_media_files,
+    parse_source_filename,
+)
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
@@ -78,7 +81,7 @@ from etp_lib.types import (
     MatchedFile,
     MediaInfo,  # noqa: F401 (re-export for tests)
     MetadataProvider,
-    ParsedMetadata,
+    ParsedMetadata,  # noqa: F401 (re-export for tests)
     SourceFile,
 )
 
@@ -289,34 +292,8 @@ _EXTRAS_EXTENSIONS = frozenset({".rar", ".zip", ".7z", ".flac", ".wav", ".ape", 
 _MIN_PREFIX_MATCH_LEN = 4
 
 
-def parse_source_filename(filename: str) -> SourceFile:
-    """Parse an anime release filename into a SourceFile.
-
-    Delegates to media_parser for tokenization and classification.
-    """
-    pm = media_parser.parse_component(filename)
-    return SourceFile(
-        path=Path(filename),
-        parsed=ParsedMetadata(
-            series_name=pm.series_name,
-            release_group=pm.release_group,
-            source_type=pm.source_type,
-            is_remux=pm.is_remux,
-            hash_code=pm.hash_code,
-            episode=pm.episode,
-            season=pm.season,
-            version=pm.version,
-            bonus_type=pm.bonus_type,
-            is_special=pm.is_special,
-            special_tag=pm.special_tag,
-            episode_title=pm.episode_title,
-            is_dual_audio=pm.is_dual_audio,
-            is_uncensored=pm.is_uncensored,
-            series_name_alt=pm.series_name_alt,
-            episodes=pm.episodes,
-            streaming_service=pm.streaming_service,
-        ),
-    )
+# parse_source_filename moved to etp_lib.media_scanner (shared with the
+# movies/television ingest core); re-imported above for local callers/tests.
 
 
 # ---------------------------------------------------------------------------
