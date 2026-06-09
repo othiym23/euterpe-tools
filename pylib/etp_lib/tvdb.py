@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from etp_lib.paths import cache_dir
@@ -14,6 +16,8 @@ from etp_lib.types import (
     AnimeInfo,
     Episode,
     EpisodeType,
+    MetadataProvider,
+    SearchCandidate,
     dedup_titles,
 )
 
@@ -149,6 +153,73 @@ def _fetch_tvdb_translations(
         except urllib.error.HTTPError:
             pass
     return result
+
+
+def _parse_tvdb_search(results: list[dict]) -> list[SearchCandidate]:
+    """Parse ``/search`` results into candidates, TheTVDB rank order.
+
+    TheTVDB returns ``tvdb_id`` and ``year`` as strings; entries whose ID
+    doesn't parse are dropped.
+    """
+    candidates: list[SearchCandidate] = []
+    for r in results:
+        try:
+            tvdb_id = int(r.get("tvdb_id") or "")
+        except ValueError:
+            continue
+        year_str = r.get("year") or ""
+        try:
+            year = int(year_str)
+        except ValueError:
+            year = 0
+        translations = r.get("translations") or {}
+        candidates.append(
+            SearchCandidate(
+                provider=MetadataProvider.TVDB,
+                id=tvdb_id,
+                title=r.get("name") or "",
+                year=year,
+                original_title=translations.get("eng") or "",
+            )
+        )
+    return candidates
+
+
+def _search_tvdb(
+    query: str, kind: str, api_key: str, no_cache: bool = False
+) -> list[SearchCandidate]:
+    """Search TheTVDB for *kind* (``series`` or ``movie``), with caching."""
+    digest = hashlib.sha1(f"{kind}|{query}".encode()).hexdigest()[:16]
+    cache_file = cache_dir("tvdb") / f"search-{digest}.json"
+
+    if not no_cache and cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < CACHE_MAX_AGE_SECONDS:
+            return _parse_tvdb_search(
+                json.loads(cache_file.read_text(encoding="utf-8"))
+            )
+
+    token = tvdb_login(api_key)
+    params = urllib.parse.urlencode({"query": query, "type": kind})
+    resp = _tvdb_request(f"/search?{params}", token)
+    results = resp.get("data", [])
+
+    cache_file.write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+    return _parse_tvdb_search(results)
+
+
+def search_tvdb_series(
+    query: str, api_key: str, no_cache: bool = False
+) -> list[SearchCandidate]:
+    """Search TheTVDB series by name."""
+    return _search_tvdb(query, "series", api_key, no_cache)
+
+
+def search_tvdb_movies(
+    query: str, api_key: str, no_cache: bool = False
+) -> list[SearchCandidate]:
+    """Search TheTVDB movies by name (cross-check provider for movies)."""
+    return _search_tvdb(query, "movie", api_key, no_cache)
 
 
 def fetch_tvdb_series(
