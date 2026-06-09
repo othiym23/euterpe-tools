@@ -1,0 +1,48 @@
+// Sample configuration for `etp movies ingest` and `etp television ingest`.
+//
+// Place this file at:
+//   Linux / NAS: ~/.config/euterpe-tools/media-ingestion.kdl
+//   macOS:       ~/Library/Application Support/net.aoaioxxysz.etp/media-ingestion.kdl
+//
+// Every section is optional: without a config file the commands use the
+// NAS-layout defaults shown in the paths block below. On a Mac with the
+// NAS shares mounted, override the paths with their /Volumes equivalents.
+
+paths {
+  // Shared download-client directory (also used by `etp anime`).
+  downloads-dir "/volume1/docker/pvr/data/downloads"
+
+  // Radarr-managed source tree and movie library destination.
+  movies-source-dir "/volume1/docker/pvr/data/movies"
+  movies-dest-dir "/volume1/video/movies"
+
+  // Sonarr-managed source tree and television library destination.
+  television-source-dir "/volume1/docker/pvr/data/television"
+  television-dest-dir "/volume1/video/television"
+
+  // macOS equivalents, for running against the mounted shares:
+  //   downloads-dir "/Volumes/docker/pvr/data/downloads"
+  //   movies-source-dir "/Volumes/docker/pvr/data/movies"
+  //   movies-dest-dir "/Volumes/video/movies"
+  //   television-source-dir "/Volumes/docker/pvr/data/television"
+  //   television-dest-dir "/Volumes/video/television"
+}
+
+// Per-title provider ID overrides. The name matches the source folder
+// name or the parsed title, case-insensitively. Use these to resolve
+// titles whose metadata search is ambiguous (remakes, same-name shows)
+// or wrong — `ingest plan` reports such titles as needs-id with the
+// candidates it found. A later block for the same name overrides an
+// earlier one on re-read, so corrections can simply be appended.
+
+movie "Blade Runner (1982)" {
+  tmdb 78
+  // Optional Plex edition marker for the directory and file name:
+  edition "Final Cut"
+}
+
+series "Severance (2022)" {
+  tvdb 371980
+  // Optional: pin the TMDB cross-check ID as well.
+  tmdb 95396
+}
