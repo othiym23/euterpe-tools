@@ -9,6 +9,8 @@ dependencies = ["kdl-py>=1.2.0", "msgpack>=1.0", "parsy>=2.2"]
 etp = "etp_commands.dispatcher:main"
 etp-anime = "etp_commands.anime:main"
 etp-catalog = "etp_commands.catalog:main"
+etp-movies = "etp_commands.movies:main"
+etp-television = "etp_commands.television:main"
 
 [build-system]
 requires = ["hatchling"]
