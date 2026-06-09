@@ -1,0 +1,1398 @@
+# Reconciliation plan: make the legacy Anime (en) and アニメ (ja) Plex
+# libraries consistent. CANONICAL = the アニメ (ja) name (primary library).
+# rename_in_anime: rename the Anime(en) collection to `canonical`; then
+#   union memberships (add_to_anime / add_to_anime_jp).
+# sync_members: same name in both, members differ -> add the listed shows.
+# create_*: collection exists in only one library -> create in the other.
+# Review entries with a `review:` note before applying.
+canonical: アニメ (ja) names; rename the Anime (en) collections to match
+rename_in_anime:
+- canonical: '''Tis Time for "Torture", Princess Collection'
+  rename_anime_from: '''Tis Time for "Torture," Princess Collection'
+  overlap: 1.0
+  members: 2
+- canonical: 86 Collection
+  rename_anime_from: 86 Eighty-Six Collection
+  overlap: 1.0
+  members: 2
+- canonical: A-CHANNEL THE ANIMATION Collection
+  rename_anime_from: A-Channel Collection
+  overlap: 1.0
+  members: 2
+- canonical: AD POLICE collection
+  rename_anime_from: 'A.D. Police: To Protect and Serve Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Aharen-san is Indecipherable Collection
+  rename_anime_from: Aharen-san wa Hakarenai Collection
+  overlap: 0.5
+  members: 2
+  add_to_anime:
+  - anidb: 16505
+    title: 阿波連さんははかれない
+    year: 2022
+  review:
+  - low member overlap — verify the match
+- canonical: ARIA The ANIMATION Collection
+  rename_anime_from: 'Aria: The Animation Collection'
+  overlap: 1.0
+  members: 7
+- canonical: 'Asobi Asabase: Workshop of Fun Collection'
+  rename_anime_from: 'Asobi Asobase: Workshop of Fun Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Bludgeoning Angel Dokuro-chan collection 2
+  rename_anime_from: Bludgeoning Angel Dokuro-chan Collection
+  overlap: 1.0
+  members: 2
+- canonical: BODACIOUS SP4CE PIRATES collection
+  rename_anime_from: Bodacious Space Pirates Collection
+  overlap: 1.0
+  members: 2
+- canonical: CODE GEASS Collection
+  rename_anime_from: 'Code Geass: Lelouch of the Rebellion Collection'
+  overlap: 1.0
+  members: 4
+- canonical: Concrete Revolutio Collection
+  rename_anime_from: 'Concrete Revolutio: Superhuman Phantasmagoria Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Crusher Joe collection
+  rename_anime_from: Crusher Joe
+  overlap: 1.0
+  members: 2
+- canonical: Detective Conan collection
+  rename_anime_from: Detective Conan
+  overlap: 1.0
+  members: 7
+- canonical: Detective Opera Millky Holmes collection
+  rename_anime_from: Detective Opera Milky Holmes Collection
+  overlap: 1.0
+  members: 9
+- canonical: Fate/kaleid liner Prisma☆Ilya Collection
+  rename_anime_from: Fate/Kaleid Liner Prisma Illya Collection
+  overlap: 1.0
+  members: 9
+- canonical: Full Metal Panic collection
+  rename_anime_from: Full Metal Panic! Collection
+  overlap: 1.0
+  members: 4
+- canonical: Genshiken collection
+  rename_anime_from: 'Genshiken: The Society for the Study of Modern Visual Culture Collection'
+  overlap: 1.0
+  members: 5
+- canonical: GIANT ROBO
+  rename_anime_from: 'Giant Robo: The Animation - The Day the Earth Stood Still Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Girls at Work collection
+  rename_anime_from: Girls at Work
+  overlap: 1.0
+  members: 9
+- canonical: GitS ARISE collection
+  rename_anime_from: 'GitS: Arise Collection'
+  overlap: 1.0
+  members: 3
+- canonical: GitS SAC collection
+  rename_anime_from: 'GitS: Stand Alone Complex Collection'
+  overlap: 0.88
+  members: 8
+  add_to_anime_jp:
+  - anidb: 12360
+    title: 'Ghost in the SHell: Stand Alone Complex - Tachikomatic Days'
+    year: 2007
+- canonical: Gosho Aoyama`s Collection of Short Stories
+  rename_anime_from: Gosho Aoyama's Short Stories Collection
+  overlap: 1.0
+  members: 2
+- canonical: Haiyoru! Nyaruani Collection
+  rename_anime_from: 'Haiyoru! Nyaruani: Remember My (Mr.) Love(craft) Collection'
+  overlap: 0.67
+  members: 3
+  add_to_anime:
+  - anidb: 9459
+    title: 這いよれ! ニャル子さんW
+    year: 2013
+  review:
+  - low member overlap — verify the match
+- canonical: Hanasaku Iroha collection
+  rename_anime_from: 'Hanasaku Iroha: Blossoms for Tomorrow Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Haruhi Suzumiya collection
+  rename_anime_from: Haruhi Suzumiya's Collection
+  overlap: 1.0
+  members: 4
+- canonical: Honey & Clover Collection
+  rename_anime_from: Honey and Clover Collection
+  overlap: 1.0
+  members: 2
+- canonical: I've Had Enough of Being a Magical Girl Collection
+  rename_anime_from: I've Had Enough of Being a Magical Girl coll
+  overlap: 1.0
+  members: 2
+- canonical: Initial D collection
+  rename_anime_from: Initial D
+  overlap: 1.0
+  members: 12
+- canonical: JoJo's Bizarre Adventure Collection
+  rename_anime_from: JoJo's Bizarre Adventure (2012) Collection
+  overlap: 1.0
+  members: 10
+- canonical: KITE / MEZZO collection
+  rename_anime_from: KITE and MEZZO Collection
+  overlap: 1.0
+  members: 4
+- canonical: KaleidoStar Collection
+  rename_anime_from: Kaleido Star Collection
+  overlap: 1.0
+  members: 4
+- canonical: Kimi ni Todoke collection
+  rename_anime_from: 'Kimi ni Todoke: From Me to You Collection'
+  overlap: 1.0
+  members: 3
+- canonical: Kin'iro Mosaic collection
+  rename_anime_from: Kinmoza! Collection
+  overlap: 1.0
+  members: 4
+- canonical: Kino's Journey collection
+  rename_anime_from: 'Kino''s Journey: The Beautiful World Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Kuma Kuma Kuma Bear
+  rename_anime_from: Kuma Kuma Kuma Bear Collection
+  overlap: 1.0
+  members: 2
+- canonical: Kyousougiga collection
+  rename_anime_from: Kyousougiga
+  overlap: 1.0
+  members: 3
+- canonical: Laid Back Camp collection
+  rename_anime_from: Laid-Back Camp Collection
+  overlap: 1.0
+  members: 5
+- canonical: Last  Exile Collection
+  rename_anime_from: Last Exile Collection
+  overlap: 1.0
+  members: 2
+- canonical: The Legend of the Galactic Heroes Collection
+  rename_anime_from: Legend of the Galactic Heroes Collection
+  overlap: 1.0
+  members: 7
+- canonical: Love, Chunibyo, and Other Delusions collection
+  rename_anime_from: Love, Chunibyo & Other Delusions! Collection
+  overlap: 1.0
+  members: 4
+- canonical: Lucky☆Star collection
+  rename_anime_from: Lucky Star Collection
+  overlap: 0.67
+  members: 3
+  add_to_anime:
+  - anidb: 9622
+    title: 宮河家の空腹
+    year: 2013
+  review:
+  - low member overlap — verify the match
+- canonical: MSG[UC] 0083 collection
+  rename_anime_from: MSG[UC] 0083
+  overlap: 1.0
+  members: 1
+- canonical: 'MSG[UC]: GQuuuuuuX'
+  rename_anime_from: MSG[UC] GQuuuuux collection
+  overlap: 1.0
+  members: 1
+- canonical: Macross Zero
+  rename_anime_from: Macross Zero Collection
+  overlap: 1.0
+  members: 1
+- canonical: 'Macross: Super Dimensional Fortress Macross collection'
+  rename_anime_from: 'Macross: Super Dimension Fortress Macross Collection'
+  overlap: 1.0
+  members: 4
+- canonical: MAGIA RECORD Puella Magi Madoka collection
+  rename_anime_from: 'Magia Record: Puella Magi Madoka Magica Side Story Collection'
+  overlap: 1.0
+  members: 3
+- canonical: Magical Girl Lyrical Nanoha
+  rename_anime_from: Magical Girl Lyrical Nanoha Collection
+  overlap: 1.0
+  members: 8
+- canonical: Magical Princess Minky Momo Collection
+  rename_anime_from: Magical Princess Minky Momo
+  overlap: 1.0
+  members: 5
+- canonical: Maison Ikkoku collection
+  rename_anime_from: Maison Ikkoku coll
+  overlap: 1.0
+  members: 4
+- canonical: MARIA†HOLIC Collection
+  rename_anime_from: Maria Holic Collection
+  overlap: 1.0
+  members: 2
+- canonical: MEGAZONE 23 Collection
+  rename_anime_from: Megazone 23 Collect
+  overlap: 1.0
+  members: 3
+- canonical: Mobile Police Patlabor Movie Continuity collection
+  rename_anime_from: Mobile Police Patlabor Movie Continuity
+  overlap: 1.0
+  members: 5
+- canonical: Mobile Police Patlabor TV Continuity collection
+  rename_anime_from: Mobile Police Patlabor TV Continuity
+  overlap: 1.0
+  members: 2
+- canonical: ALL THE GUNDAM
+  rename_anime_from: Mobile Suit Gundam Collection
+  overlap: 1.0
+  members: 5
+- canonical: Monogatari Collection
+  rename_anime_from: Monogatari Series
+  overlap: 1.0
+  members: 12
+- canonical: Moyashimon Collection
+  rename_anime_from: 'Moyashimon: Microbe Theatre Deluxe Collection'
+  overlap: 1.0
+  members: 2
+- canonical: My Dress-Up Darling
+  rename_anime_from: My Dress-Up Darling Collection
+  overlap: 1.0
+  members: 2
+- canonical: My Little Monster Coll
+  rename_anime_from: My Little Monster Collection
+  overlap: 1.0
+  members: 2
+- canonical: Natsume's Book of Friends
+  rename_anime_from: Natsume's Book of Friends Collection
+  overlap: 1.0
+  members: 11
+- canonical: Neighborhood Story
+  rename_anime_from: Neighborhood Story Collection
+  overlap: 1.0
+  members: 2
+- canonical: nichijou collection
+  rename_anime_from: 'Nichijou: My Ordinary Life Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Nodame Cantabile collection 2
+  rename_anime_from: Nodame Cantabile Collection
+  overlap: 1.0
+  members: 3
+- canonical: 'Nura: Rise of the Youkai Clan Collection'
+  rename_anime_from: 'Nura: Rise of the Yokai Clan Collection'
+  overlap: 1.0
+  members: 3
+- canonical: Nurse Witch Komugi-Chan Collection
+  rename_anime_from: Nurse Witch Komugi Collection
+  overlap: 1.0
+  members: 3
+- canonical: 'Nyaruko: Crawling With Love Collection'
+  rename_anime_from: 'Nyaruko: Crawling with Love! Collection'
+  overlap: 0.67
+  members: 3
+  add_to_anime_jp:
+  - anidb: 9459
+    title: 'Nyaruko: Crawling with Love! (2)'
+    year: 2013
+  review:
+  - low member overlap — verify the match
+- canonical: Magical DoReMi! collection
+  rename_anime_from: Ojamajo Doremi Collection
+  overlap: 0.89
+  members: 9
+  add_to_anime:
+  - anidb: 14790
+    title: 魔女見習いをさがして
+    year: 2020
+- canonical: ONE PUNCH MAN ワンパンマン Collection
+  rename_anime_from: One-Punch Man Collection
+  overlap: 1.0
+  members: 1
+- canonical: 'Pretty Cure: Delicious Party collection'
+  rename_anime_from: 'Pretty Cure: Delicious Party Pretty Cure'
+  overlap: 1.0
+  members: 2
+- canonical: 'Pretty Cure: Fresh PreCure! collection'
+  rename_anime_from: 'Pretty Cure: Fresh Precure!'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Power of Hope Full Bloom'
+  rename_anime_from: 'Pretty Cure: Full Bloom Power of Hope collection'
+  overlap: 1.0
+  members: 1
+- canonical: 'Pretty Cure: Futari wa Pretty Cure collection'
+  rename_anime_from: 'Pretty Cure: Futari wa Pretty Cure'
+  overlap: 1.0
+  members: 4
+- canonical: 'Pretty Cure: Smile! Precure collection'
+  rename_anime_from: 'Pretty Cure: Glitter Force Collection'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: DokiDoki Precure collection'
+  rename_anime_from: 'Pretty Cure: Glitter Force Doki Doki Collection'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Go! Princess PreCure collection'
+  rename_anime_from: 'Pretty Cure: Go! Princess Precure'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: HappinessCharge Precure collection'
+  rename_anime_from: 'Pretty Cure: Happiness Charge Precure! Collection'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Healin'' Good collection'
+  rename_anime_from: 'Pretty Cure: Healin'' Good Pretty Cure'
+  overlap: 0.67
+  members: 3
+  add_to_anime_jp:
+  - anidb: 15204
+    title: 'Precure Miracle Leap: A Wonderful Day with Everyone'
+    year: 2020
+  review:
+  - low member overlap — verify the match
+- canonical: 'Pretty Cure: HeartCatch Precure! collection'
+  rename_anime_from: 'Pretty Cure: HeartCatch Collection'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Hug! PreCure collection'
+  rename_anime_from: 'Pretty Cure: Hug! PreCure'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: KiraKira☆Pretty Cure á la Mode collection'
+  rename_anime_from: 'Pretty Cure: KiraKira☆Pretty Cure á la Mode'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Soaring Sky! collection'
+  rename_anime_from: 'Pretty Cure: Soaring Sky! Pretty Cure'
+  overlap: 1.0
+  members: 2
+- canonical: 'Pretty Cure: Splash Star collection'
+  rename_anime_from: 'Pretty Cure: Splash Star'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Star☆Twinkle collection'
+  rename_anime_from: 'Pretty Cure: Star☆Twinkle PreCure'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Suite Precure♪ collection'
+  rename_anime_from: 'Pretty Cure: Suite Precure Collection'
+  overlap: 1.0
+  members: 3
+- canonical: 'Pretty Cure: Tropical-Rouge! collection'
+  rename_anime_from: 'Pretty Cure: Tropical-Rouge! Pretty Cure Collection'
+  overlap: 1.0
+  members: 2
+- canonical: 'Pretty Cure: Witchy PreCure! collection'
+  rename_anime_from: 'Pretty Cure: Witchy PreCure!'
+  overlap: 1.0
+  members: 4
+- canonical: 'Pretty Cure: You and Idol♪ collection'
+  rename_anime_from: 'Pretty Cure: You and Idol collection'
+  overlap: 1.0
+  members: 1
+- canonical: Sailor Moon Crystal collection
+  rename_anime_from: Pretty Guardian Sailor Moon Crystal Collection
+  overlap: 0.5
+  members: 4
+  add_to_anime:
+  - anidb: 12754
+    title: 劇場版 美少女戦士セーラームーンEternal
+    year: 2021
+  add_to_anime_jp:
+  - anidb: 17343
+    title: Pretty Guardian Sailor Moon Cosmos The Movie
+    year: 2023
+  review:
+  - low member overlap — verify the match
+- canonical: Princess Connect Re:Dive Collection
+  rename_anime_from: Princess Connect! Re:Dive
+  overlap: 1.0
+  members: 2
+- canonical: PUELLA MAGI MADOKA MAGICA Collect
+  rename_anime_from: Puella Magi Madoka Magica Collection
+  overlap: 1.0
+  members: 2
+- canonical: Ranma ½ Collection
+  rename_anime_from: Ranma 1/2 Collection
+  overlap: 1.0
+  members: 8
+- canonical: Re:ゼロから始める異世界生活 Collection
+  rename_anime_from: Re:Zero - Starting Life in Another World Collection
+  overlap: 1.0
+  members: 1
+- canonical: The Saga of Tanya the Evil Collection
+  rename_anime_from: Saga of Tanya the Evil Collection
+  overlap: 1.0
+  members: 3
+- canonical: 'Saikano: She, the Ultimate Weapon collection'
+  rename_anime_from: Saikano Collection
+  overlap: 1.0
+  members: 2
+- canonical: Sayonara Zetsubo-sensei Collection
+  rename_anime_from: Sayounara Zetsubo-sensei Collection
+  overlap: 1.0
+  members: 5
+- canonical: Magical Fairy Persia Collection
+  rename_anime_from: Sekiei Ayakashi Mangatan Collection
+  overlap: 1.0
+  members: 1
+- canonical: Shugo Chara!! Collection
+  rename_anime_from: Shugo Chara! Collection
+  overlap: 1.0
+  members: 3
+- canonical: Space Cobra collection
+  rename_anime_from: Space Adventure Cobra Collection
+  overlap: 1.0
+  members: 2
+- canonical: Space Pirate Captain Harlock collection
+  rename_anime_from: Space Pirate Captain Harlock
+  overlap: 0.75
+  members: 4
+  add_to_anime:
+  - anidb: 533
+    title: SPACE PIRATE CAPTAIN HERLOCK OUTSIDE LEGEND ~The Endless Odyssey~
+    year: 2002
+  review:
+  - low member overlap — verify the match
+- canonical: Star Blazers 2199 collection
+  rename_anime_from: Star Blazer 2199 Collection
+  overlap: 1.0
+  members: 5
+- canonical: Tamayura collection
+  rename_anime_from: 'Tamayura: Hitotose Collection'
+  overlap: 1.0
+  members: 4
+- canonical: Teekyuu collection
+  rename_anime_from: Teekyu Collection
+  overlap: 1.0
+  members: 3
+- canonical: Irresponsible Captain Tylor Collection
+  rename_anime_from: The Irresponsible Captain Tylor Collection
+  overlap: 1.0
+  members: 4
+- canonical: 悲劇の元凶となる最強外道ラスボス女王は民の為に尽くします. Collection
+  rename_anime_from: 'The Most Heretical Last Boss Queen: From Villainess to Savior Collection'
+  overlap: 1.0
+  members: 1
+- canonical: The Vision of Escaflowne
+  rename_anime_from: The Vision of Escaflowne Collection
+  overlap: 1.0
+  members: 2
+- canonical: Time of Eve  collection
+  rename_anime_from: Time of Eve Collection
+  overlap: 1.0
+  members: 1
+- canonical: Tsurune Collection
+  rename_anime_from: 'Tsurune: Kazemai High School Kyudo Club Collection'
+  overlap: 1.0
+  members: 2
+- canonical: Tweeny Witch collection
+  rename_anime_from: Tweeny Witches Collection
+  overlap: 1.0
+  members: 2
+- canonical: Uma Musume Pretty Derby Collection
+  rename_anime_from: 'Umamusume: Pretty Derby Collection'
+  overlap: 1.0
+  members: 11
+- canonical: WORKING!! Collection
+  rename_anime_from: Wagnaria!! Collection
+  overlap: 1.0
+  members: 4
+- canonical: Yawara! Collection
+  rename_anime_from: Yawara! A Fashionable Judo Girl Collection
+  overlap: 0.5
+  members: 2
+  add_to_anime_jp:
+  - anidb: 806
+    title: Yawara! A Fashionable Judo Girl
+    year: 1989
+  review:
+  - low member overlap — verify the match
+- canonical: Yokohama Kaidashi Kikou collection
+  rename_anime_from: Yokohama Shopping Diary Collection
+  overlap: 1.0
+  members: 2
+- canonical: You're Under Arrest collection
+  rename_anime_from: You're Under Arrest! Collection
+  overlap: 1.0
+  members: 5
+- canonical: Yuki Yuna is a Hero
+  rename_anime_from: Yuki Yuna Is a Hero Collection
+  overlap: 1.0
+  members: 5
+- canonical: Yumeiro Patissière Collection
+  rename_anime_from: Yume-iro Patissière Collection
+  overlap: 1.0
+  members: 3
+- canonical: Yuru Yuri collection
+  rename_anime_from: 'YuruYuri: Happy Go Lily Collection'
+  overlap: 1.0
+  members: 8
+- canonical: ALL THE GUNDAMS
+  rename_anime_from: ALL THE GUNDAM
+  overlap: 0.93
+  members: 83
+  add_to_anime:
+  - anidb: 1703
+    title: SDガンダムフォース
+    year: 2004
+  - anidb: 14032
+    title: 機動戦士ガンダムSEED FREEDOM
+    year: 2024
+  - tvdb: 79327
+    title: 新機動戦記ガンダムW[ウイング]
+    year: 1995
+  add_to_anime_jp:
+  - anidb: 229
+    title: Mobile Suit Gundam Wing
+    year: 1995
+  - tvdb: 157211
+    title: SDガンダムフォース
+    year: 2004
+  - tvdb: 411914
+    title: 'Birdie Wing: Golf Girls'' Story'
+    year: 2022
+  review:
+  - a separate アニメ collection is also named 'ALL THE GUNDAM' (likely a stray) — verify
+- canonical: OG JoJo's Bizarre Adventure Collection
+  rename_anime_from: JoJo's Bizarre Adventure Collection
+  overlap: 1.0
+  members: 2
+  review:
+  - a separate アニメ collection is also named "JoJo's Bizarre Adventure Collection" (likely a stray) — verify
+- canonical: YAWARA! a fashionable judo girl! Collection
+  rename_anime_from: Yawara! A Fashionable Judo Girl Collection
+  overlap: 0.5
+  members: 2
+  add_to_anime_jp:
+  - anidb: 4267
+    title: Yawara! Atlanta Special
+    year: 1996
+  review:
+  - low member overlap — verify the match
+sync_members:
+- name: ALL THE GUNDAM
+  add_to_anime_jp:
+  - anidb: 217
+    title: 'Mobile Suit Gundam: The 08th MS Team'
+    year: 1996
+  - anidb: 229
+    title: Mobile Suit Gundam Wing
+    year: 1995
+  - anidb: 252
+    title: Mobile Suit Gundam SEED
+    year: 2002
+  - anidb: 496
+    title: 'Gundam Wing: Endless Waltz'
+    year: 1998
+  - anidb: 596
+    title: Mobile Suit SD Gundam Mk. I
+    year: 1988
+  - anidb: 626
+    title: Mobile Suit Gundam F91
+    year: 1991
+  - anidb: 716
+    title: 'Mobile Suit Gundam 0080: War in the Pocket'
+    year: 1989
+  - anidb: 717
+    title: 'Mobile Suit Gundam 0083: Stardust Memory'
+    year: 1991
+  - anidb: 718
+    title: Mobile Suit Zeta Gundam
+    year: 1985
+  - anidb: 719
+    title: Mobile Suit Gundam ZZ
+    year: 1986
+  - anidb: 720
+    title: 'Mobile Suit Gundam: Char''s Counterattack'
+    year: 1988
+  - anidb: 721
+    title: Mobile Suit Victory Gundam
+    year: 1993
+  - anidb: 755
+    title: After War Gundam X
+    year: 1996
+  - anidb: 915
+    title: Mobile Fighter G Gundam
+    year: 1994
+  - anidb: 916
+    title: Turn A Gundam
+    year: 1999
+  - anidb: 1037
+    title: Mobile Suit SD Gundam Mk II
+    year: 1989
+  - anidb: 1101
+    title: Mobile Suit SD Gundam Mk IV
+    year: 1990
+  - anidb: 1125
+    title: Gundam Evolve
+    year: 2001
+  - anidb: 1216
+    title: 'Mobile Suit SD Gundam''s Counterattack: SD Warring States Legend - The Chapter of Castle Abaowakuu'
+    year: 1989
+  - anidb: 1425
+    title: 'Mobile Suit Gundam: The 08th MS Team - Miller''s Report'
+    year: 1998
+  - anidb: 2144
+    title: 'Mobile Suit Gundam MS IGLOO: The Hidden One-Year War'
+    year: 2004
+  - anidb: 2186
+    title: Mobile Suit Gundam SEED Destiny
+    year: 2004
+  - anidb: 2187
+    title: 'Mobile Suit Zeta Gundam: A New Translation - Heir to the Stars'
+    year: 2005
+  - anidb: 2445
+    title: Mobile Suit Gundam Seed MSV Astray
+    year: 2004
+  - anidb: 2812
+    title: 'Turn A Gundam II: Moonlight Butterfly'
+    year: 2002
+  - anidb: 2813
+    title: 'Turn A Gundam I: Earth Light'
+    year: 2002
+  - anidb: 2853
+    title: 'Gundam Wing: Operation Meteor'
+    year: 1996
+  - anidb: 3060
+    title: Mobile Suit SD Gundam Mk III
+    year: 1990
+  - anidb: 3341
+    title: Mobile Suit SD Gundam Mk V
+    year: 1990
+  - anidb: 3343
+    title: SD Gundam Sidestory
+    year: 1990
+  - anidb: 3969
+    title: 'Mobile Suit Zeta Gundam: A New Translation II - Lovers'
+    year: 2005
+  - anidb: 4095
+    title: 'Mobile Suit Zeta Gundam: A New Translation III - Love Is the Pulse of the Stars'
+    year: 2006
+  - anidb: 4165
+    title: 'Mobile Suit Gundam SEED: Movie III - The Rumbling Sky'
+    year: 2004
+  - anidb: 4168
+    title: 'Mobile Suit Gundam SEED: Movie II - The Far-Away Dawn'
+    year: 2004
+  - anidb: 4169
+    title: 'Mobile Suit Gundam SEED: Movie I - The Empty Battlefield'
+    year: 2004
+  - anidb: 4195
+    title: 'Mobile Suit Gundam MS IGLOO: Apocalypse 0079'
+    year: 2006
+  - anidb: 4366
+    title: 'Mobile Suit Gundam Seed C.E.73: Stargazer'
+    year: 2006
+  - anidb: 4457
+    title: 'Mobile Suit Gundam SEED DESTINY Special Edition I: The Broken World'
+    year: 2006
+  - anidb: 4466
+    title: 'Mobile Suit Gundam SEED DESTINY Special Edition II: Respective Swords'
+    year: 2006
+  - anidb: 4722
+    title: 'Mobile Suit SD Gundam''s Counterattack: The Storm-calling School Festival'
+    year: 1989
+  - anidb: 4758
+    title: 'Mobile Suit Gundam SEED DESTINY Special Edition III: The Hell Fire of Destiny'
+    year: 2006
+  - anidb: 4905
+    title: 'Mobile Suit Gundam SEED DESTINY Special Edition IV: The Cost of Freedom'
+    year: 2007
+  - anidb: 5949
+    title: 'Mobile Suit Gundam MS IGLOO 2: Gravity of the Battlefront'
+    year: 2008
+  - anidb: 6517
+    title: Mobile Suit Gundam UC
+    year: 2010
+  - anidb: 7183
+    title: 'Mobile Suit Gundam 00 Special Edition I: Celestial Being'
+    year: 2009
+  - anidb: 7184
+    title: 'Mobile Suit Gundam 00 Special Edition II: End of World'
+    year: 2009
+  - anidb: 7245
+    title: Chou Den'ei-ban SD Gundam Sangokuden Brave Battle Warriors
+    year: 2010
+  - anidb: 7399
+    title: SD Gundam Legend of the Three Kingdoms Brave Battle Warriors
+    year: 2010
+  - anidb: 7403
+    title: 'Mobile Suit Gundam 00 Special Edition III: Return the World'
+    year: 2010
+  - anidb: 7408
+    title: 'Mobile Suit Gundam 00: A wakening of the Trailblazer'
+    year: 2010
+  - anidb: 7670
+    title: Gundam Gunpla Builders
+    year: 2010
+  - anidb: 8494
+    title: Mobile Suit Gundam AGE
+    year: 2011
+  - anidb: 8517
+    title: 'Mobile Suit Gundam: The Origin'
+    year: 2015
+  - anidb: 9719
+    title: 'Mobile Suit Gundam AGE: Memory of Eden'
+    year: 2013
+  - anidb: 10531
+    title: Gundam Reconguista in G
+    year: 2014
+  - anidb: 11372
+    title: 'Mobile Suit Gundam: Iron Blooded Orphans'
+    year: 2015
+  - anidb: 11977
+    title: Mobile Suit Gundam Unicorn Re:0096
+    year: 2016
+  - anidb: 11984
+    title: 'Gundam Reconguista in G: FROM THE PAST TO THE FUTURE'
+    year: 2015
+  - anidb: 12048
+    title: 'Mobile Suit Gundam: Iron Blooded Orphans - 2nd Season'
+    year: 2016
+  - anidb: 12098
+    title: 'Mobile Suit Gundam Thunderbolt: December Sky'
+    year: 2015
+  - anidb: 13108
+    title: Gundam Reconguista in G Movies
+    year: 2019
+  - anidb: 13288
+    title: 'Mobile Suit Gundam Thunderbolt: Bandit Flower'
+    year: 2017
+  - anidb: 13482
+    title: 'Mobile Suit Gundam: Twilight Axis Red Blur'
+    year: 2017
+  - anidb: 13774
+    title: Gundam Build Divers
+    year: 2018
+  - anidb: 14042
+    title: Mobile Suit Gundam Narrative
+    year: 2018
+  - anidb: 14043
+    title: 'Mobile Suit Gundam: Hathaway'
+    year: 2021
+  - anidb: 16700
+    title: 'Mobile Suit Gundam: The Witch from Mercury'
+    year: 2022
+  - anidb: 16702
+    title: 'Mobile Suit Gundam: Cucuruz Doan''s Island'
+    year: 2022
+  - anidb: 17648
+    title: 'Mobile Suit Gundam: The Witch from Mercury (2023)'
+    year: 2023
+  - anidb: 19027
+    title: Mobile Suit Gundam GQuuuuuuX
+    year: 2025
+  - tvdb: 80675
+    title: Mobile Suit Gundam 00
+    year: 2007
+  - tvdb: 157211
+    title: SDガンダムフォース
+    year: 2004
+  - tvdb: 273004
+    title: Gundam Build Fighters
+    year: 2013
+  - tvdb: 369139
+    title: Gundam Build Divers Re:Rise
+    year: 2019
+  - tvdb: 411914
+    title: 'Birdie Wing: Golf Girls'' Story'
+    year: 2022
+- name: BanG Dream! Collection
+  add_to_anime:
+  - anidb: 18194
+    title: BanG Dream! Ave Mujica
+    year: 2025
+- name: Chainsaw Man Collection
+  add_to_anime:
+  - anidb: 15914
+    title: チェンソーマン
+    year: 2022
+- name: Dorohedoro Collection
+  add_to_anime:
+  - anidb: 14483
+    title: ドロヘドロ
+    year: 2020
+- name: JoJo's Bizarre Adventure Collection
+  add_to_anime:
+  - anidb: 9304
+    title: ジョジョの奇妙な冒険 (2012)
+    year: 2012
+  - anidb: 10206
+    title: ジョジョの奇妙な冒険 スターダストクルセイダース
+    year: 2014
+  - anidb: 10835
+    title: ジョジョの奇妙な冒険 スターダストクルセイダース (2015)
+    year: 2015
+  - anidb: 11734
+    title: ジョジョの奇妙な冒険 ダイヤモンドは砕けない
+    year: 2016
+  - anidb: 13812
+    title: 岸辺露伴は動かない
+    year: 2017
+  - anidb: 14173
+    title: ジョジョの奇妙な冒険 黄金の風
+    year: 2018
+  - anidb: 16187
+    title: ジョジョの奇妙な冒険 ストーンオーシャン
+    year: 2021
+  - anidb: 17286
+    title: ジョジョの奇妙な冒険 ストーンオーシャン (パート2)
+    year: 2022
+  - anidb: 17664
+    title: ジョジョの奇妙な冒険 ストーンオーシャン (パート3)
+    year: 2022
+  - anidb: 19287
+    title: スティール・ボール・ラン ジョジョの奇妙な冒険
+    year: 2026
+  add_to_anime_jp:
+  - anidb: 788
+    title: JoJo's Bizarre Adventure
+    year: 1993
+  - anidb: 789
+    title: JoJo's Bizarre Adventure (2000)
+    year: 2000
+- name: MSG[AU] Gundam Wing (After Colony) collection
+  add_to_anime:
+  - tvdb: 79327
+    title: 新機動戦記ガンダムW[ウイング]
+    year: 1995
+  add_to_anime_jp:
+  - anidb: 229
+    title: Mobile Suit Gundam Wing
+    year: 1995
+- name: MSG[AU] SD Collection
+  add_to_anime:
+  - anidb: 1703
+    title: SDガンダムフォース
+    year: 2004
+  add_to_anime_jp:
+  - tvdb: 157211
+    title: SDガンダムフォース
+    year: 2004
+- name: MSG[AU] SEED (Cosmic Era) collection
+  add_to_anime:
+  - anidb: 14032
+    title: 機動戦士ガンダムSEED FREEDOM
+    year: 2024
+- name: Macross Collection
+  add_to_anime:
+  - anidb: 16040
+    title: 劇場短編マクロスfrontier~時の迷宮~
+    year: 2021
+- name: Macross DELTA collection
+  add_to_anime:
+  - anidb: 16040
+    title: 劇場短編マクロスfrontier~時の迷宮~
+    year: 2021
+- name: Macross Frontier collection
+  add_to_anime:
+  - anidb: 16040
+    title: 劇場短編マクロスfrontier~時の迷宮~
+    year: 2021
+- name: Magical Angel Creamy Mami collection
+  add_to_anime:
+  - anidb: 7388
+    title: 魔法のプリンセスミンキーモモvs魔法の天使クリィーミーマミ
+    year: 1985
+  add_to_anime_jp:
+  - anidb: 3633
+    title: Charming Figures of the Magical Girl Trio
+    year: 1986
+- name: Mamoru Oshii collection
+  add_to_anime:
+  - anidb: 777
+    title: 機動警察パトレイバー PATLABOR THE MOBILE POLICE
+    year: 1989
+  - anidb: 1865
+    title: 御先祖様万々歳!
+    year: 1989
+  add_to_anime_jp:
+  - anidb: 377
+    title: Urusei Yatsura
+    year: 1981
+  - anidb: 378
+    title: 'Urusei Yatsura Movie 1: Only You'
+    year: 1983
+  - anidb: 379
+    title: 'Urusei Yatsura 2: Beautiful Dreamer'
+    year: 1984
+  - anidb: 770
+    title: MiniPato
+    year: 2002
+  - anidb: 1176
+    title: 'Ghost in the Shell: Stand Alone Complex 2nd GIG'
+    year: 2004
+  - anidb: 1468
+    title: Dallos
+    year: 1983
+  - anidb: 1518
+    title: Patlabor the Mobile Police
+    year: 1988
+  - anidb: 1759
+    title: Windy Tales
+    year: 2004
+- name: Masamune Shirow collection
+  add_to_anime_jp:
+  - anidb: 61
+    title: Ghost in the Shell
+    year: 1995
+  - anidb: 890
+    title: 'Ghost in the Shell 2: Innocence'
+    year: 2004
+  - anidb: 3112
+    title: Tank Police Team TANK S.W.A.T. 01
+    year: 2006
+  - anidb: 6122
+    title: Ghost in the Shell 2.0
+    year: 2008
+- name: Mewkledreamy collection
+  add_to_anime:
+  - anidb: 15901
+    title: ミュークルドリーミー みっくす!
+    year: 2021
+- name: Miss Kobayashi's Dragon Maid Collection
+  add_to_anime:
+  - anidb: 18873
+    title: 映画 小林さんちのメイドラゴン さみしがりやの竜
+    year: 2025
+- name: Mononoke Collection
+  add_to_anime:
+  - anidb: 3654
+    title: 怪~ayakashi~ JAPANESE CLASSIC HORROR
+    year: 2006
+- name: Not Quite Hentai
+  add_to_anime:
+  - anidb: 65
+    title: ぷにぷに☆ぽえみぃ
+    year: 2001
+  - anidb: 98
+    title: 剣風伝奇ベルセルク
+    year: 1997
+  - anidb: 154
+    title: パーフェクトブルー
+    year: 1998
+  - anidb: 277
+    title: 獣兵衛忍風帖
+    year: 1993
+  - anidb: 673
+    title: TEXHNOLYZE
+    year: 2003
+  - anidb: 1023
+    title: 魔界都市 (新宿)
+    year: 1988
+  - anidb: 1040
+    title: 妖獣都市
+    year: 1987
+  - anidb: 1170
+    title: デッド リーブス
+    year: 2004
+  - anidb: 1238
+    title: キューティーハニーF
+    year: 1997
+  - anidb: 1579
+    title: キューティーハニー
+    year: 1973
+  - anidb: 1580
+    title: キューティーハニーF (1997)
+    year: 1997
+  - anidb: 1729
+    title: メガゾーン23
+    year: 1985
+  - anidb: 1834
+    title: マインド・ゲーム
+    year: 2004
+  - anidb: 2400
+    title: ガンツ
+    year: 2004
+  - anidb: 2718
+    title: デルパワーX爆発みらくる元気!
+    year: 1986
+  - anidb: 3357
+    title: みんなあげちゃう♡
+    year: 1987
+  - anidb: 3544
+    title: メガゾーン23 PART II 秘密く・だ・さ・い
+    year: 1986
+  - anidb: 3545
+    title: MEGAZONE23III
+    year: 1989
+  - anidb: 5232
+    title: NEW DREAM HUNTER 麗夢
+    year: 1990
+  - anidb: 8995
+    title: 謎の彼女X 謎の夏祭り
+    year: 2012
+  - anidb: 12986
+    title: DEVILMAN crybaby
+    year: 2018
+  - anidb: 16982
+    title: 魔都精兵のスレイブ
+    year: 2024
+  - anidb: 18548
+    title: 魔都精兵のスレイブ2
+    year: 2026
+  add_to_anime_jp:
+  - anidb: 355
+    title: Golden Boy
+    year: 1995
+  - anidb: 452
+    title: 'A.D. Police: To Protect and Serve'
+    year: 1999
+  - anidb: 2820
+    title: Bludgeoning Angel Dokuro-chan
+    year: 2005
+  - anidb: 5089
+    title: Bludgeoning Angel Dokuro-chan 2
+    year: 2007
+  - anidb: 12091
+    title: Miss Kobayashi's Dragon Maid
+    year: 2017
+  - anidb: 14678
+    title: Miss Kobayashi's Dragon Maid S
+    year: 2021
+- name: Pretty Cure All Stars collection
+  add_to_anime:
+  - anidb: 13926
+    title: 映画HUGっと! プリキュア♡ふたりはプリキュア オールスターズメモリーズ
+    year: 2018
+- name: Rumiko Takahashi Collection
+  add_to_anime_jp:
+  - anidb: 17096
+    title: Lum, the Invader Girl
+    year: 2022
+  - anidb: 17861
+    title: Urusei Yatsura (2024)
+    year: 2024
+  - tvdb: 451479
+    title: Ranma1/2 (2024)
+    year: 2024
+- name: SSSS collection
+  add_to_anime_jp:
+  - anidb: 17037
+    title: Gridman Universe
+    year: 2023
+- name: Sailor Moon collection
+  add_to_anime_jp:
+  - anidb: 17343
+    title: Pretty Guardian Sailor Moon Cosmos The Movie
+    year: 2023
+- name: Space Battleship Yamato collection
+  add_to_anime_jp:
+  - anidb: 8787
+    title: Space Battleship Yamato 2199
+    year: 2012
+  - anidb: 10430
+    title: 'Space Battleship Yamato 2199: Odyssey of the Celestial Ark'
+    year: 2012
+  - anidb: 12051
+    title: Space Battleship Yamato 2202
+    year: 2017
+  - anidb: 14804
+    title: 'Space Battleship Yamato 2205: A New Journey'
+    year: 2021
+  - tvdb: 77773
+    title: Star Blazers
+    year: 1974
+- name: Strike Witches collection
+  add_to_anime_jp:
+  - anidb: 11964
+    title: Brave Witches
+    year: 2016
+- name: Teasing Master Takagi-san Collection
+  add_to_anime:
+  - anidb: 16560
+    title: 劇場版 からかい上手の高木さん
+    year: 2022
+create_in_anime_jp:
+- name: Ascendance of a Bookworm Collection
+  members:
+  - tvdb: 366263
+    title: Ascendance of a Bookworm
+    year: 2019
+- name: 'Frieren: Beyond Journey''s End Collection'
+  members:
+  - anidb: 17617
+    title: 'Frieren: Beyond Journey''s End'
+    year: 2023
+- name: Golden Kamuy Collection
+  members:
+  - tvdb: 338455
+    title: Golden Kamuy
+    year: 2018
+- name: Golgo 13 Collection
+  members:
+  - anidb: 1076
+    title: 'Golgo 13: The Professional'
+    year: 1983
+- name: Kerberos Saga Collection
+  members:
+  - anidb: 83
+    title: 'Jin-Roh: The Wolf Brigade'
+    year: 1999
+- name: Library War Collection
+  members:
+  - anidb: 5558
+    title: Library War
+    year: 2008
+- name: Medalist Collection
+  members:
+  - anidb: 18030
+    title: Medalist
+    year: 2025
+- name: Mushi-Shi Collection
+  members:
+  - anidb: 3433
+    title: Mushi-Shi
+    year: 2005
+- name: My Happy Marriage Collection
+  members:
+  - tvdb: 418665
+    title: My Happy Marriage
+    year: 2023
+- name: 'My Next Life as a Villainess: All Routes Lead to Doom! Collection'
+  members:
+  - tvdb: 371437
+    title: 'My Next Life as a Villainess: All Routes Lead to Doom!'
+    year: 2020
+- name: PriPara
+  members:
+  - anidb: 10515
+    title: PriPara
+    year: 2014
+  - anidb: 10783
+    title: 'PriPara the Movie: Everyone, Assemble! Prism ☆ Tours'
+    year: 2015
+  - anidb: 11294
+    title: 'Tobidasu PriPara: Minna de Mezase! Idol Grand Prix'
+    year: 2015
+  - anidb: 11729
+    title: 'Eiga PriPara: Minna no Akogare - Let''s Go PriParis'
+    year: 2016
+  - anidb: 12510
+    title: 'Gekijouban PriPara: Minna de Kagayake! Kirarin Star Live!'
+    year: 2017
+  - anidb: 12737
+    title: Idol Time PriPara
+    year: 2017
+  - anidb: 15911
+    title: Idol Land PriPara
+    year: 2021
+- name: Project Itoh Collection
+  members:
+  - anidb: 10932
+    title: Harmony
+    year: 2015
+- name: Ranma1/2 (2024) Collection
+  members:
+  - tvdb: 451479
+    title: Ranma1/2 (2024)
+    year: 2024
+- name: Riding Bean collection
+  members:
+  - anidb: 419
+    title: Riding Bean
+    year: 1989
+  - anidb: 13915
+    title: Bean Bandit
+    year: 2021
+- name: The Angel Next Door Spoils Me Rotten Collection
+  members:
+  - tvdb: 414221
+    title: The Angel Next Door Spoils Me Rotten
+    year: 2023
+- name: The Apothecary Diaries Collection
+  members:
+  - tvdb: 431162
+    title: The Apothecary Diaries
+    year: 2023
+- name: The Blue Orchestra Collection
+  members:
+  - anidb: 17314
+    title: The Blue Orchestra
+    year: 2023
+- name: The Pretty Series
+  members:
+  - anidb: 8240
+    title: Pretty Rhythm
+    year: 2011
+  - anidb: 8938
+    title: 'Pretty Rhythm: Dear My Future'
+    year: 2012
+  - anidb: 9664
+    title: 'Pretty Rhythm: Rainbow Live'
+    year: 2013
+  - anidb: 10515
+    title: PriPara
+    year: 2014
+  - anidb: 10783
+    title: 'PriPara the Movie: Everyone, Assemble! Prism ☆ Tours'
+    year: 2015
+  - anidb: 11294
+    title: 'Tobidasu PriPara: Minna de Mezase! Idol Grand Prix'
+    year: 2015
+  - anidb: 11729
+    title: 'Eiga PriPara: Minna no Akogare - Let''s Go PriParis'
+    year: 2016
+  - anidb: 12510
+    title: 'Gekijouban PriPara: Minna de Kagayake! Kirarin Star Live!'
+    year: 2017
+  - anidb: 12737
+    title: Idol Time PriPara
+    year: 2017
+  - anidb: 13752
+    title: Kiratto Pri Chan
+    year: 2018
+  - anidb: 15911
+    title: Idol Land PriPara
+    year: 2021
+  - anidb: 16399
+    title: Waccha PriMagi!
+    year: 2021
+  - anidb: 18452
+    title: Himitsu no Aipri
+    year: 2024
+- name: Tonbo! Collection
+  members:
+  - anidb: 18019
+    title: Tonbo!
+    year: 2024
+- name: Welcome to Demon School! Iruma-kun Collection
+  members:
+  - tvdb: 369144
+    title: Welcome to Demon School! Iruma-kun
+    year: 2019
+create_in_anime:
+- name: Girls with Guns Collection
+  members:
+  - anidb: 13
+    title: ノワール
+    year: 2001
+  - anidb: 1654
+    title: マドラックス
+    year: 2004
+  - anidb: 4966
+    title: エル・カザド EL CAZADOR DE LA BRUJA
+    year: 2007
+- name: Gunsmith Cats collection
+  members:
+  - anidb: 45
+    title: Gunsmith Cats
+    year: 1995
+  - anidb: 419
+    title: Riding Bean
+    year: 1989
+  - anidb: 13915
+    title: Bean Bandit
+    year: 2021
+- name: Hosoda Mamoru Collection
+  members:
+  - anidb: 4151
+    title: 時をかける少女
+    year: 2006
+  - anidb: 5057
+    title: SUPERFLAT MONOGRAM
+    year: 2003
+  - anidb: 6249
+    title: サマーウォーズ
+    year: 2009
+  - anidb: 8832
+    title: おおかみこどもの雨と雪
+    year: 2012
+  - anidb: 10967
+    title: バケモノの子
+    year: 2015
+  - anidb: 13174
+    title: 未来のミライ
+    year: 2018
+  - anidb: 15924
+    title: 竜とそばかすの姫
+    year: 2021
+- name: Majestic Prince Collection
+  members:
+  - anidb: 9452
+    title: 銀河機攻隊 マジェスティックプリンス
+    year: 2013
+  - anidb: 12033
+    title: 劇場版マジェスティックプリンス 覚醒の遺伝子
+    year: 2016
+- name: Panty & Stocking with Garterbelt Collection
+  members:
+  - anidb: 7529
+    title: Panty&Stocking with Garterbelt
+    year: 2010
+  - anidb: 17493
+    title: New Panty & Stocking with Garterbelt
+    year: 2025
+- name: Pretty Guardian Sailor Moon Cosmos the Movie Collection
+  members:
+  - anidb: 17343
+    title: 劇場版 美少女戦士セーラームーンCosmos
+    year: 2023
+- name: Pretty Series collection
+  members:
+  - anidb: 8240
+    title: プリティーリズム オーロラドリーム
+    year: 2011
+  - anidb: 8938
+    title: プリティーリズム ディアマイフューチャー
+    year: 2012
+  - anidb: 9664
+    title: プリティーリズム レインボーライブ
+    year: 2013
+  - anidb: 10515
+    title: プリパラ
+    year: 2014
+  - anidb: 10783
+    title: 劇場版プリパラ みーんなあつまれ! プリズム☆ツアーズ
+    year: 2015
+  - anidb: 11294
+    title: とびだすプリパラ み~んなでめざせ!アイドル☆グランプリ
+    year: 2015
+  - anidb: 11729
+    title: 映画 プリパラ み~んなのあこがれ♪ レッツゴー☆プリパリ
+    year: 2016
+  - anidb: 12510
+    title: 劇場版プリパラ み~んなでかがやけ! キラリン☆スターライブ!
+    year: 2017
+  - anidb: 12737
+    title: アイドルタイムプリパラ
+    year: 2017
+  - anidb: 13752
+    title: キラッとプリ☆チャン
+    year: 2018
+  - anidb: 15911
+    title: アイドルランドプリパラ
+    year: 2021
+  - anidb: 16399
+    title: ワッチャプリマジ!
+    year: 2021
+  - anidb: 18452
+    title: ひみつのアイプリ
+    year: 2024
+- name: SYNDUALITY noir Collection
+  members:
+  - tvdb: 424779
+    title: SYNDUALITY noir
+    year: 2023
+- name: Tekkon Kinkreet collection
+  members:
+  - anidb: 4054
+    title: 鉄コン筋クリート (2006)
+    year: 2006
+- name: There's No Freaking Way I'll Be Your Lover, Unless…?
+  members:
+  - anidb: 19001
+    title: わたしが恋人になれるわけないじゃん, ムリムリ! (※ムリじゃなかった!?)
+    year: 2025
+  - anidb: 19601
+    title: わたしが恋人になれるわけないじゃん, ムリムリ! (※ムリじゃなかった!?) ~ネクストシャイン!~
+    year: 2025
+excluded_false_matches:
+- anime: PriPara
+  anime_jp: Pretty Series collection
+  overlap: 0.54
+  reason: share members but are different collections
+- anime: Riding Bean collection
+  anime_jp: Gunsmith Cats collection
+  overlap: 0.67
+  reason: share members but are different collections
