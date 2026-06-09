@@ -933,6 +933,61 @@ class TestGroupDefaults:
         assert sf.parsed.release_group == "MTBB"
         assert defaults.release_group == "MTBB"
 
+    def test_process_file_copies_subtitle_sidecars(self, tmp_path, monkeypatch):
+        """A single-file import carries co-located subs (untagged → en)."""
+        monkeypatch.setattr(
+            anime,
+            "analyze_file",
+            lambda _: anime.MediaInfo(
+                video_codec="HEVC",
+                resolution="1080p",
+                width=1920,
+                height=1080,
+                bit_depth=8,
+                hdr_type="",
+            ),
+        )
+        monkeypatch.setattr(anime, "prompt_confirm", lambda *a, **k: True)
+        monkeypatch.setattr("builtins.input", lambda _="": "")
+        copied: list[tuple[Path, Path]] = []
+
+        def tracker(s, d, **kw):
+            copied.append((s, d))
+            return True
+
+        # The video copies via anime.copy_reflink; sidecars via the shared
+        # manifest.copy_subtitle_sidecars → manifest's copy_reflink binding.
+        monkeypatch.setattr(anime, "copy_reflink", tracker)
+        monkeypatch.setattr("etp_lib.manifest.copy_reflink", tracker)
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        video = src_dir / "[MTBB] Show - 01.mkv"
+        video.write_bytes(b"v")
+        (src_dir / "[MTBB] Show - 01.srt").write_bytes(b"s")  # untagged → .en
+        (src_dir / "[MTBB] Show - 01.en.forced.ass").write_bytes(b"s")  # kept
+
+        sf = anime.parse_source_filename(video.name)
+        sf.path = video
+        info = anime.AnimeInfo(
+            anidb_id=1,
+            tvdb_id=None,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[],
+        )
+        assert anime._process_file(
+            sf, info, "Show", tmp_path / "out", dry_run=True, verbose=False
+        )
+
+        video_dest = next(d for _s, d in copied if d.suffix == ".mkv")
+        sub_dests = sorted(d.name for _s, d in copied if d.suffix != ".mkv")
+        assert sub_dests == [
+            f"{video_dest.stem}.en.forced.ass",
+            f"{video_dest.stem}.en.srt",
+        ]
+
     def test_defaults_carry_to_next_file(self, monkeypatch):
         """Defaults set for one file are offered for the next."""
         # First file: user types "MTBB" at release group prompt

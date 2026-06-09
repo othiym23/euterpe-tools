@@ -47,7 +47,7 @@ from etp_lib.download_cache import (
     save_cache,
     scan_dir_mtimes,
 )
-from etp_lib.manifest import ManifestWorkflow, escape_kdl
+from etp_lib.manifest import ManifestWorkflow, copy_subtitle_sidecars, escape_kdl
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
@@ -1045,6 +1045,13 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-cache", action="store_true", help="Bypass API response cache")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     p.add_argument("--config", type=Path, metavar="FILE", help="Config file path")
+    p.add_argument(
+        "--sub-lang",
+        default="en",
+        metavar="CODE",
+        help="Language assigned to untagged subtitle sidecars (default: en). "
+        "Sidecars already carrying a language/flag token keep it.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1223,8 +1230,13 @@ def _process_file(
     dry_run: bool,
     verbose: bool,
     defaults: GroupDefaults | None = None,
+    sub_lang: str = "en",
 ) -> bool:
-    """Process a single source file: analyze, name, copy."""
+    """Process a single source file: analyze, name, copy.
+
+    Any subtitle sidecars sharing the source's base name ride along, renamed to
+    the destination base (untagged sidecars default to *sub_lang*).
+    """
     print(f"\n--- {source.path.name} ---")
 
     # Prompt for release group if not parsed from filename
@@ -1341,7 +1353,11 @@ def _process_file(
     if not prompt_confirm("  Copy this file?"):
         return False
 
-    return copy_reflink(source.path, dest_path, dry_run=dry_run)
+    if not copy_reflink(source.path, dest_path, dry_run=dry_run):
+        return False
+
+    copy_subtitle_sidecars(source.path, dest_path, sub_lang, dry_run, verbose)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1725,6 +1741,7 @@ def _process_group_batch(
     extras: list[Path] | None = None,
     config: AnimeConfig | None = None,
     allow_prompts: bool = True,
+    sub_lang: str = "en",
 ) -> BatchResult:
     """Batch-process a group of files via an editable manifest.
 
@@ -1792,6 +1809,7 @@ def _process_group_batch(
         proposed_dir,
         verbose=verbose,
         analyze_file_fn=analyze_file,
+        sub_lang=sub_lang,
     )
     workflow.build_lightweight()
 
@@ -1825,6 +1843,7 @@ def _process_group_batch(
                 proposed_dir,
                 verbose=verbose,
                 analyze_file_fn=analyze_file,
+                sub_lang=sub_lang,
             )
             workflow.build_lightweight()
             continue
@@ -1907,6 +1926,7 @@ def _process_pool(
     title_index: media_parser.TitleAliasIndex | None = None,
     resolved_paths: dict[Path, str] | None = None,
     auto_accept_ids: bool = False,
+    sub_lang: str = "en",
 ) -> tuple[BatchResult, bool]:
     """Process a file pool against metadata IDs interactively.
 
@@ -2061,6 +2081,7 @@ def _process_pool(
                 extras=extras,
                 config=config,
                 allow_prompts=not auto_accept_ids,
+                sub_lang=sub_lang,
             )
             extras = None  # extras go with the first AniDB season only
         else:
@@ -2076,6 +2097,7 @@ def _process_pool(
                 extras=extras,
                 config=config,
                 allow_prompts=not auto_accept_ids,
+                sub_lang=sub_lang,
             )
             # TVDB consumes the entire pool in one batch (no per-season
             # splitting like AniDB).  Triaged paths are tracked via
@@ -2250,6 +2272,7 @@ def run_series(args: argparse.Namespace, config: AnimeConfig) -> int:
             download_index=download_index,
             title_index=title_index,
             auto_accept_ids=True,
+            sub_lang=args.sub_lang,
         )
         total_success += pool_result.success
         total_skipped += pool_result.skipped
@@ -2317,7 +2340,15 @@ def run_episode(args: argparse.Namespace, config: AnimeConfig) -> int:
 
     print(f"\nSeries directory: {series_dir}")
 
-    if _process_file(sf, info, concise_name, series_dir, args.dry_run, args.verbose):
+    if _process_file(
+        sf,
+        info,
+        concise_name,
+        series_dir,
+        args.dry_run,
+        args.verbose,
+        sub_lang=args.sub_lang,
+    ):
         print("\nDone: 1 file copied")
         return 0
     else:
@@ -2507,6 +2538,7 @@ def run_triage(args: argparse.Namespace, config: AnimeConfig) -> int:
             already_copied=already_copied,
             extras=group_extras,
             resolved_paths=resolved_paths,
+            sub_lang=args.sub_lang,
         )
         total_success += pool_result.success
         total_skipped += pool_result.skipped

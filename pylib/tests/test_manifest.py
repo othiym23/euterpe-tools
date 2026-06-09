@@ -833,6 +833,65 @@ class TestExecuteManifest:
         assert result.skipped == 0
         assert result.success == 0
 
+    def test_subtitle_sidecars_ride_along(self, tmp_path, monkeypatch):
+        """Co-located subs copy to the dest base: untagged→en, tagged kept."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        video = src_dir / "Show - 01.mkv"
+        video.write_bytes(b"v")
+        (src_dir / "Show - 01.srt").write_bytes(b"s")  # untagged → .en
+        (src_dir / "Show - 01.en.forced.ass").write_bytes(b"s")  # tagged → kept
+
+        dest = tmp_path / "dst" / "Frieren - s1e01 - Title [MTBB].mkv"
+
+        copied: list[tuple[Path, Path]] = []
+        monkeypatch.setattr(
+            _manifest_mod,
+            "copy_reflink",
+            lambda s, d, **kw: copied.append((s, d)) or True,
+        )
+
+        sf = SourceFile(path=video, parsed=ParsedMetadata(episode=1, season=1))
+        result = execute_manifest([(sf, dest)], dry_run=True, verbose=False)
+        assert result.success == 1
+        names = {d.name for _s, d in copied}
+        assert names == {
+            "Frieren - s1e01 - Title [MTBB].mkv",
+            "Frieren - s1e01 - Title [MTBB].en.srt",
+            "Frieren - s1e01 - Title [MTBB].en.forced.ass",
+        }
+
+    def test_subtitle_follows_crc_disambiguation(self, tmp_path, monkeypatch):
+        """The sub tracks the video's FINAL name, incl. the [crc] 'both' suffix."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        video = src_dir / "ep01.mkv"
+        video.write_bytes(b"source content here")
+        (src_dir / "ep01.srt").write_bytes(b"s")
+
+        dest_dir = tmp_path / "dst"
+        dest_dir.mkdir()
+        dest_path = dest_dir / "Show - s1e01 [Group].mkv"
+        dest_path.write_bytes(b"existing")  # force a conflict → 'both'
+
+        monkeypatch.setattr(
+            _manifest_mod, "handle_conflict", lambda *a, **kw: ConflictAction.BOTH
+        )
+        copied: list[tuple[Path, Path]] = []
+        monkeypatch.setattr(
+            _manifest_mod,
+            "copy_reflink",
+            lambda s, d, **kw: copied.append((s, d)) or True,
+        )
+
+        sf = SourceFile(path=video, parsed=ParsedMetadata(episode=1, season=1))
+        execute_manifest([(sf, dest_path)], dry_run=False, verbose=False)
+
+        crc = sf.parsed.hash_code
+        assert crc and len(crc) == 8
+        sub_dest = next(d for _s, d in copied if d.suffix == ".srt")
+        assert sub_dest.name == f"Show - s1e01 [Group] [{crc}].en.srt"
+
     def test_skip_conflict_counted_as_skipped(self, monkeypatch):
         """ConflictAction.SKIP counts as skipped, not failed."""
         monkeypatch.setattr(

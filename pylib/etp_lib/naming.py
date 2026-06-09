@@ -26,6 +26,56 @@ def extras_relpath(path: Path) -> Path | None:
     return Path(*tail) if tail else Path(path.name)
 
 
+# Sidecar subtitle extensions recognized by Jellyfin/Plex/Emby (and imported
+# by Sonarr/Radarr's "import extra files"). A sidecar sharing a video's base
+# name is carried alongside the renamed destination video.
+SUBTITLE_EXTENSIONS = frozenset(
+    {".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup"}
+)
+
+
+def subtitle_sidecars(
+    source_video: Path,
+    dest_video: Path,
+    default_lang: str = "en",
+) -> list[tuple[Path, Path]]:
+    """Map subtitle sidecars next to *source_video* to destinations by *dest_video*.
+
+    A sidecar is a file in the same directory whose name is the source video's
+    base name followed by ``.<ext>`` (untagged) or ``.<tokens>.<ext>`` (tagged
+    with a language and/or flags like ``en`` / ``en.forced`` / ``en.sdh``),
+    where ``<ext>`` is a known subtitle extension. The ``.`` boundary after the
+    base prevents ``Show - 01`` from matching ``Show - 011.srt``.
+
+    Each match is mapped to a destination next to *dest_video*, named
+    ``<dest-base>.<lang>[.<flags>].<ext>`` per Jellyfin's external-subtitle
+    convention (which ShokoFin replicates verbatim into its VFS, keyed on the
+    shared base name). Tagged sidecars keep their tokens; untagged sidecars get
+    *default_lang* inserted. Returns ``(src, dst)`` pairs sorted by source name.
+    """
+    src_base = source_video.stem
+    dest_base = dest_video.stem
+    pairs: list[tuple[Path, Path]] = []
+    try:
+        siblings = source_video.parent.iterdir()
+    except OSError:
+        return []
+    for cand in siblings:
+        ext = cand.suffix.lower()
+        if ext not in SUBTITLE_EXTENSIONS or not cand.is_file():
+            continue
+        if not cand.name.startswith(src_base):
+            continue
+        remainder = cand.name[len(src_base) :]  # ".srt" or ".en.forced.srt"
+        if not remainder.startswith("."):  # boundary: skip "Show - 011.srt"
+            continue
+        # Tokens between base and extension: "" (untagged) or "en"/"en.forced".
+        tokens = remainder.removesuffix(cand.suffix).removeprefix(".")
+        dst = dest_video.parent / f"{dest_base}.{tokens or default_lang}{ext}"
+        pairs.append((cand, dst))
+    return sorted(pairs)
+
+
 def unique_audio_codecs(tracks: list[AudioTrack]) -> list[str]:
     """Return deduplicated non-commentary audio codec names in order."""
     seen: set[str] = set()

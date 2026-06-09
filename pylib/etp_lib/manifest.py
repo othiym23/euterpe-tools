@@ -27,6 +27,7 @@ from etp_lib.naming import (
     format_episode_filename,
     format_series_dirname,
     season_subdir,
+    subtitle_sidecars,
 )
 from etp_lib.types import (
     BatchResult,
@@ -734,8 +735,15 @@ def execute_manifest(
     verbose: bool,
     parse_source_filename_fn=None,
     analyze_file_fn=None,
+    sub_lang: str = "en",
 ) -> BatchResult:
-    """Execute the parsed manifest: copy each file to its destination."""
+    """Execute the parsed manifest: copy each file to its destination.
+
+    After a video copies successfully, any subtitle sidecars sharing its source
+    base name ride along, renamed to the video's *final* destination base name
+    (so they follow manifest edits and conflict-suffixing). Untagged sidecars
+    are tagged with *sub_lang*.
+    """
     result = BatchResult()
 
     for sf, dest_path in entries:
@@ -769,10 +777,12 @@ def execute_manifest(
                     ext = dest_path.suffix
                     dest_path = dest_path.parent / f"{stem} [{crc}]{ext}"
 
+        copied = False
         try:
             if copy_reflink(sf.path, dest_path, dry_run=dry_run):
                 result.success += 1
                 result.triaged.append(sf.path)
+                copied = True
             else:
                 result.failed += 1
         except OSError as e:
@@ -781,13 +791,38 @@ def execute_manifest(
                 if copy_reflink(sf.path, dest_path, dry_run=dry_run):
                     result.success += 1
                     result.triaged.append(sf.path)
+                    copied = True
                 else:
                     result.failed += 1
             else:
                 print(f"  error: {e}", file=sys.stderr)
                 result.failed += 1
 
+        if copied:
+            copy_subtitle_sidecars(sf.path, dest_path, sub_lang, dry_run, verbose)
+
     return result
+
+
+def copy_subtitle_sidecars(
+    source_video: Path,
+    dest_video: Path,
+    sub_lang: str,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    """Copy subtitle sidecars alongside an already-placed video.
+
+    Failures are reported but never abort the batch — a missing or
+    over-long sidecar must not stop the episodes from importing.
+    """
+    for sub_src, sub_dst in subtitle_sidecars(source_video, dest_video, sub_lang):
+        if verbose:
+            print(f"    subtitle: {sub_src.name} -> {sub_dst.name}")
+        try:
+            copy_reflink(sub_src, sub_dst, dry_run=dry_run)
+        except OSError as e:
+            print(f"    warning: subtitle copy failed: {sub_src.name}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +857,7 @@ class ManifestWorkflow:
         series_dir: Path,
         verbose: bool = False,
         analyze_file_fn=None,
+        sub_lang: str = "en",
     ) -> None:
         self.parsed = parsed
         self.info = info
@@ -829,6 +865,7 @@ class ManifestWorkflow:
         self.series_dir = series_dir
         self.verbose = verbose
         self.analyze_file_fn = analyze_file_fn
+        self.sub_lang = sub_lang
 
         self.entries: list[ManifestEntry] = []
         self.manifest_path: Path | None = None
@@ -978,6 +1015,7 @@ class ManifestWorkflow:
             self.verbose,
             parse_source_filename_fn=parse_source_filename_fn,
             analyze_file_fn=self.analyze_file_fn,
+            sub_lang=self.sub_lang,
         )
 
         if extra_entries:
