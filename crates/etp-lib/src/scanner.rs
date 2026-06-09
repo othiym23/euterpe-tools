@@ -358,7 +358,8 @@ async fn reconcile_moves(
            AND f.id NOT IN ({id_excludes})
            AND f.size IN ({placeholders})"
     );
-    let mut q = sqlx::query_as::<_, (i64, String, String, i64, i64, i64, i64)>(&query);
+    let mut q =
+        sqlx::query_as::<_, (i64, String, String, i64, i64, i64, i64)>(sqlx::AssertSqlSafe(query));
     for &id in &removed_ids {
         q = q.bind(id);
     }
@@ -388,7 +389,7 @@ async fn reconcile_moves(
             .collect::<Vec<_>>()
             .join(",");
         let query = format!("SELECT id, path FROM directories WHERE id IN ({placeholders})");
-        let mut q = sqlx::query_as::<_, (i64, String)>(&query);
+        let mut q = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(query));
         for &id in &unique_dir_ids {
             q = q.bind(id);
         }
