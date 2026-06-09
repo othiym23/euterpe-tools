@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -719,6 +720,23 @@ def _plan_tv(tv_tree, tmp_path, register, **plan_kw) -> Path:
 
 
 class TestRunApply:
+    @pytest.fixture(autouse=True)
+    def plain_copy(self, monkeypatch):
+        """CI filesystems lack reflink support; copy plainly in tests.
+
+        Production keeps `cp --reflink=always` on Linux by design (Btrfs
+        NAS, ADR 2026-03-24-02) — only the test substitutes the copier.
+        """
+
+        def fake_copy(src: Path, dst: Path, dry_run: bool = False) -> bool:
+            if dry_run:
+                return True
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            return True
+
+        monkeypatch.setattr(video_ingest, "copy_reflink", fake_copy)
+
     def test_happy_path(self, tv_tree, tmp_path, register, capsys):
         src, dest = tv_tree
         plan_path = _plan_tv(tv_tree, tmp_path, register)
