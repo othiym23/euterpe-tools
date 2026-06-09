@@ -2026,7 +2026,7 @@ mod tests {
         // Delete dependents
         {
             let mut conn = pool.acquire().await.unwrap();
-            delete_file_dependents(&mut *conn, file_id).await.unwrap();
+            delete_file_dependents(&mut conn, file_id).await.unwrap();
         }
 
         // Verify all cleaned up

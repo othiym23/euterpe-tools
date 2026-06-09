@@ -82,7 +82,7 @@ async fn collect_stats(
     }
 
     let mut sorted: Vec<_> = ext_counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     (file_count, total, sorted)
 }
 
@@ -155,9 +155,9 @@ async fn stats_csv_has_header_and_rows() {
 
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "extension,count");
-    assert!(lines.iter().any(|l| *l == ".flac,2"));
-    assert!(lines.iter().any(|l| *l == ".mp3,1"));
-    assert!(lines.iter().any(|l| *l == ".jpg,1"));
+    assert!(lines.contains(&".flac,2"));
+    assert!(lines.contains(&".mp3,1"));
+    assert!(lines.contains(&".jpg,1"));
 }
 
 #[tokio::test]

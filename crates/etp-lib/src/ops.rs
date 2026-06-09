@@ -702,229 +702,6 @@ pub fn render_find_tree(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_size_bytes() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(512), "512 B");
-        assert_eq!(format_size(1023), "1023 B");
-    }
-
-    #[test]
-    fn format_size_kib() {
-        assert_eq!(format_size(1024), "1.00 KiB");
-        assert_eq!(format_size(1536), "1.50 KiB");
-    }
-
-    #[test]
-    fn format_size_mib() {
-        assert_eq!(format_size(1024 * 1024), "1.00 MiB");
-        assert_eq!(format_size(500 * 1024 * 1024), "500.00 MiB");
-    }
-
-    #[test]
-    fn format_size_gib() {
-        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GiB");
-        assert_eq!(format_size(2_500_000_000), "2.33 GiB");
-    }
-
-    #[test]
-    fn format_size_tib() {
-        assert_eq!(format_size(1024 * 1024 * 1024 * 1024), "1.00 TiB");
-    }
-
-    #[test]
-    fn regexp_pattern_passes_through_without_i() {
-        assert_eq!(super::regexp_pattern("swans", false), "swans");
-        assert_eq!(super::regexp_pattern("sw.*ns", false), "sw.*ns");
-    }
-
-    #[test]
-    fn regexp_pattern_prefixes_i_flag() {
-        assert_eq!(super::regexp_pattern("swans", true), "(?i)swans");
-        assert_eq!(super::regexp_pattern("Björk", true), "(?i)Björk");
-    }
-
-    #[test]
-    fn system_excludes_regex_empty_returns_none() {
-        assert_eq!(super::system_excludes_regex(&HashSet::new()), None);
-    }
-
-    #[test]
-    fn system_excludes_regex_escapes_metachars_and_anchors_components() {
-        let patterns: HashSet<String> = ["@eaDir", ".etp.db", "#recycle"]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
-        let re = super::system_excludes_regex(&patterns).unwrap();
-        // Alternation is sorted; `regex::escape` conservatively escapes `.`,
-        // `#` (potential `x`-flag comment) and `@`-safe chars. Confirm that
-        // the resulting regex compiles and works — not the exact bytes.
-        let compiled = regex::Regex::new(&re).unwrap();
-        assert!(compiled.is_match("/@eaDir"));
-        assert!(compiled.is_match("/a/.etp.db"));
-        assert!(compiled.is_match("/a/#recycle/b"));
-        assert!(!compiled.is_match("/a/normal/b"));
-    }
-
-    #[test]
-    fn system_excludes_regex_matches_component_only() {
-        let patterns: HashSet<String> = ["@eaDir"].iter().map(|s| (*s).to_string()).collect();
-        let re_str = super::system_excludes_regex(&patterns).unwrap();
-        let re = regex::Regex::new(&re_str).unwrap();
-        // Component hits:
-        assert!(re.is_match("/a/b/@eaDir/c"));
-        assert!(re.is_match("/a/b/@eaDir"));
-        assert!(re.is_match("@eaDir/c"));
-        assert!(re.is_match("@eaDir"));
-        // Must NOT false-match a substring inside another name:
-        assert!(!re.is_match("/a/@eaDirectory/c"));
-        assert!(!re.is_match("/a/not@eaDir/c"));
-    }
-
-    #[test]
-    fn is_excluded_path_matches_component() {
-        let exclude = vec!["@eaDir".to_string()];
-        assert!(is_excluded_path("/data/@eaDir", &exclude));
-    }
-
-    #[test]
-    fn is_excluded_path_matches_nested() {
-        let exclude = vec!["@eaDir".to_string()];
-        assert!(is_excluded_path("/data/sub/@eaDir/thumbs", &exclude));
-    }
-
-    #[test]
-    fn is_excluded_path_no_match() {
-        let exclude = vec!["@eaDir".to_string()];
-        assert!(!is_excluded_path("/data/sub", &exclude));
-    }
-
-    #[test]
-    fn is_excluded_path_empty_exclude() {
-        assert!(!is_excluded_path("/data/@eaDir", &[]));
-    }
-
-    #[test]
-    fn user_exclude_glob_matching() {
-        let pat = glob::Pattern::new("*.bak").unwrap();
-        assert!(is_user_excluded_name("file.bak", &[pat.clone()]));
-        assert!(!is_user_excluded_name("file.txt", &[pat]));
-    }
-
-    #[test]
-    fn system_name_matching() {
-        let sys = default_system_patterns();
-        assert!(is_system_name("@eaDir", &sys));
-        assert!(is_system_name(".etp.db", &sys));
-        assert!(!is_system_name("music", &sys));
-    }
-
-    #[test]
-    fn filter_config_hides_dotfiles_by_default() {
-        let filter = FilterConfig::new(false);
-        assert!(filter.should_show("/data/sub", "song.mp3"));
-        assert!(!filter.should_show("/data/sub", ".hidden"));
-        assert!(!filter.should_show("/data/sub", ".DS_Store"));
-    }
-
-    #[test]
-    fn filter_config_show_hidden_reveals_dotfiles() {
-        let mut filter = FilterConfig::new(false);
-        filter.show_hidden = true;
-        assert!(filter.should_show("/data/sub", ".hidden"));
-        assert!(filter.should_show("/data/sub", ".DS_Store"));
-    }
-
-    #[test]
-    fn filter_config_hides_system_files_by_default() {
-        let filter = FilterConfig::new(false);
-        assert!(!filter.should_show("/data/@eaDir", "thumb.jpg"));
-        assert!(!filter.should_show("/data/sub", ".etp.db"));
-    }
-
-    #[test]
-    fn filter_config_include_system_files() {
-        let filter = FilterConfig::new(true);
-        assert!(filter.should_show("/data/@eaDir", "thumb.jpg"));
-        assert!(filter.should_show("/data/sub", ".etp.db"));
-        // Dotfiles still hidden (show_hidden defaults to false)
-        assert!(!filter.should_show("/data/sub", ".hidden"));
-    }
-
-    #[test]
-    fn filter_config_system_files_exempt_from_dotfile_hiding() {
-        // .etp.db starts with '.' but is a system file, not a dotfile
-        let filter = FilterConfig::new(true);
-        assert!(filter.should_show("/data/sub", ".etp.db"));
-        assert!(filter.should_show("/data/sub", ".SynologyWorkingDirectory"));
-    }
-    #[test]
-    fn resolve_nickname_returns_none_for_real_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = crate::config::RuntimeConfig::defaults();
-        assert!(resolve_nickname(tmp.path(), &config).is_none());
-    }
-
-    #[test]
-    fn resolve_nickname_finds_configured_database() {
-        let config = crate::config::parse_runtime_config(
-            r#"
-database "music" {
-    root "/volume1/music"
-    db "/data/music.db"
-}
-"#,
-        )
-        .unwrap();
-
-        let result = resolve_nickname(std::path::Path::new("music"), &config);
-        assert!(result.is_some());
-        let (root, db) = result.unwrap();
-        assert_eq!(root, std::path::Path::new("/volume1/music"));
-        assert_eq!(db, std::path::Path::new("/data/music.db"));
-    }
-
-    #[test]
-    fn resolve_nickname_returns_none_for_unknown_name() {
-        let config = crate::config::parse_runtime_config(
-            r#"
-database "music" {
-    root "/volume1/music"
-    db "/data/music.db"
-}
-"#,
-        )
-        .unwrap();
-        assert!(resolve_nickname(std::path::Path::new("videos"), &config).is_none());
-    }
-
-    #[test]
-    fn filter_config_from_config_uses_config_patterns() {
-        let config = crate::config::parse_runtime_config(
-            r#"
-system-files {
-    pattern "@custom"
-}
-user-excludes {
-    pattern "*.tmp"
-}
-"#,
-        )
-        .unwrap();
-
-        let filter = FilterConfig::from_config(&config, false, false, false, false);
-        assert!(filter.should_show("/data/sub", "song.mp3"));
-        assert!(!filter.should_show("/data/@custom", "file.txt"));
-        assert!(!filter.should_show("/data/sub", "file.tmp"));
-        // @eaDir is NOT filtered because config overrides defaults
-        assert!(filter.should_show("/data/@eaDir", "thumb.jpg"));
-    }
-}
-
 /// Stats returned by a metadata scan.
 pub struct MetadataScanStats {
     pub files_scanned: usize,
@@ -1133,4 +910,230 @@ pub async fn gc_orphan_blobs(
         }
     }
     Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kib() {
+        assert_eq!(format_size(1024), "1.00 KiB");
+        assert_eq!(format_size(1536), "1.50 KiB");
+    }
+
+    #[test]
+    fn format_size_mib() {
+        assert_eq!(format_size(1024 * 1024), "1.00 MiB");
+        assert_eq!(format_size(500 * 1024 * 1024), "500.00 MiB");
+    }
+
+    #[test]
+    fn format_size_gib() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GiB");
+        assert_eq!(format_size(2_500_000_000), "2.33 GiB");
+    }
+
+    #[test]
+    fn format_size_tib() {
+        assert_eq!(format_size(1024 * 1024 * 1024 * 1024), "1.00 TiB");
+    }
+
+    #[test]
+    fn regexp_pattern_passes_through_without_i() {
+        assert_eq!(super::regexp_pattern("swans", false), "swans");
+        assert_eq!(super::regexp_pattern("sw.*ns", false), "sw.*ns");
+    }
+
+    #[test]
+    fn regexp_pattern_prefixes_i_flag() {
+        assert_eq!(super::regexp_pattern("swans", true), "(?i)swans");
+        assert_eq!(super::regexp_pattern("Björk", true), "(?i)Björk");
+    }
+
+    #[test]
+    fn system_excludes_regex_empty_returns_none() {
+        assert_eq!(super::system_excludes_regex(&HashSet::new()), None);
+    }
+
+    #[test]
+    fn system_excludes_regex_escapes_metachars_and_anchors_components() {
+        let patterns: HashSet<String> = ["@eaDir", ".etp.db", "#recycle"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let re = super::system_excludes_regex(&patterns).unwrap();
+        // Alternation is sorted; `regex::escape` conservatively escapes `.`,
+        // `#` (potential `x`-flag comment) and `@`-safe chars. Confirm that
+        // the resulting regex compiles and works — not the exact bytes.
+        let compiled = regex::Regex::new(&re).unwrap();
+        assert!(compiled.is_match("/@eaDir"));
+        assert!(compiled.is_match("/a/.etp.db"));
+        assert!(compiled.is_match("/a/#recycle/b"));
+        assert!(!compiled.is_match("/a/normal/b"));
+    }
+
+    #[test]
+    fn system_excludes_regex_matches_component_only() {
+        let patterns: HashSet<String> = ["@eaDir"].iter().map(|s| (*s).to_string()).collect();
+        let re_str = super::system_excludes_regex(&patterns).unwrap();
+        let re = regex::Regex::new(&re_str).unwrap();
+        // Component hits:
+        assert!(re.is_match("/a/b/@eaDir/c"));
+        assert!(re.is_match("/a/b/@eaDir"));
+        assert!(re.is_match("@eaDir/c"));
+        assert!(re.is_match("@eaDir"));
+        // Must NOT false-match a substring inside another name:
+        assert!(!re.is_match("/a/@eaDirectory/c"));
+        assert!(!re.is_match("/a/not@eaDir/c"));
+    }
+
+    #[test]
+    fn is_excluded_path_matches_component() {
+        let exclude = vec!["@eaDir".to_string()];
+        assert!(is_excluded_path("/data/@eaDir", &exclude));
+    }
+
+    #[test]
+    fn is_excluded_path_matches_nested() {
+        let exclude = vec!["@eaDir".to_string()];
+        assert!(is_excluded_path("/data/sub/@eaDir/thumbs", &exclude));
+    }
+
+    #[test]
+    fn is_excluded_path_no_match() {
+        let exclude = vec!["@eaDir".to_string()];
+        assert!(!is_excluded_path("/data/sub", &exclude));
+    }
+
+    #[test]
+    fn is_excluded_path_empty_exclude() {
+        assert!(!is_excluded_path("/data/@eaDir", &[]));
+    }
+
+    #[test]
+    fn user_exclude_glob_matching() {
+        let pat = glob::Pattern::new("*.bak").unwrap();
+        assert!(is_user_excluded_name(
+            "file.bak",
+            std::slice::from_ref(&pat)
+        ));
+        assert!(!is_user_excluded_name("file.txt", &[pat]));
+    }
+
+    #[test]
+    fn system_name_matching() {
+        let sys = default_system_patterns();
+        assert!(is_system_name("@eaDir", &sys));
+        assert!(is_system_name(".etp.db", &sys));
+        assert!(!is_system_name("music", &sys));
+    }
+
+    #[test]
+    fn filter_config_hides_dotfiles_by_default() {
+        let filter = FilterConfig::new(false);
+        assert!(filter.should_show("/data/sub", "song.mp3"));
+        assert!(!filter.should_show("/data/sub", ".hidden"));
+        assert!(!filter.should_show("/data/sub", ".DS_Store"));
+    }
+
+    #[test]
+    fn filter_config_show_hidden_reveals_dotfiles() {
+        let mut filter = FilterConfig::new(false);
+        filter.show_hidden = true;
+        assert!(filter.should_show("/data/sub", ".hidden"));
+        assert!(filter.should_show("/data/sub", ".DS_Store"));
+    }
+
+    #[test]
+    fn filter_config_hides_system_files_by_default() {
+        let filter = FilterConfig::new(false);
+        assert!(!filter.should_show("/data/@eaDir", "thumb.jpg"));
+        assert!(!filter.should_show("/data/sub", ".etp.db"));
+    }
+
+    #[test]
+    fn filter_config_include_system_files() {
+        let filter = FilterConfig::new(true);
+        assert!(filter.should_show("/data/@eaDir", "thumb.jpg"));
+        assert!(filter.should_show("/data/sub", ".etp.db"));
+        // Dotfiles still hidden (show_hidden defaults to false)
+        assert!(!filter.should_show("/data/sub", ".hidden"));
+    }
+
+    #[test]
+    fn filter_config_system_files_exempt_from_dotfile_hiding() {
+        // .etp.db starts with '.' but is a system file, not a dotfile
+        let filter = FilterConfig::new(true);
+        assert!(filter.should_show("/data/sub", ".etp.db"));
+        assert!(filter.should_show("/data/sub", ".SynologyWorkingDirectory"));
+    }
+    #[test]
+    fn resolve_nickname_returns_none_for_real_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = crate::config::RuntimeConfig::defaults();
+        assert!(resolve_nickname(tmp.path(), &config).is_none());
+    }
+
+    #[test]
+    fn resolve_nickname_finds_configured_database() {
+        let config = crate::config::parse_runtime_config(
+            r#"
+database "music" {
+    root "/volume1/music"
+    db "/data/music.db"
+}
+"#,
+        )
+        .unwrap();
+
+        let result = resolve_nickname(std::path::Path::new("music"), &config);
+        assert!(result.is_some());
+        let (root, db) = result.unwrap();
+        assert_eq!(root, std::path::Path::new("/volume1/music"));
+        assert_eq!(db, std::path::Path::new("/data/music.db"));
+    }
+
+    #[test]
+    fn resolve_nickname_returns_none_for_unknown_name() {
+        let config = crate::config::parse_runtime_config(
+            r#"
+database "music" {
+    root "/volume1/music"
+    db "/data/music.db"
+}
+"#,
+        )
+        .unwrap();
+        assert!(resolve_nickname(std::path::Path::new("videos"), &config).is_none());
+    }
+
+    #[test]
+    fn filter_config_from_config_uses_config_patterns() {
+        let config = crate::config::parse_runtime_config(
+            r#"
+system-files {
+    pattern "@custom"
+}
+user-excludes {
+    pattern "*.tmp"
+}
+"#,
+        )
+        .unwrap();
+
+        let filter = FilterConfig::from_config(&config, false, false, false, false);
+        assert!(filter.should_show("/data/sub", "song.mp3"));
+        assert!(!filter.should_show("/data/@custom", "file.txt"));
+        assert!(!filter.should_show("/data/sub", "file.tmp"));
+        // @eaDir is NOT filtered because config overrides defaults
+        assert!(filter.should_show("/data/@eaDir", "thumb.jpg"));
+    }
 }

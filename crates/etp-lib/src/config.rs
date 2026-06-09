@@ -341,7 +341,7 @@ scan "active" {
         assert!(config.default_database.is_none());
         assert!(config.cas_dir.is_none());
         assert!(!config.system_patterns.is_empty());
-        assert!(config.system_patterns.contains(&"@eaDir".to_string()));
+        assert!(config.system_patterns.contains("@eaDir"));
         assert!(config.databases.is_empty());
     }
 
@@ -441,7 +441,7 @@ database "incomplete" {
         let kdl = &template[start..end];
         let config = parse_runtime_config(kdl).unwrap();
         assert!(
-            config.system_patterns.contains(&"@eaDir".to_string()),
+            config.system_patterns.contains("@eaDir"),
             "template should include @eaDir"
         );
         assert!(
@@ -453,8 +453,8 @@ database "incomplete" {
     #[test]
     fn runtime_config_defaults_returns_hardcoded() {
         let config = RuntimeConfig::defaults();
-        assert!(config.system_patterns.contains(&"@eaDir".to_string()));
-        assert!(config.system_patterns.contains(&".etp.db".to_string()));
+        assert!(config.system_patterns.contains("@eaDir"));
+        assert!(config.system_patterns.contains(".etp.db"));
         assert!(config.databases.is_empty());
     }
 
