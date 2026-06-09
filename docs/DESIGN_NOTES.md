@@ -100,6 +100,8 @@ Python commands live in `cmd/etp/etp_commands/`:
 - `dispatcher.py` — git-style dispatcher (`etp <cmd>` → `etp-<cmd>`)
 - `anime.py` — interactive anime collection manager
 - `catalog.py` — KDL-configured catalog orchestrator
+- `video_cli.py` — shared plan/apply CLI for movies and television
+- `movies.py`, `television.py` — thin MediaKind bindings onto `video_cli`
 
 Python shared library lives in `pylib/etp_lib/`:
 
@@ -107,15 +109,24 @@ Python shared library lives in `pylib/etp_lib/`:
 - `media_vocab.py` — vocabulary sets, Token/TokenKind types, and mapping tables
   shared between the parser and its recognizers
 - `media_parser.py` — three-phase media filename parser (see below)
-- `anidb.py`, `tvdb.py` — API clients with local caching
-- `types.py` — shared data types (AnimeInfo, Episode, SourceFile,
-  ParsedMetadata, MatchedFile, MediaInfo) and StrEnum types (EpisodeType,
-  BonusType, MetadataProvider)
-- `manifest.py` — KDL manifest generation, parsing, execution, and the
+- `media_scanner.py` — recursive media-file discovery and the
+  ParsedMedia→SourceFile bridge (`parse_source_filename`)
+- `anidb.py`, `tvdb.py`, `tmdb.py` — API clients with local caching
+- `types.py` — shared data types (AnimeInfo, MovieInfo, Episode, SourceFile,
+  ParsedMetadata, MatchedFile, MediaInfo, SearchCandidate) and StrEnum types
+  (EpisodeType, BonusType, MetadataProvider)
+- `manifest.py` — anime KDL manifest generation, parsing, execution, and the
   ManifestWorkflow orchestrator
-- `naming.py` — episode filename formatting and series directory naming
+- `video_ingest.py` — non-interactive plan/apply ingestion core for movies and
+  television (see below)
+- `naming.py` — filename formatting and directory naming for anime, movies, and
+  television
 - `conflicts.py` — destination conflict resolution with readline support
 - `mediainfo.py` — mediainfo subprocess wrapper for audio/video metadata
+- `ingest_register.py` — shared already-ingested register (all ingest commands;
+  see ADR 2026-06-09-03)
+- `envfile.py` — KEY=VALUE env file loading
+- `media_config.py` — media-ingestion.kdl loading and mapping persistence
 
 `conf/` contains KDL configuration files.
 
@@ -308,6 +319,77 @@ language code on rename" failure mode. The cost: an orphan subtitle — one whos
 base matches no source video, including a video/sub `vN` mismatch
 (`Show - 01v2.mkv` vs `Show - 01.srt`) — is silently skipped. It is neither a
 sidecar nor an extra, since `_EXTRAS_EXTENSIONS` excludes subtitle extensions.
+
+## Movies & Television Ingestion
+
+`etp movies ingest` and `etp television ingest` are thin wrappers
+(`cmd/etp/etp_commands/video_cli.py`) around one shared core,
+`pylib/etp_lib/video_ingest.py`, parameterized by a `MediaKind` enum. Unlike the
+interactive anime flow, both are non-interactive **plan/apply** commands
+designed for LLM agents as first-class users (ADR 2026-06-09-01).
+
+### Data flow
+
+```
+ingest plan --radarr|--sonarr and/or --downloads
+  scan sources         scan_managed_tree (deterministic Radarr/Sonarr naming)
+                       scan_downloads (best-effort torrent naming, kind-filtered)
+  filter               shared ingest register (unless --force), pattern
+  resolve              config mapping / --refine ID  -> confidence "exact"
+                       else provider search: exact title+year -> "exact",
+                       single fuzzy hit -> "high", else needs-id + candidates
+  cross-check          TV: TMDB external_ids must point back at the TVDB id
+                       movies: TheTVDB movie search by exact title+year
+  enrich               mediainfo per file (quality block in dest names)
+  place                reuse existing `Title (Year)` library dir, else
+                       `Title (Year) {tmdb-NNN}` / `{tvdb-NNN}` (+ {edition-X});
+                       existing dest file -> status "conflict", conflict "keep"
+  write                KDL plan manifest (schema-version 1) + JSON summary
+
+ingest apply MANIFEST
+  validate everything first (sources exist at recorded sizes, no unresolved
+  needs-id, no surprise destinations) — reject all-at-once, copy nothing
+  execute reflink copies + subtitle sidecars, honoring declarative per-entry
+  conflict actions (keep/replace/both/skip; "both" disambiguates with [CRC32])
+  record sources in the shared ingest register (saved once, at the end)
+```
+
+Exit codes: 0 success, 1 failure, 2 nothing to do. With `--json`, stdout is
+exactly one JSON document; everything human-facing goes to stderr (apply
+redirects the copy helpers' stdout for this).
+
+### Provider roles
+
+Television: TheTVDB primary (episode numbering/titles, `{tvdb-NNN}` dir tag);
+TMDB cross-check. Movies: TMDB primary (`{tmdb-NNN}` dir tag, IMDb id,
+alternative titles); TheTVDB cross-check. Mismatches are warnings, never fatal.
+No AniDB. See ADR 2026-06-09-04.
+
+### Invariants
+
+- **Plan never writes to the library; apply never invents names.** Every
+  destination in an applied manifest was computed and reviewable at plan time.
+- **Shared register.** All three ingest commands (anime included) share
+  `cache_dir("ingest")/copied.json`, keyed by resolved absolute source path,
+  because they draw on the same downloads directory (ADR 2026-06-09-03).
+  Skip-marked entries are not registered and resurface on the next plan.
+- **Existing library directories are reused, never renamed.** Matching is on
+  normalized `Title (Year)` with brace tags and bracketed alt-titles stripped.
+- **Ambiguity is data.** Unresolvable titles become `needs-id` blocks with
+  candidates; apply refuses to run while any remain unskipped. The `--refine`
+  flag re-plans with IDs/decisions carried forward from an edited manifest.
+
+### Known limitations
+
+Downloads mode shares the directory with anime torrents, so its groups are only
+as good as `media_parser` on western/scene names. Observed gaps in the real
+corpus: quality tokens occasionally survive in titles
+(`KPop Demon Hunters 2025 2160p ...`), years sometimes stick to the title
+(`Harmony 2015`), and extras clips (convention panels, OP/ED singles) parse as
+standalone titles. All of these fail exact title+year resolution and land as
+`needs-id` — wrong destinations are not produced, but downloads-mode plans
+benefit from a `pattern` argument to target specific items. Parser improvements
+for scene-style naming are tracked as follow-up work.
 
 ## Database
 

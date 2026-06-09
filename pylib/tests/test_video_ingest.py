@@ -917,3 +917,16 @@ class TestRunPlanDownloads:
         )
         opts = plan_opts(tmp_path, managed=False, downloads=True)
         assert run_plan(MediaKind.TV, config, opts, tv_providers()) == 1
+
+
+class TestManagedScanGroupCleanup:
+    def test_radarr_placeholder_group_stripped(self, movie_tree):
+        src, _ = movie_tree
+        _mkfile(
+            src
+            / "Duel (1971)"
+            / "Duel (1971) - complete movie - [Radarr Remux-1080p,,AVC,8bit,DTS].mkv"
+        )
+        titles = scan_managed_tree(src, MediaKind.MOVIE)
+        duel = next(t for t in titles if t.title == "Duel")
+        assert duel.files[0].source.parsed.release_group == ""

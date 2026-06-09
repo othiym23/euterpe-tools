@@ -216,6 +216,10 @@ def _scan_managed_file(
 ) -> ScannedFile:
     sf = parse_source_filename(path.name)
     sf.path = path
+    # Radarr/Sonarr naming templates leave their own name where a release
+    # group would appear ("[Radarr Remux-1080p,...]"); it is not a group.
+    if sf.parsed.release_group in ("Radarr", "Sonarr"):
+        sf.parsed.release_group = ""
 
     if kind is MediaKind.MOVIE:
         part_match = _RE_PART_SUFFIX.search(path.stem)
