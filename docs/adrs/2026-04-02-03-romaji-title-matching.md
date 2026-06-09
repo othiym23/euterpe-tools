@@ -6,6 +6,11 @@ Date: 2026-04-02
 
 Accepted
 
+> **Affected by**
+> [2026-05-30-01-shoko-anidb-matching-authority](2026-05-30-01-shoko-anidb-matching-authority.md):
+> TVDB anime matching is being deprecated in favor of Shoko/AniDB, so this
+> fallback applies only to the retained non-anime TVDB/TMDB path.
+
 ## Context
 
 AniDB provides anime titles in multiple languages: English (`en`), Japanese

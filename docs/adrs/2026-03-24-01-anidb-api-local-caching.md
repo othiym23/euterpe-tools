@@ -6,6 +6,11 @@ Date: 2026-03-24
 
 Accepted
 
+> **Affected by**
+> [2026-05-30-01-shoko-anidb-matching-authority](2026-05-30-01-shoko-anidb-matching-authority.md):
+> `etp` will stop calling AniDB directly and defer to the local Shoko Server
+> API, which owns AniDB rate-limit handling.
+
 ## Context
 
 etp-anime fetches anime metadata (titles, episode lists) from AniDB's HTTP API.

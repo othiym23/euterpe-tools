@@ -2,6 +2,10 @@
 
 - **Status**: Accepted
 - **Date**: 2026-04-02
+- **Affected by**:
+  [2026-05-30-01-shoko-anidb-matching-authority](2026-05-30-01-shoko-anidb-matching-authority.md)
+  — once Shoko-backed ingest lands, AniDB special classification (S/C/T/P/O)
+  comes from Shoko rather than this heuristic.
 
 ## Context
 
