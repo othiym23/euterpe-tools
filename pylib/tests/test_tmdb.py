@@ -157,3 +157,37 @@ class TestTvParsing:
     def test_tvdb_id_as_string(self):
         data = {"id": 1, "name": "X", "external_ids": {"tvdb_id": "371980"}}
         assert _parse_tmdb_tv(data, 1).tvdb_id == 371980
+
+
+class TestProviderCache:
+    """Shared 24h JSON cache helper (etp_lib.provider_cache)."""
+
+    def test_roundtrip(self, tmp_path):
+        from etp_lib.provider_cache import load_cached_json, store_cached_json
+
+        f = tmp_path / "x.json"
+        store_cached_json(f, {"a": 1})
+        assert load_cached_json(f) == {"a": 1}
+
+    def test_missing_returns_none(self, tmp_path):
+        from etp_lib.provider_cache import load_cached_json
+
+        assert load_cached_json(tmp_path / "nope.json") is None
+
+    def test_no_cache_bypasses(self, tmp_path):
+        from etp_lib.provider_cache import load_cached_json, store_cached_json
+
+        f = tmp_path / "x.json"
+        store_cached_json(f, [1, 2])
+        assert load_cached_json(f, no_cache=True) is None
+
+    def test_stale_returns_none(self, tmp_path):
+        import os
+
+        from etp_lib.provider_cache import load_cached_json, store_cached_json
+
+        f = tmp_path / "x.json"
+        store_cached_json(f, [1])
+        old = 1_000_000_000  # well past any max age
+        os.utime(f, (old, old))
+        assert load_cached_json(f) is None

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -51,6 +52,7 @@ from etp_lib.media_scanner import iter_media_files, parse_source_filename
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     format_movie_dirname,
+    normalize_title,
     format_movie_filename,
     format_tv_episode_filename,
     format_tv_series_dirname,
@@ -299,7 +301,7 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         if (kind is MediaKind.TV) != looks_episodic:
             continue
 
-        key = _norm_title(title)
+        key = normalize_title(title)
         group = groups.get(key)
         if group is None:
             group = groups[key] = ScannedTitle(
@@ -356,12 +358,6 @@ class Providers:
     no_cache: bool = False
 
 
-def _norm_title(text: str) -> str:
-    """Normalize a title for comparison: casefold, alphanumeric words only."""
-    cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in text.casefold())
-    return " ".join(cleaned.split())
-
-
 def pick_candidate(
     candidates: list[SearchCandidate], title: str, alt_title: str, year: int
 ) -> tuple[Confidence, SearchCandidate | None]:
@@ -374,10 +370,10 @@ def pick_candidate(
     """
     if not candidates:
         return Confidence.NONE, None
-    wanted = {_norm_title(t) for t in (title, alt_title) if t}
+    wanted = {normalize_title(t) for t in (title, alt_title) if t}
 
     def is_exact(c: SearchCandidate) -> bool:
-        names = {_norm_title(c.title), _norm_title(c.original_title)} - {""}
+        names = {normalize_title(c.title), normalize_title(c.original_title)} - {""}
         year_ok = not year or not c.year or c.year == year
         return bool(wanted & names) and year_ok
 
@@ -664,7 +660,6 @@ class PlanOptions:
     refine: Path | None = None
     no_cache: bool = False
     verbose: bool = False
-    sub_lang: str = "en"
 
 
 def _say(opts_json: bool, message: str) -> None:
@@ -679,7 +674,7 @@ _RE_BRACKETED = re.compile(r"\s*\[[^\]]*\]")
 
 
 def _normalize_dirname(name: str) -> str:
-    return _norm_title(_RE_BRACKETED.sub("", _RE_BRACE_TAG.sub("", name)))
+    return normalize_title(_RE_BRACKETED.sub("", _RE_BRACE_TAG.sub("", name)))
 
 
 def _dest_dir_index(dest_root: Path) -> dict[str, str]:
@@ -707,7 +702,7 @@ def _existing_dest_dir(
     for title in titles:
         if not title:
             continue
-        key = _norm_title(f"{title} ({year})") if year else _norm_title(title)
+        key = normalize_title(f"{title} ({year})") if year else normalize_title(title)
         if key in index:
             return index[key]
     return None
@@ -758,6 +753,9 @@ def _resolve_movie(
     block.year = info.year or scanned.year
 
     # Cross-check: does TheTVDB know a movie with this title and year?
+    if not providers.tvdb_key:
+        block.cross_check = CrossCheck.UNAVAILABLE
+        return info
     try:
         tvdb_candidates = providers.tvdb_search_movies(
             info.title, providers.tvdb_key, providers.no_cache
@@ -830,6 +828,9 @@ def _resolve_series(
 
     # Cross-check: TMDB's record for this series should point back at the
     # same TheTVDB ID via its external IDs.
+    if not providers.tmdb_key:
+        block.cross_check = CrossCheck.UNAVAILABLE
+        return info
     try:
         tmdb_candidates = providers.tmdb_search_tv(
             block.title, block.year, providers.tmdb_key, providers.no_cache
@@ -1145,6 +1146,21 @@ def run_plan(
                 entry.conflict = prior.conflict
         manifest.blocks.append(block)
 
+        if opts.verbose:
+            ids = " ".join(
+                f"{{{tag}-{value}}}"
+                for tag, value in (("tvdb", block.tvdb_id), ("tmdb", block.tmdb_id))
+                if value
+            )
+            _say(
+                opts.json_output,
+                f"{t.raw_title}: {block.confidence}"
+                + (f" {ids}" if ids else "")
+                + f", {len(block.entries)} file(s) -> {block.dest_dir or '(unresolved)'}",
+            )
+
+    _mark_duplicate_dests(manifest)
+
     out_path = opts.output or Path(
         f"{kind.tool}-plan-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.kdl"
     )
@@ -1163,6 +1179,30 @@ def run_plan(
     for w in summary["warnings"]:
         _say(opts.json_output, f"warning: {w['title']}: {w['detail']}")
     return 0
+
+
+def _mark_duplicate_dests(manifest: PlanManifest) -> None:
+    """Skip entries whose destination collides with an earlier entry.
+
+    Two sources can compute the same destination (two versions of one
+    movie or episode whose quality blocks come out identical). The
+    filesystem conflict check can't see this — neither destination exists
+    yet — and at apply time the second copy would silently land on top of
+    the first, so collisions are surfaced for manual resolution instead.
+    """
+    seen: dict[tuple[str, str], str] = {}
+    for block in manifest.blocks:
+        for entry in block.entries:
+            if entry.status in (EntryStatus.SKIP, EntryStatus.NEEDS_ID):
+                continue
+            if not entry.dest:
+                continue
+            key = (block.dest_dir.casefold(), entry.dest.casefold())
+            first = seen.setdefault(key, entry.source)
+            if first != entry.source:
+                entry.status = EntryStatus.SKIP
+                entry.conflict = None
+                entry.note = f"destination duplicates {first} — rename or remove one"
 
 
 def _plan_summary(
@@ -1232,6 +1272,7 @@ def _validate_apply(manifest: PlanManifest) -> tuple[list[str], int]:
         problems.append(f"destination root not found: {dest_root}")
         return problems, 0
 
+    seen_dests: dict[tuple[str, str], str] = {}
     for block in manifest.blocks:
         for e in block.entries:
             if e.status is EntryStatus.SKIP:
@@ -1254,6 +1295,17 @@ def _validate_apply(manifest: PlanManifest) -> tuple[list[str], int]:
                 continue
             if not block.dest_dir or not e.dest:
                 problems.append(f"{e.source}: entry has no destination")
+                continue
+            # Two entries placing the same destination would silently
+            # stack at execution time (the second sees an existing dest).
+            dest_key = (block.dest_dir.casefold(), e.dest.casefold())
+            first = seen_dests.setdefault(dest_key, e.source)
+            if first != e.source:
+                problems.append(
+                    f"{e.source}: destination duplicates {first}"
+                    f" ({block.dest_dir}/{e.dest}) — keep one, mark the"
+                    " other skip"
+                )
                 continue
             dest = dest_root / block.dest_dir / e.dest
             if dest.exists() and e.conflict is None:
@@ -1334,6 +1386,20 @@ def run_apply(kind: MediaKind, manifest_path: Path, opts: ApplyOptions) -> int:
         else:
             record(entry, "failed", dest)
 
+    def replace(entry: FileEntry, src: Path, dest: Path) -> None:
+        # Copy beside the existing file, then atomically swap, so a failed
+        # copy never destroys the existing library file.
+        tmp = dest.with_name(dest.name + ".etp-tmp")
+        if copy_reflink(src, tmp, dry_run=opts.dry_run):
+            if not opts.dry_run:
+                os.replace(tmp, dest)
+            copy_subtitle_sidecars(src, dest, opts.sub_lang, opts.dry_run, opts.verbose)
+            register.add(str(src.resolve()))
+            record(entry, "replaced", dest)
+        else:
+            tmp.unlink(missing_ok=True)
+            record(entry, "failed", dest)
+
     # copy_reflink and the sidecar copier report progress on stdout; with
     # --json, stdout must stay pure JSON, so route their output to stderr.
     redirect = (
@@ -1360,9 +1426,7 @@ def run_apply(kind: MediaKind, manifest_path: Path, opts: ApplyOptions) -> int:
                 elif action is ConflictAction.SKIP:
                     record(e, "skipped", None)
                 elif action is ConflictAction.REPLACE:
-                    if not opts.dry_run:
-                        dest.unlink()
-                    place(e, src, dest, "replaced")
+                    replace(e, src, dest)
                 else:
                     # ConflictAction.BOTH: keep the existing file, place the
                     # new one alongside it disambiguated by CRC32 (the anime

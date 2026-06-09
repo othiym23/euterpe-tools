@@ -29,8 +29,16 @@ from etp_lib.manifest import escape_kdl
 from etp_lib.types import MediaIngestConfig, TitleMapping
 
 
+class MediaConfigError(Exception):
+    """media-ingestion.kdl is malformed; the message says what and where."""
+
+
 def load_media_config(path: Path | None = None) -> MediaIngestConfig:
-    """Load the media ingestion config, falling back to defaults."""
+    """Load the media ingestion config, falling back to defaults.
+
+    Raises :class:`MediaConfigError` with an actionable message on
+    malformed KDL or non-integer provider IDs.
+    """
     if path is None:
         from etp_lib import paths as etp_paths
 
@@ -40,7 +48,12 @@ def load_media_config(path: Path | None = None) -> MediaIngestConfig:
     if not path.exists():
         return config
 
-    doc = kdl.parse(path.read_text(encoding="utf-8"))
+    try:
+        doc = kdl.parse(path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise MediaConfigError(f"cannot read {path}: {e}") from e
+    except Exception as e:  # kdl.errors don't share a public base class
+        raise MediaConfigError(f"invalid KDL in {path}: {e}") from e
 
     paths_node = doc.get("paths")
     if paths_node is not None:
@@ -67,6 +80,15 @@ def load_media_config(path: Path | None = None) -> MediaIngestConfig:
 def _read_mappings(
     doc: kdl.Document, node_name: str, target: dict[str, TitleMapping]
 ) -> None:
+    def provider_id(name: str, child: kdl.Node) -> int:
+        try:
+            return int(child.args[0])  # kdl-py parses bare numbers as floats
+        except ValueError, TypeError:
+            raise MediaConfigError(
+                f'{node_name} "{name}": {child.name} ID must be an integer,'
+                f" got {child.args[0]!r}"
+            ) from None
+
     for node in doc.getAll(node_name):
         name = str(node.args[0]) if node.args else ""
         if not name:
@@ -76,9 +98,9 @@ def _read_mappings(
             if not child.args:
                 continue
             if child.name == "tmdb":
-                mapping.tmdb_id = int(child.args[0])
+                mapping.tmdb_id = provider_id(name, child)
             elif child.name == "tvdb":
-                mapping.tvdb_id = int(child.args[0])
+                mapping.tvdb_id = provider_id(name, child)
             elif child.name == "edition":
                 mapping.edition = str(child.args[0])
 

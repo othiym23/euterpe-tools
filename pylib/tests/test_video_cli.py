@@ -139,3 +139,42 @@ class TestMainDispatch:
         assert seen["kind"] is MediaKind.MOVIE
         assert seen["path"] == manifest
         assert seen["opts"].dry_run is True
+
+
+class TestPrimaryKeyOnly:
+    """Only the primary provider's key is mandatory for plan."""
+
+    def test_tv_plan_runs_with_only_tvdb_key(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "sys.argv", ["etp-television", "ingest", "plan", "--sonarr"]
+        )
+        monkeypatch.setenv("TVDB_API_KEY", "vk")
+        monkeypatch.delenv("TMDB_API_KEY", raising=False)
+        monkeypatch.setattr(video_cli, "load_env_file", lambda *paths: None)
+        monkeypatch.setattr(video_cli, "load_media_config", lambda path=None: "CONFIG")
+        monkeypatch.setattr(video_cli, "run_plan", lambda *a: 0)
+        assert television.main() == 0
+        err = capsys.readouterr().err
+        assert "TMDB_API_KEY" in err and "cross-checks" in err
+
+    def test_movie_plan_requires_tmdb_key(self, monkeypatch, capsys):
+        monkeypatch.setattr("sys.argv", ["etp-movies", "ingest", "plan", "--radarr"])
+        monkeypatch.setenv("TVDB_API_KEY", "vk")
+        monkeypatch.delenv("TMDB_API_KEY", raising=False)
+        monkeypatch.setattr(video_cli, "load_env_file", lambda *paths: None)
+        assert movies.main() == 1
+        assert "TMDB_API_KEY" in capsys.readouterr().err
+
+    def test_config_error_reported_cleanly(self, monkeypatch, capsys, tmp_path):
+        bad = tmp_path / "bad.kdl"
+        bad.write_text('movie "X" {\n  tmdb "abc"\n}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "sys.argv",
+            ["etp-movies", "ingest", "plan", "--radarr", "--config", str(bad)],
+        )
+        monkeypatch.setenv("TMDB_API_KEY", "tk")
+        monkeypatch.setenv("TVDB_API_KEY", "vk")
+        monkeypatch.setattr(video_cli, "load_env_file", lambda *paths: None)
+        assert movies.main() == 1
+        err = capsys.readouterr().err
+        assert err.startswith("error:") and "must be an integer" in err

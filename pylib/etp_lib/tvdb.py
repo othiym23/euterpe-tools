@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from etp_lib.paths import cache_dir
+from etp_lib.provider_cache import load_cached_json, store_cached_json
 from etp_lib.types import (
-    CACHE_MAX_AGE_SECONDS,
     TVDB_MAX_PAGES,
     AnimeInfo,
     Episode,
@@ -192,19 +191,16 @@ def _search_tvdb(
     digest = hashlib.sha1(f"{kind}|{query}".encode()).hexdigest()[:16]
     cache_file = cache_dir("tvdb") / f"search-{digest}.json"
 
-    if not no_cache and cache_file.exists():
-        age = time.time() - cache_file.stat().st_mtime
-        if age < CACHE_MAX_AGE_SECONDS:
-            return _parse_tvdb_search(
-                json.loads(cache_file.read_text(encoding="utf-8"))
-            )
+    cached = load_cached_json(cache_file, no_cache)
+    if isinstance(cached, list):
+        return _parse_tvdb_search(cached)
 
     token = tvdb_login(api_key)
     params = urllib.parse.urlencode({"query": query, "type": kind})
     resp = _tvdb_request(f"/search?{params}", token)
     results = resp.get("data", [])
 
-    cache_file.write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+    store_cached_json(cache_file, results)
     return _parse_tvdb_search(results)
 
 
@@ -232,18 +228,16 @@ def fetch_tvdb_series(
 
     # Check cache (24h validity).  Re-fetch if the cached result has no
     # episodes — the entry may have been fetched before episodes were added.
-    if not no_cache and cache_file.exists():
-        age = time.time() - cache_file.stat().st_mtime
-        if age < CACHE_MAX_AGE_SECONDS:
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            info = _parse_tvdb_json(
-                cached["series"],
-                cached["episodes"],
-                series_id,
-                translations=cached.get("translations"),
-            )
-            if info.episodes:
-                return info
+    cached = load_cached_json(cache_file, no_cache)
+    if isinstance(cached, dict):
+        info = _parse_tvdb_json(
+            cached["series"],
+            cached["episodes"],
+            series_id,
+            translations=cached.get("translations"),
+        )
+        if info.episodes:
+            return info
 
     # Login and fetch
     token = tvdb_login(api_key)
@@ -276,6 +270,6 @@ def fetch_tvdb_series(
         "episodes": all_episodes,
         "translations": translations,
     }
-    cache_file.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+    store_cached_json(cache_file, cache_data)
 
     return _parse_tvdb_json(series_data, all_episodes, series_id, translations)

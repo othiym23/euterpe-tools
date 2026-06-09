@@ -2,7 +2,10 @@
 
 from pathlib import Path
 
+import pytest
+
 from etp_lib.media_config import (
+    MediaConfigError,
     load_media_config,
     lookup_mapping,
     save_title_mapping,
@@ -114,3 +117,17 @@ class TestSaveTitleMapping:
         config = load_media_config(path)
         mapping = config.movie_mappings['the "best" movie (2000)']
         assert mapping.edition == '2" Cut'
+
+
+class TestMediaConfigErrors:
+    def test_non_integer_provider_id(self, tmp_path):
+        path = tmp_path / "media-ingestion.kdl"
+        path.write_text('movie "X (2020)" {\n  tmdb "abc"\n}\n', encoding="utf-8")
+        with pytest.raises(MediaConfigError, match="must be an integer"):
+            load_media_config(path)
+
+    def test_invalid_kdl(self, tmp_path):
+        path = tmp_path / "media-ingestion.kdl"
+        path.write_text("paths { unterminated", encoding="utf-8")
+        with pytest.raises(MediaConfigError, match="invalid KDL"):
+            load_media_config(path)

@@ -23,7 +23,8 @@ from pathlib import Path
 
 from etp_lib import paths as etp_paths
 from etp_lib.envfile import load_env_file
-from etp_lib.media_config import load_media_config
+from etp_lib.media_config import MediaConfigError, load_media_config
+from etp_lib.types import MetadataProvider
 from etp_lib.video_ingest import (
     ApplyOptions,
     MediaKind,
@@ -34,6 +35,11 @@ from etp_lib.video_ingest import (
 )
 
 VERSION = "0.1.0"
+
+_KEY_ENV = {
+    MetadataProvider.TMDB: "TMDB_API_KEY",
+    MetadataProvider.TVDB: "TVDB_API_KEY",
+}
 
 
 def build_parser(kind: MediaKind) -> argparse.ArgumentParser:
@@ -152,18 +158,28 @@ def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
         )
         return 1
 
-    missing = [
-        key for key in ("TMDB_API_KEY", "TVDB_API_KEY") if not os.environ.get(key)
-    ]
-    if missing:
+    # Only the primary provider's key is required; without the secondary
+    # key, cross-checks degrade to "unavailable" (a warning, never fatal).
+    primary = _KEY_ENV[kind.primary_provider]
+    secondary = next(v for v in _KEY_ENV.values() if v != primary)
+    if not os.environ.get(primary):
         print(
-            f"error: {' and '.join(missing)} not set"
-            f" (configure in {etp_paths.media_env()})",
+            f"error: {primary} not set (configure in {etp_paths.media_env()})",
             file=sys.stderr,
         )
         return 1
+    if not os.environ.get(secondary):
+        print(
+            f"warning: {secondary} not set; provider cross-checks will be"
+            " recorded as unavailable",
+            file=sys.stderr,
+        )
 
-    config = load_media_config(args.config)
+    try:
+        config = load_media_config(args.config)
+    except MediaConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     opts = PlanOptions(
         managed=args.managed,
         downloads=args.downloads,
@@ -177,8 +193,8 @@ def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
         verbose=args.verbose,
     )
     providers = Providers(
-        tmdb_key=os.environ["TMDB_API_KEY"],
-        tvdb_key=os.environ["TVDB_API_KEY"],
+        tmdb_key=os.environ.get("TMDB_API_KEY", ""),
+        tvdb_key=os.environ.get("TVDB_API_KEY", ""),
         no_cache=args.no_cache,
     )
     return run_plan(kind, config, opts, providers)

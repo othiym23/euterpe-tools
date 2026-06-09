@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 import urllib.parse
 import urllib.request
 
 from etp_lib.paths import cache_dir
+from etp_lib.provider_cache import load_cached_json, store_cached_json
 from etp_lib.types import (
-    CACHE_MAX_AGE_SECONDS,
     MetadataProvider,
     MovieInfo,
     SearchCandidate,
@@ -59,13 +58,12 @@ def _cached_request(
 ) -> dict:
     """GET *endpoint* with a 24-hour file cache keyed by *cache_key*."""
     cache_file = cache_dir("tmdb") / f"{cache_key}.json"
-    if not no_cache and cache_file.exists():
-        age = time.time() - cache_file.stat().st_mtime
-        if age < CACHE_MAX_AGE_SECONDS:
-            return json.loads(cache_file.read_text(encoding="utf-8"))
+    cached = load_cached_json(cache_file, no_cache)
+    if isinstance(cached, dict):
+        return cached
 
     data = _tmdb_request(endpoint, api_key, params)
-    cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    store_cached_json(cache_file, data)
     return data
 
 

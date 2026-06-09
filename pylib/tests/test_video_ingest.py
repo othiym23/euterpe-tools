@@ -1051,3 +1051,120 @@ class TestOriginalTitleNaming:
         manifest = parse_plan_manifest(tmp_path / "plan.kdl")
         assert manifest.blocks[0].dest_dir == "올드보이 [Oldboy] (2003)"
         assert manifest.blocks[0].note == "reusing existing library directory"
+
+
+class TestDuplicateDests:
+    """Two sources computing the same destination must never silently stack."""
+
+    def _two_identical_movies(self, tmp_path):
+        src = tmp_path / "movies"
+        # Two video files in one movie folder, no part markers: with
+        # identical analyzed metadata both compute the same destination.
+        _mkfile(src / "Heat (1995)" / "Heat.1995.GRP-a.mkv")
+        _mkfile(src / "Heat (1995)" / "Heat.1995.GRP-b.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        return src, dest
+
+    def test_plan_marks_second_as_skip(self, tmp_path, register):
+        src, dest = self._two_identical_movies(tmp_path)
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        entries = manifest.blocks[0].entries
+        statuses = sorted(str(e.status) for e in entries)
+        assert statuses == ["ready", "skip"]
+        skipped = next(e for e in entries if e.status is EntryStatus.SKIP)
+        assert "duplicates" in skipped.note
+
+    def test_apply_rejects_handmade_duplicates(self, tmp_path, register):
+        src, dest = self._two_identical_movies(tmp_path)
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        # Re-mark the skipped duplicate as ready, as a careless edit would.
+        text = (tmp_path / "plan.kdl").read_text(encoding="utf-8")
+        text = text.replace('status "skip"', 'status "ready"')
+        (tmp_path / "plan.kdl").write_text(text, encoding="utf-8")
+        assert run_apply(MediaKind.MOVIE, tmp_path / "plan.kdl", ApplyOptions()) == 1
+        assert list(dest.rglob("*.mkv")) == []  # nothing copied
+
+
+class TestReplaceSafety:
+    def test_failed_replace_preserves_existing_dest(
+        self, tv_tree, tmp_path, register, monkeypatch
+    ):
+        src, dest = tv_tree
+        plan_path = _plan_tv(tv_tree, tmp_path, register)
+        manifest = parse_plan_manifest(plan_path)
+        block = manifest.blocks[0]
+        existing = _mkfile(dest / block.dest_dir / block.entries[0].dest, size=999)
+
+        plan_path = _plan_tv(tv_tree, tmp_path, register)
+        text = plan_path.read_text(encoding="utf-8")
+        plan_path.write_text(
+            text.replace('conflict "keep"', 'conflict "replace"'), encoding="utf-8"
+        )
+
+        monkeypatch.setattr(
+            video_ingest, "copy_reflink", lambda src, dst, dry_run=False: False
+        )
+        rc = run_apply(MediaKind.TV, plan_path, ApplyOptions())
+        assert rc == 1  # the replace failed...
+        assert existing.stat().st_size == 999  # ...and the original survives
+        leftovers = [p for p in existing.parent.iterdir() if "etp-tmp" in p.name]
+        assert leftovers == []
+
+
+class TestCrossCheckWithoutSecondaryKey:
+    def test_movie_cross_check_unavailable(self, movie_tree, tmp_path, register):
+        src, dest = movie_tree
+        providers = movie_providers(
+            tvdb_key="",
+            tvdb_search_movies=lambda q, key, no_cache=False: pytest.fail(
+                "cross-check must not run without a TheTVDB key"
+            ),
+        )
+        rc = run_plan(
+            MediaKind.MOVIE, movie_config(src, dest), plan_opts(tmp_path), providers
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        assert block.cross_check is CrossCheck.UNAVAILABLE
+        assert block.tmdb_id == 949  # primary resolution unaffected
+
+    def test_tv_cross_check_unavailable(self, tv_tree, tmp_path, register):
+        src, dest = tv_tree
+        providers = tv_providers(
+            tmdb_key="",
+            tmdb_search_tv=lambda q, y, key, no_cache=False: pytest.fail(
+                "cross-check must not run without a TMDB key"
+            ),
+        )
+        rc = run_plan(
+            MediaKind.TV, tv_config(src, dest), plan_opts(tmp_path), providers
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.blocks[0].cross_check is CrossCheck.UNAVAILABLE
+        assert manifest.blocks[0].tvdb_id == 371980
+
+
+class TestPlanVerbose:
+    def test_verbose_reports_each_title(self, tv_tree, tmp_path, register, capsys):
+        src, dest = tv_tree
+        opts = plan_opts(tmp_path, verbose=True)
+        rc = run_plan(MediaKind.TV, tv_config(src, dest), opts, tv_providers())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Severance (2022): exact {tvdb-371980}" in out

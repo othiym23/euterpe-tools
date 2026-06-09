@@ -252,8 +252,13 @@ def _title_year(title: str, year: int) -> str:
     return f"{title} ({year})" if year else title
 
 
-def _norm_for_compare(text: str) -> str:
-    """Casefolded alphanumeric words, for near-identical title detection."""
+def normalize_title(text: str) -> str:
+    """Normalize a title for comparison: casefolded alphanumeric words.
+
+    Shared by dual-title bracket suppression here and by candidate
+    matching / library-directory reuse in video_ingest, so all title
+    comparisons agree on what "the same title" means.
+    """
     cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in text.casefold())
     return " ".join(cleaned.split())
 
@@ -272,7 +277,7 @@ def format_display_title(original_title: str, english_title: str) -> str:
     if (
         original_title
         and english_title
-        and _norm_for_compare(original_title) != _norm_for_compare(english_title)
+        and normalize_title(original_title) != normalize_title(english_title)
     ):
         return f"{original_title} [{english_title}]"
     return english_title or original_title
