@@ -1748,3 +1748,50 @@ class TestChannelCountNotEpisode:
         pm = mp.parse_component("Show.05.1080p.BluRay.x265-GRP")
         assert pm.series_name == "Show"
         assert pm.episode == 5
+
+    @pytest.mark.parametrize(
+        ("name", "title"),
+        [
+            (
+                "Komada.A.Whisky.Family.2023.1080p.BluRay.Opus5.1.x265-eldon",
+                "Komada A Whisky Family",
+            ),
+            ("WataMote.S01.1080p.BluRay.Opus2.0.x265-smol", "WataMote"),
+        ],
+    )
+    def test_opus_channels_are_audio_codec(self, name, title):
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+        assert pm.episode is None
+
+
+class TestAmbiguousSourceWords:
+    """ "It"/"Ma"/"Stan" are streaming-service tags only after the title;
+    in title position they're ordinary English words."""
+
+    @pytest.mark.parametrize(
+        ("name", "title"),
+        [
+            (
+                "Go.For.It.Nakamura-kun.S01E05.Vexing.1080p.CR.WEB-DL-VARYG",
+                "Go For It Nakamura-kun",
+            ),
+            ("Stan.Against.Evil.S01E02.720p.HDTV.x264-GRP", "Stan Against Evil"),
+            ("It.2017.1080p.BluRay.x264-GRP", "It"),
+        ],
+    )
+    def test_title_position_stays_text(self, name, title):
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Show.S01E01.1080p.iT.WEB-DL.H.264-GRP",
+            "Show.S01E01.720p.MA.WEB-DL.H.264-GRP",
+        ],
+    )
+    def test_post_title_position_is_source(self, name):
+        pm = mp.parse_component(name)
+        assert pm.series_name == "Show"
+        assert pm.episode == 1

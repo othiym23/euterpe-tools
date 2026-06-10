@@ -46,7 +46,9 @@ def _index(
 
     Titles and alternate titles are also indexed bare under a ``~`` prefix
     — loose keys for :func:`domain_of` only, never for ID resolution,
-    where a year-less match could pick a wrong-year remake.
+    where a year-less match could pick a wrong-year remake. Each loose
+    title is additionally indexed with its spaces removed, so spacing
+    disagreements ("Re: ZERO" vs "ReZERO") still match.
     """
     if entry.folder:
         entries.setdefault(entry.folder.casefold(), entry)
@@ -54,7 +56,9 @@ def _index(
         entries.setdefault(normalize_title(f"{entry.title} ({entry.year})"), entry)
     for name in (entry.title, *alt_titles):
         if name:
-            entries.setdefault("~" + normalize_title(name), entry)
+            loose = normalize_title(name)
+            entries.setdefault("~" + loose, entry)
+            entries.setdefault("~" + loose.replace(" ", ""), entry)
 
 
 def fetch_radarr_index(url: str, api_key: str) -> dict[str, ArrEntry]:
@@ -108,6 +112,25 @@ def _alt_titles(item: dict) -> list[str]:
     ]
 
 
+# Minimum alphanumeric length for a contained-phrase domain match; short
+# phrases ("top", "dark") appear inside unrelated titles far too easily.
+_MIN_PHRASE_ALNUM = 8
+
+# A leading-words match is anchored, so it tolerates shorter phrases
+# ("Re Zero" opening "Re Zero Starting Life in Another World").
+_MIN_PREFIX_ALNUM = 6
+
+
+def _phrase_in(haystack: str, needle: str) -> bool:
+    """Word-boundary phrase containment over normalized titles."""
+    return f" {needle} " in f" {haystack} "
+
+
+def _word_prefix(longer: str, shorter: str) -> bool:
+    """True when *shorter* is the word-aligned opening of *longer*."""
+    return longer == shorter or longer.startswith(shorter + " ")
+
+
 def domain_of(
     index: dict[str, ArrEntry],
     raw_title: str,
@@ -119,15 +142,40 @@ def domain_of(
 
     Tries the strict resolution keys first, then the loose bare-title
     keys (which include alternate titles, so a romaji fansub name finds
-    the Sonarr series it belongs to).
+    the Sonarr series it belongs to), then word-boundary phrase
+    containment in either direction — a scanned "WataMote" belongs to
+    Sonarr's "WataMote: No Matter How I Look at It, ...", and a scanned
+    "Outlaw Star Art Gallery" to its "Outlaw Star". Containment is for
+    this domain decision only, never ID resolution, and short phrases
+    don't count: they match unrelated titles far too easily.
     """
     entry = lookup(index, raw_title, title, year)
+    names = [n for n in (title, alt_title, raw_title) if n]
     if entry is None:
-        for name in (title, alt_title, raw_title):
-            if name:
-                entry = index.get("~" + normalize_title(name))
-                if entry is not None:
+        for name in names:
+            loose = normalize_title(name)
+            entry = index.get("~" + loose) or index.get("~" + loose.replace(" ", ""))
+            if entry is not None:
+                break
+    if entry is None:
+        loose_keys = sorted(k for k in index if k.startswith("~"))
+        for name in names:
+            loose = normalize_title(name)
+            scanned_alnum = len(loose.replace(" ", ""))
+            for key in loose_keys:
+                indexed = key[1:]
+                indexed_alnum = len(indexed.replace(" ", ""))
+                contained = (
+                    indexed_alnum >= _MIN_PHRASE_ALNUM and _phrase_in(loose, indexed)
+                ) or (scanned_alnum >= _MIN_PHRASE_ALNUM and _phrase_in(indexed, loose))
+                prefixed = min(indexed_alnum, scanned_alnum) >= _MIN_PREFIX_ALNUM and (
+                    _word_prefix(loose, indexed) or _word_prefix(indexed, loose)
+                )
+                if contained or prefixed:
+                    entry = index[key]
                     break
+            if entry is not None:
+                break
     if entry is not None and entry.root:
         return entry.root
     return None

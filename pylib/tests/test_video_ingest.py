@@ -10,6 +10,7 @@ import pytest
 from hypothesis import given, strategies as st
 
 from etp_lib import video_ingest
+from etp_lib.media_scanner import parse_source_filename
 from etp_lib.types import (
     AnimeInfo,
     AudioTrack,
@@ -2072,3 +2073,196 @@ class TestDomainPartitioning:
         assert rc == 0
         manifest = parse_plan_manifest(tmp_path / "plan.kdl")
         assert manifest.blocks[0].raw_title == "Severance (2022)"
+
+    def test_cross_arr_index_excludes_other_kinds_titles(
+        self, tmp_path, register, monkeypatch
+    ):
+        """A Radarr-managed anime movie never shows up in a TV plan."""
+        from etp_lib.arr import ArrEntry
+
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Shisha no Teikoku - 01 (BD 1080p).mkv")
+        _mkfile(dl / "Severance - S01E01 - Good News WEBDL-1080p.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.setattr(video_ingest, "_anime_tree_names", lambda: set())
+        radarr = {}
+        from etp_lib import arr as arr_mod
+
+        arr_mod._index(
+            radarr,
+            ArrEntry(
+                title="The Empire of Corpses",
+                year=2015,
+                folder="The Empire of Corpses (2015)",
+                root="anime",
+            ),
+            ["Shisha no Teikoku"],
+        )
+        config = MediaIngestConfig(
+            downloads_dir=dl,
+            television_dest_dir=dest,
+            sonarr_url="http://s:8989",
+            radarr_url="http://r:7878",
+        )
+        providers = tv_providers(
+            arr_key="sk",
+            cross_arr_key="rk",
+            sonarr_fetch=lambda url, key: {},
+            radarr_fetch=lambda url, key: radarr,
+        )
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        assert run_plan(MediaKind.TV, config, opts, providers) == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert [b.raw_title for b in manifest.blocks] == ["Severance"]
+
+
+class TestDomainMatching:
+    """arr.domain_of folds punctuation/spacing and uses phrase containment."""
+
+    def _index(self, title, year=2000, root="anime", alts=()):
+        from etp_lib import arr as arr_mod
+        from etp_lib.arr import ArrEntry
+
+        index = {}
+        arr_mod._index(
+            index,
+            ArrEntry(title=title, year=year, folder=f"{title} ({year})", root=root),
+            list(alts),
+        )
+        return index
+
+    def _domain(self, index, scanned, alt="", year=0):
+        from etp_lib import arr as arr_mod
+
+        return arr_mod.domain_of(index, scanned, scanned, alt, year)
+
+    def test_apostrophe_folded(self):
+        index = self._index("Wolf's Rain", 2003)
+        assert self._domain(index, "Wolfs Rain") == "anime"
+
+    def test_accent_folded(self):
+        index = self._index(
+            "An Observation Log of My Fiancée Who Calls Herself a Villainess", 2026
+        )
+        scanned = "An Observation Log of My Fiancee Who Calls Herself a Villainess"
+        assert self._domain(index, scanned) == "anime"
+
+    def test_spacing_folded(self):
+        index = self._index("Re: ZERO, Starting Life in Another World", 2016)
+        assert self._domain(index, "ReZERO -Starting Life in Another World") == "anime"
+
+    def test_scanned_title_contained_in_managed(self):
+        index = self._index(
+            "WataMote: No Matter How I Look at It,"
+            " It's You Guys' Fault I'm Not Popular!",
+            2013,
+        )
+        assert self._domain(index, "WataMote") == "anime"
+
+    def test_managed_title_contained_in_scanned(self):
+        index = self._index("Outlaw Star", 1998)
+        assert self._domain(index, "Outlaw Star Art Gallery") == "anime"
+        index = self._index("Great Teacher Onizuka", 1999)
+        assert self._domain(index, "GTO Great Teacher Onizuka") == "anime"
+
+    def test_word_prefix_matches_with_lower_guard(self):
+        index = self._index("Gintama", 2006)
+        # An anchored word-aligned prefix counts from 6 alphanumerics...
+        assert self._domain(index, "Gintama The Semi-Final") == "anime"
+        index = self._index("Re: ZERO, Starting Life in Another World", 2016)
+        assert self._domain(index, "Re.Zero") == "anime"
+
+    def test_short_phrases_do_not_count(self):
+        # ...but mid-phrase containment needs 8, and very short titles
+        # never match anything.
+        index = self._index("Gintama", 2006)
+        assert self._domain(index, "The Gintama Special Collection") is None
+        index = self._index("Dark", 2017)  # 4 alphanumerics
+        assert self._domain(index, "Dark Matter") is None
+
+    def test_unrelated_title_no_match(self):
+        index = self._index("Frieren: Beyond Journey's End", 2023)
+        assert self._domain(index, "Severance", year=2022) is None
+
+
+class TestForeignDomainDrop:
+    """_drop_foreign_domain: torrent inheritance and config domain overrides."""
+
+    def _group(self, title, *paths):
+        from etp_lib.video_ingest import ScannedFile, ScannedTitle
+
+        t = ScannedTitle(raw_title=title, title=title, year=0)
+        for p in paths:
+            sf = parse_source_filename(p.name)
+            sf.path = p
+            t.files.append(ScannedFile(source=sf))
+        return t
+
+    def test_torrent_inheritance_drops_junk_siblings(self, tmp_path, monkeypatch):
+        from etp_lib.video_ingest import _drop_foreign_domain
+
+        monkeypatch.setattr(video_ingest, "_anime_tree_names", lambda: set())
+        dl = tmp_path / "downloads"
+        torrent = dl / "[Joliver] Aura Battler Dunbine [BD]"
+        ep = _mkfile(torrent / "[Joliver] Aura Battler Dunbine - 01 [BD].mkv")
+        ncop = _mkfile(torrent / "[Joliver] Aura Battler Dunbine - B1 - NCOP1 [BD].mkv")
+        other = _mkfile(dl / "Columbo" / "01 Murder by the Book.mkv")
+        from etp_lib import arr as arr_mod
+        from etp_lib.arr import ArrEntry
+
+        index = {}
+        arr_mod._index(
+            index,
+            ArrEntry(
+                title="Aura Battler Dunbine",
+                year=1983,
+                folder="Aura Battler Dunbine (1983)",
+                root="anime",
+            ),
+            [],
+        )
+        titles = [
+            self._group("Aura Battler Dunbine", ep),
+            self._group("Aura Battler Dunbine B1", ncop),
+            self._group("Columbo", other),
+        ]
+        kept, dropped = _drop_foreign_domain(titles, index, "television", [dl])
+        assert dropped == 2
+        assert [t.title for t in kept] == ["Columbo"]
+
+    def test_mapping_domain_is_authoritative(self, tmp_path, monkeypatch):
+        from etp_lib.types import TitleMapping
+        from etp_lib.video_ingest import _drop_foreign_domain
+
+        monkeypatch.setattr(video_ingest, "_anime_tree_names", lambda: set())
+        dl = tmp_path / "downloads"
+        hana = _mkfile(dl / "hyd" / "Hana yori Dango - 01.mkv")
+        titles = [self._group("Hana yori Dango", hana)]
+        mappings = {"hana yori dango": TitleMapping(domain="anime")}
+        kept, dropped = _drop_foreign_domain(titles, {}, "television", [dl], mappings)
+        assert dropped == 1 and kept == []
+
+    def test_mapping_domain_protects_own_titles(self, tmp_path, monkeypatch):
+        """domain matching own root wins over index/tree foreign signals."""
+        from etp_lib import arr as arr_mod
+        from etp_lib.arr import ArrEntry
+        from etp_lib.types import TitleMapping
+        from etp_lib.video_ingest import _drop_foreign_domain
+
+        monkeypatch.setattr(video_ingest, "_anime_tree_names", lambda: set())
+        dl = tmp_path / "downloads"
+        f = _mkfile(dl / "mon" / "Monster - 01.mkv")
+        index = {}
+        arr_mod._index(
+            index,
+            ArrEntry(title="Monster", year=2004, folder="Monster (2004)", root="anime"),
+            [],
+        )
+        titles = [self._group("Monster", f)]
+        mappings = {"monster": TitleMapping(domain="television")}
+        kept, dropped = _drop_foreign_domain(
+            titles, index, "television", [dl], mappings
+        )
+        assert dropped == 0
+        assert [t.title for t in kept] == ["Monster"]

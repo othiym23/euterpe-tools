@@ -111,9 +111,22 @@ etp television ingest plan --sonarr --force
 #              --config FILE, --no-cache, -v (per-title resolution report)
 ```
 
-Downloads titles owned by another domain are excluded up front: a Sonarr series
-rooted in the anime tree (or a title matching an anime-tree folder name) never
-appears in a television or movie plan, and the exclusion count is reported.
+Downloads titles owned by another domain are excluded up front: a Radarr- or
+Sonarr-managed title rooted in the anime tree (or a title matching an anime-tree
+folder name) never appears in a television or movie plan, and the exclusion
+count is reported. Title matching is forgiving — punctuation, accents, and
+spacing differences are folded, and a scanned title containing a managed title
+(or vice versa) still counts. A whole torrent follows its content: when a
+torrent directory contributed a foreign title, junk-parsed siblings from the
+same torrent (creditless openings, galleries, promos) are excluded with it. A
+`domain` property on a config mapping overrides all of this in either direction:
+
+```kdl
+series "Hana yori Dango" {
+  domain "anime" // Sonarr knows this anime only as "Boys Over Flowers"
+}
+```
+
 mediainfo results are cached across runs, so re-planning a large backlog is
 fast.
 

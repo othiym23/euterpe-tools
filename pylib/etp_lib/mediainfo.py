@@ -114,6 +114,11 @@ def _detect_encoding_lib(video_track: dict) -> str:
     return ""
 
 
+# Still-image "video" tracks (chapter thumbnails, cover art) that must
+# not be mistaken for the main program.
+_STILL_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "GIF", "BMP"})
+
+
 def parse_mediainfo_json(data: dict) -> MediaInfo:
     """Parse mediainfo JSON output into a MediaInfo dataclass."""
     tracks = data.get("media", {}).get("track", [])
@@ -127,21 +132,25 @@ def parse_mediainfo_json(data: dict) -> MediaInfo:
     encoding_lib = ""
     audio_tracks: list[AudioTrack] = []
 
+    video_tracks = [t for t in tracks if t.get("@type", "") == "Video"]
+    # Prefer the main program over still-image tracks (m4v files often
+    # carry a JPEG "Chapter Images" track beside the real video).
+    main = [t for t in video_tracks if t.get("Format", "") not in _STILL_IMAGE_FORMATS]
+    for track in (main or video_tracks)[:1]:
+        raw_format: str = track.get("Format", "")
+        video_codec = _VIDEO_CODEC_MAP.get(raw_format, raw_format)
+        width = int(track.get("Width", 0))
+        height = int(track.get("Height", 0))
+        bit_depth = int(track.get("BitDepth", 8))
+        scan_type = track.get("ScanType", "Progressive")
+        resolution = _resolution_from_mediainfo(height, scan_type, width)
+        hdr_type = _detect_hdr(track)
+        encoding_lib = _detect_encoding_lib(track)
+
     for track in tracks:
         track_type = track.get("@type", "")
 
-        if track_type == "Video":
-            raw_format: str = track.get("Format", "")
-            video_codec = _VIDEO_CODEC_MAP.get(raw_format, raw_format)
-            width = int(track.get("Width", 0))
-            height = int(track.get("Height", 0))
-            bit_depth = int(track.get("BitDepth", 8))
-            scan_type = track.get("ScanType", "Progressive")
-            resolution = _resolution_from_mediainfo(height, scan_type, width)
-            hdr_type = _detect_hdr(track)
-            encoding_lib = _detect_encoding_lib(track)
-
-        elif track_type == "Audio":
+        if track_type == "Audio":
             raw_format = track.get("Format", "")
             codec = _normalize_audio_codec(raw_format)
             language = track.get("Language", "")

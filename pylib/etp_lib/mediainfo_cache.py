@@ -28,6 +28,12 @@ def _cache_file() -> Path:
     return cache_dir("mediainfo") / "analysis.msgpack"
 
 
+# Bump when analysis output changes meaning for already-cached files
+# (e.g. v2: still-image tracks no longer mistaken for the main video),
+# discarding every older entry on load.
+_SCHEMA_VERSION = 2
+_VERSION_KEY = "//schema-version"
+
 _cache: dict[str, dict] | None = None
 _dirty = False
 
@@ -40,6 +46,8 @@ def _load() -> dict[str, dict]:
             loaded = msgpack.unpackb(raw, raw=False)
             _cache = loaded if isinstance(loaded, dict) else {}
         except OSError, ValueError, msgpack.UnpackException:
+            _cache = {}
+        if _cache.pop(_VERSION_KEY, None) != _SCHEMA_VERSION:
             _cache = {}
     return _cache
 
@@ -100,7 +108,7 @@ def save_cache() -> None:
     global _dirty
     if not _dirty or _cache is None:
         return
-    packed = msgpack.packb(_cache, use_bin_type=True)
+    packed = msgpack.packb({**_cache, _VERSION_KEY: _SCHEMA_VERSION}, use_bin_type=True)
     if packed is None:  # pragma: no cover — packb only returns None in stream mode
         return
     target = _cache_file()

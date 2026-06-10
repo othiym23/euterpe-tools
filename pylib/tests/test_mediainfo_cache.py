@@ -96,3 +96,18 @@ class TestMediaInfoCache:
         cache_file, _ = cache_env
         mediainfo_cache.save_cache()
         assert not cache_file.exists()
+
+    def test_older_schema_version_discarded(self, tmp_path, cache_env, monkeypatch):
+        """A schema bump invalidates every previously cached analysis."""
+        cache_file, calls = cache_env
+        video = tmp_path / "a.mkv"
+        video.write_bytes(b"x" * 64)
+        mediainfo_cache.analyze_file_cached(video)
+        mediainfo_cache.save_cache()
+
+        _reset(monkeypatch)
+        monkeypatch.setattr(
+            mediainfo_cache, "_SCHEMA_VERSION", mediainfo_cache._SCHEMA_VERSION + 1
+        )
+        mediainfo_cache.analyze_file_cached(video)
+        assert len(calls) == 2  # cache discarded, file re-analyzed

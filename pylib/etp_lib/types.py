@@ -458,6 +458,7 @@ class TitleMapping:
     tmdb_id: int | None = None
     tvdb_id: int | None = None
     edition: str = ""  # movies only: "Final Cut", "Criterion Collection", ...
+    domain: str = ""  # owning pipeline ("anime", "television", "movies")
 
 
 @dataclass

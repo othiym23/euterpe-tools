@@ -188,10 +188,12 @@ def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
         no_cache=args.no_cache,
         verbose=args.verbose,
     )
+    other_kind = MediaKind.TV if kind is MediaKind.MOVIE else MediaKind.MOVIE
     providers = Providers(
         tmdb_key=os.environ.get("TMDB_API_KEY", ""),
         tvdb_key=os.environ.get("TVDB_API_KEY", ""),
         arr_key=os.environ.get(ARR_KEY_ENV[kind], ""),
+        cross_arr_key=os.environ.get(ARR_KEY_ENV[other_kind], ""),
         no_cache=args.no_cache,
     )
     return run_plan(kind, config, opts, providers)

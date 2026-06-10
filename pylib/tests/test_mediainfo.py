@@ -151,8 +151,40 @@ MEDIAINFO_MULTI_AUDIO = {
 }
 
 
+MEDIAINFO_CHAPTER_IMAGES = {
+    "media": {
+        "track": [
+            {"@type": "General"},
+            {
+                "@type": "Video",
+                "Format": "AVC",
+                "Width": "960",
+                "Height": "720",
+                "BitDepth": "8",
+                "Title": "Main Program",
+            },
+            {
+                "@type": "Video",
+                "Format": "JPEG",
+                "Width": "640",
+                "Height": "480",
+                "Title": "Chapter Images",
+            },
+            {"@type": "Audio", "Format": "AAC", "Language": "en"},
+        ]
+    }
+}
+
+
 class TestMediaInfoParsing:
     """Tests for mediainfo JSON parsing."""
+
+    def test_still_image_track_ignored(self):
+        """m4v chapter-thumbnail tracks must not shadow the main video."""
+        mi = parse_mediainfo_json(MEDIAINFO_CHAPTER_IMAGES)
+        assert mi.video_codec == "AVC"
+        assert mi.resolution == "720p"
+        assert (mi.width, mi.height) == (960, 720)
 
     def test_hevc_dual_audio(self):
         mi = parse_mediainfo_json(MEDIAINFO_HEVC_DUAL_AUDIO)

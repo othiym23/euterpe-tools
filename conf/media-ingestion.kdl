@@ -56,3 +56,11 @@ series "Severance (2022)" {
   // Optional: pin the TMDB cross-check ID as well.
   tmdb 95396
 }
+
+// A `domain` property declares which pipeline owns a downloads title,
+// overriding Radarr/Sonarr root-folder detection in both directions.
+// Use it when no automatic signal exists — e.g. a fansub release named
+// after a title the PVR tools know by a different name.
+series "Hana yori Dango" {
+  domain "anime"
+}

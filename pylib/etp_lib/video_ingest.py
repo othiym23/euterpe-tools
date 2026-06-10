@@ -75,6 +75,7 @@ from etp_lib.types import (
     MovieInfo,
     SearchCandidate,
     SourceFile,
+    TitleMapping,
     TmdbTvInfo,
 )
 
@@ -541,6 +542,7 @@ class Providers:
     tmdb_key: str = ""
     tvdb_key: str = ""
     arr_key: str = ""  # Radarr/Sonarr API key, per kind
+    cross_arr_key: str = ""  # the other kind's PVR-tool API key
     no_cache: bool = False
 
 
@@ -1417,6 +1419,27 @@ def run_plan(
                 f"warning: {arr_name} query failed ({e}); falling back to search",
             )
 
+    # The other PVR tool's index matters for the domain filter only:
+    # without it, Radarr-managed anime movies leak into television plans
+    # (and vice versa). Never used for ID resolution.
+    cross_name = "Sonarr" if kind is MediaKind.MOVIE else "Radarr"
+    cross_url = config.sonarr_url if kind is MediaKind.MOVIE else config.radarr_url
+    cross_index: dict[str, arr.ArrEntry] = {}
+    if cross_url and providers.cross_arr_key:
+        cross_fetch = (
+            providers.sonarr_fetch
+            if kind is MediaKind.MOVIE
+            else providers.radarr_fetch
+        )
+        try:
+            cross_index = cross_fetch(cross_url, providers.cross_arr_key)
+        except _PROVIDER_ERRORS as e:
+            _say(
+                opts.json_output,
+                f"warning: {cross_name} query failed ({e});"
+                " cross-domain exclusion degraded",
+            )
+
     managed_titles: list[ScannedTitle] = []
     downloads_titles: list[ScannedTitle] = []
     modes: list[str] = []
@@ -1430,13 +1453,14 @@ def run_plan(
     # The downloads directory is shared with the anime pipeline; titles
     # another domain owns are not this command's to plan.
     if downloads_titles:
+        domain_index = {**cross_index, **arr_index}
         downloads_titles, foreign = _drop_foreign_domain(
-            downloads_titles, arr_index, source_root.name
+            downloads_titles, domain_index, source_root.name, downloads_dirs, mappings
         )
         if foreign:
             _say(
                 opts.json_output,
-                f"{foreign} downloads title(s) excluded as foreign-domain (anime)",
+                f"{foreign} downloads title(s) excluded as foreign-domain",
             )
 
     scanned: list[ScannedTitle] = managed_titles + downloads_titles
@@ -1648,19 +1672,34 @@ def _drop_foreign_domain(
     titles: list[ScannedTitle],
     arr_index: dict[str, arr.ArrEntry],
     own_root: str,
+    roots: list[Path],
+    mappings: dict[str, TitleMapping] | None = None,
 ) -> tuple[list[ScannedTitle], int]:
     """Drop downloads titles that belong to another domain's pipeline.
 
-    Authoritative signal: the Sonarr/Radarr record's root folder (a
-    series rooted in ``anime`` is not television's to plan; alternate
-    titles cover romaji fansub names). Fallback/supplement: a title
-    matching a series folder in the anime managed tree. Never consults
-    AniDB, so it is safe to run during AniDB-heavy operations.
+    A ``domain`` property on a config mapping is authoritative in both
+    directions — it covers titles no index can place (Sonarr knows the
+    Hana yori Dango anime only as "Boys Over Flowers") and protects
+    same-name titles from false drops. Next signal: the Radarr/Sonarr
+    record's root folder (a series rooted in ``anime`` is not
+    television's to plan; alternate titles cover romaji fansub names).
+    Fallback/supplement: a title matching a series folder in the anime
+    managed tree. Never consults AniDB, so it is safe to run during
+    AniDB-heavy operations.
+
+    A torrent is a single-publisher unit, so groups whose files all live
+    in torrent directories that foreign titles came from are foreign too
+    — creditless/extra files parse to junk titles ("Show NCOP1") that no
+    index can match, but they ship inside the show's own torrent.
     """
     foreign_tree = _anime_tree_names()
     kept: list[ScannedTitle] = []
-    dropped = 0
+    dropped: list[ScannedTitle] = []
     for t in titles:
+        mapping = lookup_mapping(mappings or {}, t.raw_title, t.title, t.alt_title)
+        if mapping is not None and mapping.domain:
+            (kept if mapping.domain == own_root else dropped).append(t)
+            continue
         domain = arr.domain_of(arr_index, t.raw_title, t.title, t.alt_title, t.year)
         in_foreign_tree = any(
             _normalize_dirname(name) in foreign_tree
@@ -1672,10 +1711,23 @@ def _drop_foreign_domain(
             if name
         )
         if (domain is not None and domain != own_root) or in_foreign_tree:
-            dropped += 1
+            dropped.append(t)
         else:
             kept.append(t)
-    return kept, dropped
+
+    foreign_dirs = {
+        d for t in dropped for f in t.files if (d := _torrent_dir(f.source.path, roots))
+    }
+    if foreign_dirs:
+        survivors: list[ScannedTitle] = []
+        for t in kept:
+            dirs = [_torrent_dir(f.source.path, roots) for f in t.files]
+            if dirs and all(d is not None and d in foreign_dirs for d in dirs):
+                dropped.append(t)
+            else:
+                survivors.append(t)
+        kept = survivors
+    return kept, len(dropped)
 
 
 def _drop_hardlink_twins(scanned: list[ScannedTitle]) -> int:

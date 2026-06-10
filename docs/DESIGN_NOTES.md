@@ -342,10 +342,18 @@ ingest plan --radarr|--sonarr and/or --downloads
                        Plex/Jellyfin-shared subdirs — Trailers, Interviews,
                        Deleted Scenes, Behind The Scenes, Shorts, Featurettes —
                        with cleaned display names and no quality block)
-  filter               foreign-domain exclusion (Sonarr root folders +
-                       anime-tree names; see ADR 2026-06-10-01), hardlink
-                       twins, --refine scope (the manifest's sources only),
-                       shared ingest register (unless --force), pattern
+  filter               foreign-domain exclusion (config `domain` mappings
+                       are authoritative both ways; then Radarr+Sonarr root
+                       folders — both indexes, so the other kind's anime
+                       movies/series are excluded too — then anime-tree
+                       names; see ADR 2026-06-10-01); title matching folds
+                       punctuation/accents/spacing and accepts word-boundary
+                       phrase containment (≥8 alnum) and word-aligned
+                       prefixes (≥6); whole torrents follow their content
+                       (junk-parsed creditless/extra siblings of a foreign
+                       title drop with it); hardlink twins, --refine scope
+                       (the manifest's sources only), shared ingest register
+                       (unless --force), pattern
   resolve              config mapping / --refine ID  -> confidence "exact"
                        else Radarr/Sonarr API record -> "exact" (authoritative;
                        requires radarr/sonarr url + RADARR/SONARR_API_KEY)

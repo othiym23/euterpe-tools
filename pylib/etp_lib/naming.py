@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 from etp_lib.types import AudioTrack, SourceFile
@@ -342,10 +343,16 @@ def _title_year(title: str, year: int) -> str:
 def normalize_title(text: str) -> str:
     """Normalize a title for comparison: casefolded alphanumeric words.
 
-    Shared by dual-title bracket suppression here and by candidate
-    matching / library-directory reuse in video_ingest, so all title
-    comparisons agree on what "the same title" means.
+    Apostrophes are deleted (``Wolf's`` and ``Wolfs`` are the same
+    title) and accents folded (``Fiancée``/``Fiancee``); all other
+    punctuation becomes a word break. Shared by dual-title bracket
+    suppression here and by candidate matching / library-directory
+    reuse in video_ingest, so all title comparisons agree on what "the
+    same title" means.
     """
+    decomposed = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in decomposed if not unicodedata.combining(c))
+    text = text.replace("'", "").replace("’", "")
     cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in text.casefold())
     return " ".join(cleaned.split())
 

@@ -136,6 +136,8 @@ def _read_mappings(
                 mapping.tvdb_id = provider_id(name, child)
             elif child.name == "edition":
                 mapping.edition = str(child.args[0])
+            elif child.name == "domain":
+                mapping.domain = str(child.args[0])
 
 
 def lookup_mapping(

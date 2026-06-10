@@ -253,9 +253,10 @@ _RE_WORD_SPLIT = re.compile(r"[\s,]+")
 _RE_DASH_SUFFIX = re.compile(r"-[A-Za-z].*$")
 _RE_DASH_GROUP = re.compile(r"^(.+)-([A-Za-z][A-Za-z0-9]+)$")
 
-# Audio codec (compound forms like AAC2.0, DTS-HD MA)
+# Audio codec (compound forms like AAC2.0, DTS-HD MA, Opus5.1)
 _RE_AC = re.compile(
-    r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD\+|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD|PCM|LPCM)"
+    r"(?:DTS-?HD\s*MA|DTS-?HDMA|DTS-HD|DTSHD|DTS|DDP|DD\+|DD|EAC3|E-AC-3|AC3"
+    r"|AAC|FLAC|Opus|TrueHD|PCM|LPCM)"
     r"(?:[.\s]?\d\.\d)?",
     re.IGNORECASE,
 )
@@ -663,6 +664,11 @@ _REDISTRIBUTORS = frozenset({"tgx", "eztv", "eztvx.to", "rartv", "ettv", "ion10"
 # of the title (not an episode number): "Part 1", "Vol 2", "Chapter 3"
 _TITLE_NUMBER_PREFIXES = frozenset({"part", "vol", "volume", "chapter", "movie"})
 
+# Streaming-service source tags that are also ordinary English words;
+# they only count as sources after the title (i.e. once other metadata
+# has been seen), never in title position.
+_AMBIGUOUS_SOURCE_WORDS = frozenset({"it", "ma", "stan"})
+
 
 def _result_to_token(result: object, text: str) -> Token:
     """Convert a parsy primitive result to a Token for the existing pipeline."""
@@ -973,6 +979,16 @@ def scan_dot_segments(text: str) -> list[Token]:
 
         # Single segment
         token = _try_recognize(part)
+        if (
+            token is not None
+            and token.kind is TokenKind.SOURCE
+            and part.lower() in _AMBIGUOUS_SOURCE_WORDS
+            and not any(t.kind in _METADATA_KINDS for t in tokens)
+        ):
+            # "It"/"Ma"/"Stan" are streaming-service tags only after the
+            # title; in title position they're ordinary English words
+            # ("Go.For.It.Nakamura-kun").
+            token = None
         if token is not None:
             tokens.append(token)
         else:
@@ -1452,6 +1468,16 @@ def _has_numbered_episode(tokens: list[Token]) -> bool:
     return False
 
 
+def _component_has_metadata(tokens: list[Token]) -> bool:
+    """True when the current path component already has a metadata token."""
+    for token in reversed(tokens):
+        if token.kind is TokenKind.PATH_SEP:
+            break
+        if token.kind in _METADATA_KINDS:
+            return True
+    return False
+
+
 def classify(tokens: list[Token]) -> list[Token]:
     """Classify structural tokens into semantic types.
 
@@ -1614,6 +1640,16 @@ def classify(tokens: list[Token]) -> list[Token]:
             # Known metadata keyword? Use the full token from _try_recognize
             # to preserve numeric fields (version, season, episode, etc.)
             recognized_meta = _try_recognize(text)
+            if (
+                recognized_meta is not None
+                and recognized_meta.kind is TokenKind.SOURCE
+                and text.lower() in _AMBIGUOUS_SOURCE_WORDS
+                and not _component_has_metadata(result)
+            ):
+                # "It"/"Ma"/"Stan" are streaming-service tags only after
+                # the title; in title position they're ordinary words
+                # ("Stan Against Evil", "Go For It, Nakamura-kun").
+                recognized_meta = None
             if recognized_meta is not None:
                 result.append(recognized_meta)
                 continue

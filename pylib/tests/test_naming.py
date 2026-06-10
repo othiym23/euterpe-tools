@@ -17,6 +17,7 @@ from etp_lib.naming import (
     format_series_dirname,
     format_tv_episode_filename,
     format_tv_series_dirname,
+    normalize_title,
     subtitle_sidecars,
 )
 from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
@@ -726,6 +727,27 @@ class TestExtrasNaming:
         assert extras_dir_category("NC") == ""
         assert extras_dir_category("Season 01") is None
         assert extras_dir_category("The Expanse (2015) S01") is None
+
+
+class TestNormalizeTitle:
+    """Apostrophes delete, accents fold, other punctuation word-breaks."""
+
+    def test_apostrophe_deleted(self):
+        assert normalize_title("Wolf's Rain") == normalize_title("Wolfs Rain")
+        assert normalize_title("Tamon's B-Side") == "tamons b side"
+
+    def test_curly_apostrophe_deleted(self):
+        assert normalize_title("Marika’s Love Meter") == "marikas love meter"
+
+    def test_accents_folded(self):
+        assert normalize_title("Fiancée") == "fiancee"
+        assert normalize_title("Komada – A Whisky Family") == "komada a whisky family"
+
+    def test_punctuation_breaks_words(self):
+        assert (
+            normalize_title("Re: ZERO, Starting Life in Another World")
+            == "re zero starting life in another world"
+        )
 
 
 class TestModifierColonSanitization:
