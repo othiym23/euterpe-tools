@@ -333,7 +333,12 @@ designed for LLM agents as first-class users (ADR 2026-06-09-01).
 ```
 ingest plan --radarr|--sonarr and/or --downloads
   scan sources         scan_managed_tree (deterministic Radarr/Sonarr naming)
-                       scan_downloads (best-effort torrent naming, kind-filtered)
+                       scan_downloads (best-effort torrent naming, kind-filtered;
+                       sibling videos under half the size of a torrent dir's
+                       main film become its extras, classified into the
+                       Plex/Jellyfin-shared subdirs — Trailers, Interviews,
+                       Deleted Scenes, Behind The Scenes, Shorts, Featurettes —
+                       with cleaned display names and no quality block)
   filter               shared ingest register (unless --force), pattern
   resolve              config mapping / --refine ID  -> confidence "exact"
                        else Radarr/Sonarr API record -> "exact" (authoritative;

@@ -52,7 +52,9 @@ from etp_lib.media_scanner import iter_media_files, parse_source_filename
 from etp_lib.media_vocab import _PVR_TOOL_NAMES, _VIDEO_EXTENSIONS
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
+    classify_extra,
     crc_suffixed,
+    extra_display_name,
     format_movie_dirname,
     format_movie_filename,
     format_tv_episode_filename,
@@ -167,6 +169,7 @@ class ScannedFile:
     episodes: list[int] = field(default_factory=list)
     episode_title: str = ""
     part: int | None = None  # multi-part movies: cd1/pt2/...
+    extra_category: str = ""  # extras subdir ("Featurettes", ...) when an extra
 
 
 @dataclass
@@ -258,6 +261,51 @@ def _scan_managed_file(
     )
 
 
+def _torrent_dir(path: Path, roots: list[Path]) -> Path | None:
+    """The torrent's top-level directory under a downloads root, or None
+    for files sitting directly in a root."""
+    for root in roots:
+        if root in path.parents:
+            rel = path.relative_to(root)
+            if len(rel.parts) > 1:
+                return root / rel.parts[0]
+            return None
+    return None
+
+
+def _detect_movie_extras(
+    files: list[Path], roots: list[Path]
+) -> dict[Path, tuple[Path, str]]:
+    """Find featurettes packed beside a main film in its torrent directory.
+
+    A movie torrent often carries extras as sibling videos (interviews,
+    making-ofs, trailers) that would otherwise each become a junk
+    ``needs-id`` group. Within each torrent directory the largest video
+    is the main film; videos under half its size are its extras, mapped
+    to ``(main file, extras subdirectory)``. The half-size guard keeps
+    multi-part mains (cd1/cd2) and alternate cuts out of the extras bin.
+    """
+    by_dir: dict[Path, list[Path]] = {}
+    for path in files:
+        torrent = _torrent_dir(path, roots)
+        if torrent is not None:
+            by_dir.setdefault(torrent, []).append(path)
+
+    extras: dict[Path, tuple[Path, str]] = {}
+    for members in by_dir.values():
+        if len(members) < 2:
+            continue
+        sizes = {p: _size_of(p) for p in members}
+        main = max(members, key=lambda p: sizes[p])
+        if not sizes[main]:
+            continue
+        for path in members:
+            if path is main or sizes[path] * 2 > sizes[main]:
+                continue
+            extras[path] = (main, classify_extra(path.stem))
+    return extras
+
+
 def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
     """Group downloads-directory files into per-title groups (best effort).
 
@@ -269,8 +317,14 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
     questionable lands in the manifest as ``needs-id``, never a guessed
     destination.
     """
+    files = sorted(iter_media_files(roots))
+    extras = _detect_movie_extras(files, roots) if kind is MediaKind.MOVIE else {}
+    group_of_main: dict[Path, ScannedTitle] = {}
+
     groups: dict[str, ScannedTitle] = {}
-    for path in sorted(iter_media_files(roots)):
+    for path in files:
+        if path in extras:
+            continue  # attached to its main film's group below
         sf = parse_source_filename(path.name)
         sf.path = path
         pm = sf.parsed
@@ -330,6 +384,16 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
                     part=int(part_match.group(1)) if part_match else None,
                 )
             )
+            group_of_main[path] = group
+
+    for path, (main, category) in sorted(extras.items()):
+        group = group_of_main.get(main)
+        if group is None:
+            continue  # main film didn't group; extras stay out too
+        sf = parse_source_filename(path.name)
+        sf.path = path
+        group.files.append(ScannedFile(source=sf, extra_category=category))
+
     return [groups[key] for key in sorted(groups)]
 
 
@@ -995,6 +1059,20 @@ def _build_movie_block(
         block.note = "reusing existing library directory"
 
     for f in scanned.files:
+        if f.extra_category:
+            # Extras keep clean names — Plex/Jellyfin display the
+            # filename as the extra's title — and skip the quality block.
+            ext = f.source.path.suffix or ".mkv"
+            display = extra_display_name(f.source.path.stem)
+            entry = FileEntry(
+                source=str(f.source.path),
+                size=_size_of(f.source.path),
+                status=EntryStatus.READY,
+                dest=str(Path(f.extra_category) / f"{display}{ext}"),
+            )
+            _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
+            block.entries.append(entry)
+            continue
         _analyze(f.source, providers)
         base = block.dest_dir if f.part is None else f"{block.dest_dir} - pt{f.part}"
         entry = FileEntry(

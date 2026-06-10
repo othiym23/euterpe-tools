@@ -135,6 +135,12 @@ Do **not** hand-edit `dest`/`dest-dir`; destinations are always computed by
 plan. Entries noted `same-size file already in library` point at the existing
 copy — `keep` marks them ingested without copying.
 
+Movie torrents that pack featurettes beside the main film are handled
+automatically: sibling videos well under the main film's size are planned into
+the extras subdirectories both Plex and Jellyfin recognize (`Featurettes/`,
+`Trailers/`, `Interviews/`, `Behind The Scenes/`, …) with cleaned display names
+(`Crafting.Anomalisa-Grym.mkv` → `Featurettes/Crafting Anomalisa.mkv`).
+
 ### Step 2½ — plan --refine (after editing a needs-id manifest)
 
 Re-plans with the IDs and skip/conflict decisions carried forward from the

@@ -184,6 +184,44 @@ def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Pa
     return series_dir / f"Season {season:02d}"
 
 
+# Extras subdirectory names recognized by BOTH Plex and Jellyfin inside a
+# movie folder (Plex matches these exact title-case names; Jellyfin's
+# folder matching is case-insensitive and its supported list includes all
+# of them). Ordered keyword → subdirectory; first match wins.
+_EXTRA_CATEGORIES: list[tuple[str, str]] = [
+    ("trailer", "Trailers"),
+    ("interview", "Interviews"),
+    ("deleted", "Deleted Scenes"),
+    ("behind the scenes", "Behind The Scenes"),
+    ("behindthescenes", "Behind The Scenes"),
+    ("making of", "Behind The Scenes"),
+    ("short", "Shorts"),
+]
+_DEFAULT_EXTRA_CATEGORY = "Featurettes"
+
+_RE_RELEASE_GROUP_SUFFIX = re.compile(r"-[A-Za-z0-9]+$")
+
+
+def extra_display_name(stem: str) -> str:
+    """Clean a torrent extra's filename into its display title.
+
+    Plex and Jellyfin show an extra's filename as its title, so release
+    cruft must go: ``Crafting.Anomalisa-Grym`` → ``Crafting Anomalisa``.
+    """
+    name = _RE_RELEASE_GROUP_SUFFIX.sub("", stem)
+    name = name.replace(".", " ").replace("_", " ")
+    return _sanitize_path(" ".join(name.split()))
+
+
+def classify_extra(stem: str) -> str:
+    """Map an extra's name to its Plex/Jellyfin extras subdirectory."""
+    name = extra_display_name(stem).casefold()
+    for keyword, category in _EXTRA_CATEGORIES:
+        if keyword in name:
+            return category
+    return _DEFAULT_EXTRA_CATEGORY
+
+
 def crc_suffixed(dest: Path, crc: str) -> Path:
     """Disambiguate *dest* with a CRC32 suffix: ``name [ABCD1234].ext``.
 

@@ -1437,3 +1437,77 @@ class TestLibraryWideSameSize:
         # In-directory copy wins: conflict/keep pointing at it.
         assert entry.status is EntryStatus.CONFLICT
         assert entry.dest == existing.name
+
+
+class TestMovieExtras:
+    """Featurettes packed beside a main film in its torrent directory."""
+
+    def _grym_tree(self, tmp_path):
+        dl = tmp_path / "downloads"
+        torrent = dl / "Anomalisa.2015.1080p.BluRay.x264-Grym"
+        _mkfile(torrent / "Anomalisa.2015.1080p.BluRay.x264-Grym.mkv", size=10_000)
+        _mkfile(torrent / "Crafting.Anomalisa-Grym.mkv", size=900)
+        _mkfile(torrent / "Theatrical.Trailer-Grym.mkv", size=100)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        return dl, dest
+
+    def _anomalisa_providers(self):
+        return movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TMDB, 291270, "Anomalisa", 2015)
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: MovieInfo(
+                tmdb_id=291270, title="Anomalisa", year=2015
+            ),
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+
+    def test_scan_attaches_extras_to_main(self, tmp_path):
+        dl, _ = self._grym_tree(tmp_path)
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 1  # no junk groups for the extras
+        t = titles[0]
+        assert t.title == "Anomalisa"
+        categories = sorted(f.extra_category for f in t.files)
+        assert categories == ["", "Featurettes", "Trailers"]
+
+    def test_plan_places_extras_in_subdirs(self, tmp_path, register):
+        dl, dest = self._grym_tree(tmp_path)
+        config = MediaIngestConfig(downloads_dir=dl, movies_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._anomalisa_providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        dests = sorted(e.dest for e in block.entries)
+        assert dests[1] == "Featurettes/Crafting Anomalisa.mkv"
+        assert dests[2] == "Trailers/Theatrical Trailer.mkv"
+        assert all(e.status is EntryStatus.READY for e in block.entries)
+        # The main film keeps its quality block; extras stay clean.
+        assert "[" in dests[0] and "Anomalisa (2015)" in dests[0]
+
+    def test_multipart_not_demoted_to_extras(self, tmp_path):
+        dl = tmp_path / "downloads"
+        torrent = dl / "Goemon.2009.DVDRip-GRP"
+        _mkfile(torrent / "Goemon.2009.cd1-GRP.mkv", size=5000)
+        _mkfile(torrent / "Goemon.2009.cd2-GRP.mkv", size=4500)
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert all(not f.extra_category for t in titles for f in t.files)
+
+    def test_nested_extras_subdir(self, tmp_path):
+        dl = tmp_path / "downloads"
+        torrent = dl / "Anomalisa.2015.1080p.BluRay.x264-Grym"
+        _mkfile(torrent / "Anomalisa.2015.1080p.BluRay.x264-Grym.mkv", size=10_000)
+        _mkfile(torrent / "Extras" / "Crafting.Anomalisa-Grym.mkv", size=900)
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 1
+        extras = [f for f in titles[0].files if f.extra_category]
+        assert len(extras) == 1
+        assert extras[0].extra_category == "Featurettes"

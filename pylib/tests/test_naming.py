@@ -6,6 +6,8 @@ from pathlib import Path
 
 from etp_lib.naming import (
     build_metadata_block,
+    classify_extra,
+    extra_display_name,
     extras_relpath,
     format_display_title,
     format_episode_filename,
@@ -689,3 +691,25 @@ class TestColonSanitization:
     def test_bare_colon_squeezed(self):
         result = format_tv_series_dirname("Re:ZERO", 2016, 305074)
         assert result == "Re-ZERO (2016) {tvdb-305074}"
+
+
+class TestExtrasNaming:
+    """Plex/Jellyfin extras subdirectories and display names."""
+
+    def test_display_name_strips_release_cruft(self):
+        assert extra_display_name("Crafting.Anomalisa-Grym") == "Crafting Anomalisa"
+        assert extra_display_name("Intimacy in Miniature-Grym") == (
+            "Intimacy in Miniature"
+        )
+        assert extra_display_name("Some_Other_Extra") == "Some Other Extra"
+
+    def test_classification(self):
+        assert classify_extra("Theatrical.Trailer-Grym") == "Trailers"
+        assert classify_extra("Claude Lanzmann Interview-Grym") == "Interviews"
+        assert classify_extra("Deleted.Scenes-GRP") == "Deleted Scenes"
+        assert classify_extra("Behind.The.Scenes-GRP") == "Behind The Scenes"
+        assert classify_extra("The Making of Anomalisa") == "Behind The Scenes"
+        assert classify_extra("Pixar.Short-GRP") == "Shorts"
+
+    def test_default_is_featurettes(self):
+        assert classify_extra("Crafting.Anomalisa-Grym") == "Featurettes"
