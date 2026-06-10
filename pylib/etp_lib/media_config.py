@@ -72,6 +72,13 @@ def load_media_config(path: Path | None = None) -> MediaIngestConfig:
             elif child.name == "television-dest-dir":
                 config.television_dest_dir = val
 
+    for tool in ("radarr", "sonarr"):
+        node = doc.get(tool)
+        if node is not None:
+            for child in node.nodes:
+                if child.name == "url" and child.args:
+                    setattr(config, f"{tool}_url", str(child.args[0]))
+
     _read_mappings(doc, "movie", config.movie_mappings)
     _read_mappings(doc, "series", config.series_mappings)
     return config

@@ -336,8 +336,13 @@ ingest plan --radarr|--sonarr and/or --downloads
                        scan_downloads (best-effort torrent naming, kind-filtered)
   filter               shared ingest register (unless --force), pattern
   resolve              config mapping / --refine ID  -> confidence "exact"
+                       else Radarr/Sonarr API record -> "exact" (authoritative;
+                       requires radarr/sonarr url + RADARR/SONARR_API_KEY)
                        else provider search: exact title+year -> "exact",
-                       single fuzzy hit -> "high", else needs-id + candidates
+                       single fuzzy hit -> "high"; ambiguous searches are
+                       retried against the library (exactly one candidate
+                       matching an existing dest dir -> "high"), else
+                       needs-id + candidates
   cross-check          TV: TMDB external_ids must point back at the TVDB id
                        movies: TheTVDB movie search by exact title+year
   enrich               mediainfo per file (quality block in dest names)
@@ -345,7 +350,10 @@ ingest plan --radarr|--sonarr and/or --downloads
                        `Original [English] (Year) {tmdb-NNN}` / `{tvdb-NNN}`
                        (+ {edition-X}); English-only when the original title
                        doesn't differ; existing dest file -> status
-                       "conflict", conflict "keep"
+                       "conflict", conflict "keep"; a same-size video under a
+                       different name in the dest dir -> conflict "keep"
+                       pointed at the existing file (already ingested under
+                       the library's older naming)
   write                KDL plan manifest (schema-version 1) + JSON summary
 
 ingest apply MANIFEST

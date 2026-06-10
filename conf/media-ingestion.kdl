@@ -28,6 +28,16 @@ paths {
   //   television-dest-dir "/Volumes/video/television"
 }
 
+// Radarr/Sonarr API endpoints. When configured (with RADARR_API_KEY /
+// SONARR_API_KEY in media.env), managed-tree titles resolve through the
+// PVR tool's own records — authoritative IDs, no search ambiguity.
+radarr {
+  url "http://localhost:7878"
+}
+sonarr {
+  url "http://localhost:8989"
+}
+
 // Per-title provider ID overrides. The name matches the source folder
 // name or the parsed title, case-insensitively. Use these to resolve
 // titles whose metadata search is ambiguous (remakes, same-name shows)

@@ -191,3 +191,49 @@ class TestProviderCache:
         old = 1_000_000_000  # well past any max age
         os.utime(f, (old, old))
         assert load_cached_json(f) is None
+
+
+class TestArrIndex:
+    """Radarr/Sonarr index construction (etp_lib.arr)."""
+
+    def test_radarr_index_keys(self, monkeypatch):
+        from etp_lib import arr
+
+        monkeypatch.setattr(
+            arr,
+            "_arr_request",
+            lambda url, endpoint, key: [
+                {
+                    "title": "Heat",
+                    "year": 1995,
+                    "path": "/data/movies/Heat [Heat] (1995)",
+                    "tmdbId": 949,
+                    "imdbId": "tt0113277",
+                }
+            ],
+        )
+        index = arr.fetch_radarr_index("http://radarr:7878", "k")
+        by_folder = arr.lookup(index, "Heat [Heat] (1995)", "", 0)
+        assert by_folder is not None and by_folder.tmdb_id == 949
+        by_title = arr.lookup(index, "no-such-folder", "Heat", 1995)
+        assert by_title is not None and by_title.tmdb_id == 949
+        assert arr.lookup(index, "Nope (2000)", "Nope", 2000) is None
+
+    def test_sonarr_index(self, monkeypatch):
+        from etp_lib import arr
+
+        monkeypatch.setattr(
+            arr,
+            "_arr_request",
+            lambda url, endpoint, key: [
+                {
+                    "title": "Severance",
+                    "year": 2022,
+                    "path": "/data/television/Severance (2022)",
+                    "tvdbId": 371980,
+                }
+            ],
+        )
+        index = arr.fetch_sonarr_index("http://sonarr:8989", "k")
+        entry = arr.lookup(index, "Severance (2022)", "", 0)
+        assert entry is not None and entry.tvdb_id == 371980

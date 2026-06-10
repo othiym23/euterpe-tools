@@ -26,6 +26,7 @@ from etp_lib.envfile import load_env_file
 from etp_lib.media_config import MediaConfigError, load_media_config
 from etp_lib.video_ingest import (
     API_KEY_ENV,
+    ARR_KEY_ENV,
     ApplyOptions,
     MediaKind,
     PlanOptions,
@@ -190,6 +191,7 @@ def _run_plan(kind: MediaKind, args: argparse.Namespace) -> int:
     providers = Providers(
         tmdb_key=os.environ.get("TMDB_API_KEY", ""),
         tvdb_key=os.environ.get("TVDB_API_KEY", ""),
+        arr_key=os.environ.get(ARR_KEY_ENV[kind], ""),
         no_cache=args.no_cache,
     )
     return run_plan(kind, config, opts, providers)

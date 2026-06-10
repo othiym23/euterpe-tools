@@ -476,3 +476,6 @@ class MediaIngestConfig:
     # casefolded source folder name or parsed title -> provider ID override
     movie_mappings: dict[str, TitleMapping] = field(default_factory=dict)
     series_mappings: dict[str, TitleMapping] = field(default_factory=dict)
+    # PVR API endpoints for authoritative ID resolution (keys in media.env)
+    radarr_url: str = ""
+    sonarr_url: str = ""

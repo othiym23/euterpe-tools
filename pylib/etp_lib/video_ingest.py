@@ -43,13 +43,13 @@ from pathlib import Path
 
 import kdl
 
-from etp_lib import media_parser, tmdb, tvdb
+from etp_lib import arr, media_parser, tmdb, tvdb
 from etp_lib.conflicts import compute_crc32, copy_reflink
 from etp_lib.ingest_register import load_register, save_register
 from etp_lib.manifest import _MAX_FILENAME_BYTES, copy_subtitle_sidecars, escape_kdl
 from etp_lib.media_config import lookup_mapping
 from etp_lib.media_scanner import iter_media_files, parse_source_filename
-from etp_lib.media_vocab import _PVR_TOOL_NAMES
+from etp_lib.media_vocab import _PVR_TOOL_NAMES, _VIDEO_EXTENSIONS
 from etp_lib.mediainfo import analyze_file
 from etp_lib.naming import (
     crc_suffixed,
@@ -344,6 +344,12 @@ API_KEY_ENV = {
     MetadataProvider.TVDB: "TVDB_API_KEY",
 }
 
+# Environment variable carrying each kind's PVR-tool API key.
+ARR_KEY_ENV = {
+    MediaKind.MOVIE: "RADARR_API_KEY",
+    MediaKind.TV: "SONARR_API_KEY",
+}
+
 
 @dataclass
 class Providers:
@@ -356,9 +362,12 @@ class Providers:
     tvdb_search_series: Callable[..., list[SearchCandidate]] = tvdb.search_tvdb_series
     tvdb_search_movies: Callable[..., list[SearchCandidate]] = tvdb.search_tvdb_movies
     tvdb_fetch_series: Callable[..., AnimeInfo] = tvdb.fetch_tvdb_series
+    radarr_fetch: Callable[..., dict[str, arr.ArrEntry]] = arr.fetch_radarr_index
+    sonarr_fetch: Callable[..., dict[str, arr.ArrEntry]] = arr.fetch_sonarr_index
     analyze: Callable[..., MediaInfo | None] = analyze_file
     tmdb_key: str = ""
     tvdb_key: str = ""
+    arr_key: str = ""  # Radarr/Sonarr API key, per kind
     no_cache: bool = False
 
 
@@ -876,6 +885,30 @@ def _episode_title(info: AnimeInfo, season: int, number: int | None) -> str:
     return ""
 
 
+def _existing_same_size(dest_parent: Path, size: int, dest_name: str) -> Path | None:
+    """A video of identical size already in the destination directory.
+
+    The library predates this tool's naming, so an already-ingested file
+    usually exists under a *different* name; matching by exact byte size
+    catches it where the dest-path check cannot.
+    """
+    if not size:
+        return None
+    try:
+        children = sorted(dest_parent.iterdir())
+    except OSError:
+        return None
+    for child in children:
+        if child.name == dest_name or child.suffix.lower() not in _VIDEO_EXTENSIONS:
+            continue
+        try:
+            if child.is_file() and child.stat().st_size == size:
+                return child
+        except OSError:
+            continue
+    return None
+
+
 def _check_entry_placement(entry: FileEntry, dest_root: Path, dest_dir: str) -> None:
     """Plan-time checks shared by all entries: length limits, conflicts."""
     dest_path = dest_root / dest_dir / entry.dest
@@ -894,6 +927,15 @@ def _check_entry_placement(entry: FileEntry, dest_root: Path, dest_dir: str) -> 
             entry.note = f"destination exists ({existing} bytes)"
         except OSError:
             entry.note = "destination exists"
+        return
+    same_size = _existing_same_size(dest_path.parent, entry.size, dest_path.name)
+    if same_size is not None:
+        # Point the entry at the existing file: "keep" records it as
+        # ingested, "replace" re-encodes it in place, "both" keeps both.
+        entry.status = EntryStatus.CONFLICT
+        entry.conflict = ConflictAction.KEEP
+        entry.dest = str(same_size.relative_to(dest_root / dest_dir))
+        entry.note = f"same-size file already in library: {same_size.name}"
 
 
 def _build_movie_block(
@@ -918,7 +960,7 @@ def _build_movie_block(
         block.edition,
         original_title=block.original_title,
     )
-    if existing:
+    if existing and not block.note:
         block.note = "reusing existing library directory"
 
     for f in scanned.files:
@@ -952,7 +994,7 @@ def _build_series_block(
     block.dest_dir = existing or format_tv_series_dirname(
         block.title, block.year, block.tvdb_id, original_title=block.original_title
     )
-    if existing:
+    if existing and not block.note:
         block.note = "reusing existing library directory"
 
     for f in scanned.files:
@@ -1112,6 +1154,25 @@ def run_plan(
             print(json.dumps(_plan_summary(manifest, None, already_ingested)))
         return 2
 
+    # Radarr/Sonarr know the provider IDs of everything they manage —
+    # authoritative for managed-tree titles, no search ambiguity.
+    arr_name = "Radarr" if kind is MediaKind.MOVIE else "Sonarr"
+    arr_url = config.radarr_url if kind is MediaKind.MOVIE else config.sonarr_url
+    arr_index: dict[str, arr.ArrEntry] = {}
+    if arr_url and providers.arr_key:
+        arr_fetch = (
+            providers.radarr_fetch
+            if kind is MediaKind.MOVIE
+            else providers.sonarr_fetch
+        )
+        try:
+            arr_index = arr_fetch(arr_url, providers.arr_key)
+        except _PROVIDER_ERRORS as e:
+            _say(
+                opts.json_output,
+                f"warning: {arr_name} query failed ({e}); falling back to search",
+            )
+
     dest_index = _dest_dir_index(dest_root)
     for t in scanned:
         block = TitleBlock(raw_title=t.raw_title)
@@ -1119,25 +1180,56 @@ def run_plan(
             mappings, t.raw_title, f"{t.title} ({t.year})", t.title
         )
         refined = refine_blocks.get(t.raw_title)
+        arr_entry = arr.lookup(arr_index, t.raw_title, t.title, t.year)
 
         if mapping and mapping.edition and not t.edition:
             t.edition = mapping.edition
         block.edition = t.edition
 
+        resolved = False
         if kind is MediaKind.MOVIE:
             override = (mapping.tmdb_id if mapping else None) or (
                 refined.tmdb_id if refined else None
             )
-            info: MovieInfo | AnimeInfo | None = _resolve_movie(
-                t, block, override, providers
+            arr_used = (
+                override is None
+                and arr_entry is not None
+                and arr_entry.tmdb_id is not None
             )
-            _build_movie_block(t, block, info, dest_root, dest_index, providers)  # type: ignore[arg-type]
+            if arr_used and arr_entry is not None:
+                override = arr_entry.tmdb_id
+            movie_info = _resolve_movie(t, block, override, providers)
+            if movie_info is None and block.confidence is Confidence.AMBIGUOUS:
+                pick = _library_pick(block.candidates, dest_index)
+                if pick is not None:
+                    movie_info = _resolve_movie(t, block, pick.id, providers)
+                    if movie_info is not None:
+                        _note_library_pick(block)
+            _build_movie_block(t, block, movie_info, dest_root, dest_index, providers)
+            resolved = movie_info is not None
         else:
             override = (mapping.tvdb_id if mapping else None) or (
                 refined.tvdb_id if refined else None
             )
-            info = _resolve_series(t, block, override, providers)
-            _build_series_block(t, block, info, dest_root, dest_index, providers)  # type: ignore[arg-type]
+            arr_used = (
+                override is None
+                and arr_entry is not None
+                and arr_entry.tvdb_id is not None
+            )
+            if arr_used and arr_entry is not None:
+                override = arr_entry.tvdb_id
+            series_info = _resolve_series(t, block, override, providers)
+            if series_info is None and block.confidence is Confidence.AMBIGUOUS:
+                pick = _library_pick(block.candidates, dest_index)
+                if pick is not None:
+                    series_info = _resolve_series(t, block, pick.id, providers)
+                    if series_info is not None:
+                        _note_library_pick(block)
+            _build_series_block(t, block, series_info, dest_root, dest_index, providers)
+            resolved = series_info is not None
+
+        if arr_used and resolved and not block.note:
+            block.note = f"resolved via {arr_name}"
 
         # Carry forward decisions an agent made on a previous manifest.
         for entry in block.entries:
@@ -1183,6 +1275,34 @@ def run_plan(
     for w in summary["warnings"]:
         _say(opts.json_output, f"warning: {w['title']}: {w['detail']}")
     return 0
+
+
+def _library_pick(
+    candidates: list[SearchCandidate], dest_index: dict[str, str]
+) -> SearchCandidate | None:
+    """Resolve an ambiguous search against the library itself.
+
+    When exactly one candidate's ``Title (Year)`` matches an existing
+    destination directory, that is the title this collection means —
+    e.g. several films named "After Hours", but the library already has
+    an ``After Hours (1985)`` directory.
+    """
+    hits: dict[int, SearchCandidate] = {}
+    for c in candidates:
+        for name in (c.title, c.original_title):
+            if name and _existing_dest_dir(dest_index, [name], c.year):
+                hits.setdefault(c.id, c)
+                break
+    if len(hits) == 1:
+        return next(iter(hits.values()))
+    return None
+
+
+def _note_library_pick(block: TitleBlock) -> None:
+    """Mark a block as resolved by matching an existing library directory."""
+    block.candidates = []
+    block.confidence = Confidence.HIGH
+    block.note = "disambiguated by existing library directory"
 
 
 def _dest_key(dest_dir: str, dest: str) -> tuple[str, str]:

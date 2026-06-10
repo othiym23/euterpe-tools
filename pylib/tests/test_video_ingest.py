@@ -1168,3 +1168,186 @@ class TestPlanVerbose:
         assert rc == 0
         out = capsys.readouterr().out
         assert "Severance (2022): exact {tvdb-371980}" in out
+
+
+# ---------------------------------------------------------------------------
+# Plan-quality fixes: same-size detection, library disambiguation, arr APIs
+# ---------------------------------------------------------------------------
+
+
+class TestSameSizeDetection:
+    def test_same_size_different_name_is_conflict_keep(
+        self, movie_tree, tmp_path, register
+    ):
+        src, dest = movie_tree
+        # The library already holds the same encode under the old naming.
+        existing = _mkfile(dest / "Heat (1995)" / "Heat (1995) - complete movie.mkv")
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        entry = manifest.blocks[0].entries[0]
+        assert entry.status is EntryStatus.CONFLICT
+        assert entry.conflict is ConflictAction.KEEP
+        assert entry.dest == existing.name
+        assert "same-size" in entry.note
+
+    def test_apply_keep_registers_without_copying(self, movie_tree, tmp_path, register):
+        src, dest = movie_tree
+        existing = _mkfile(dest / "Heat (1995)" / "Heat (1995) - complete movie.mkv")
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        rc = run_apply(MediaKind.MOVIE, tmp_path / "plan.kdl", ApplyOptions())
+        assert rc == 2  # nothing new copied; the library already had it
+        assert sorted(p.name for p in (dest / "Heat (1995)").iterdir()) == [
+            existing.name
+        ]
+        assert json.loads(register.read_text(encoding="utf-8"))  # source recorded
+
+    def test_different_size_not_matched(self, movie_tree, tmp_path, register):
+        src, dest = movie_tree
+        _mkfile(dest / "Heat (1995)" / "Heat (1995) - old dvd rip.mkv", size=32)
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.blocks[0].entries[0].status is EntryStatus.READY
+
+
+class TestLibraryDisambiguation:
+    def _ambiguous_providers(self):
+        return movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TMDB, 666, "After Hours", 2004),
+                SearchCandidate(MetadataProvider.TMDB, 777, "After Hours", 1985),
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: MovieInfo(
+                tmdb_id=777, title="After Hours", year=1985
+            ),
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+
+    def test_existing_dir_resolves_ambiguity(self, tmp_path, register):
+        src = tmp_path / "movies"
+        _mkfile(src / "After Hours" / "After.Hours.1080p.mkv")
+        dest = tmp_path / "dest"
+        (dest / "After Hours (1985)").mkdir(parents=True)
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            self._ambiguous_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        assert block.tmdb_id == 777
+        assert block.confidence is Confidence.HIGH
+        assert block.note == "disambiguated by existing library directory"
+        assert block.dest_dir == "After Hours (1985)"  # reused, not retagged
+        assert block.candidates == []
+        assert block.entries[0].status is EntryStatus.READY
+
+    def test_no_matching_dir_stays_ambiguous(self, tmp_path, register):
+        src = tmp_path / "movies"
+        _mkfile(src / "After Hours" / "After.Hours.1080p.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            self._ambiguous_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        assert block.confidence is Confidence.AMBIGUOUS
+        assert len(block.candidates) == 2
+        assert block.entries[0].status is EntryStatus.NEEDS_ID
+
+    def test_two_matching_dirs_stays_ambiguous(self, tmp_path, register):
+        src = tmp_path / "movies"
+        _mkfile(src / "After Hours" / "After.Hours.1080p.mkv")
+        dest = tmp_path / "dest"
+        (dest / "After Hours (1985)").mkdir(parents=True)
+        (dest / "After Hours (2004)").mkdir(parents=True)
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            self._ambiguous_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.blocks[0].confidence is Confidence.AMBIGUOUS
+
+
+class TestArrResolution:
+    def test_radarr_resolves_without_search(self, movie_tree, tmp_path, register):
+        from etp_lib.arr import ArrEntry
+
+        src, dest = movie_tree
+        config = movie_config(src, dest)
+        config.radarr_url = "http://radarr:7878"
+        providers = movie_providers(
+            arr_key="rk",
+            radarr_fetch=lambda url, key: {
+                "heat [heat] (1995)": ArrEntry(
+                    title="Heat", year=1995, folder="Heat [Heat] (1995)", tmdb_id=949
+                )
+            },
+            tmdb_search_movie=lambda q, y, key, no_cache=False: pytest.fail(
+                "search must not run when Radarr knows the ID"
+            ),
+        )
+        rc = run_plan(MediaKind.MOVIE, config, plan_opts(tmp_path), providers)
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        assert block.tmdb_id == 949
+        assert block.confidence is Confidence.EXACT
+        assert block.note == "resolved via Radarr"
+
+    def test_arr_failure_degrades_to_search(
+        self, movie_tree, tmp_path, register, capsys
+    ):
+        src, dest = movie_tree
+        config = movie_config(src, dest)
+        config.radarr_url = "http://radarr:7878"
+
+        def boom(url, key):
+            raise OSError("connection refused")
+
+        providers = movie_providers(arr_key="rk", radarr_fetch=boom)
+        rc = run_plan(MediaKind.MOVIE, config, plan_opts(tmp_path), providers)
+        assert rc == 0
+        assert "Radarr query failed" in capsys.readouterr().out
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.blocks[0].tmdb_id == 949  # search fallback resolved it
+
+    def test_no_url_no_fetch(self, movie_tree, tmp_path, register):
+        src, dest = movie_tree
+        providers = movie_providers(
+            arr_key="rk",
+            radarr_fetch=lambda url, key: pytest.fail(
+                "must not query Radarr without a configured URL"
+            ),
+        )
+        rc = run_plan(
+            MediaKind.MOVIE, movie_config(src, dest), plan_opts(tmp_path), providers
+        )
+        assert rc == 0

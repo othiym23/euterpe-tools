@@ -2313,6 +2313,11 @@ def _load_tvdb_titles(json_path: str) -> list[str]:
     except ValueError, OSError:
         return []
 
+    # The tvdb cache dir also holds search-result caches (JSON arrays);
+    # only series records carry titles.
+    if not isinstance(data, dict):
+        return []
+
     titles: list[str] = []
 
     series = data.get("series", {})

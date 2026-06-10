@@ -131,3 +131,21 @@ class TestMediaConfigErrors:
         path.write_text("paths { unterminated", encoding="utf-8")
         with pytest.raises(MediaConfigError, match="invalid KDL"):
             load_media_config(path)
+
+
+class TestArrEndpoints:
+    def test_urls_parsed(self, tmp_path):
+        path = tmp_path / "media-ingestion.kdl"
+        path.write_text(
+            'radarr {\n  url "http://radarr:7878"\n}\n'
+            'sonarr {\n  url "http://sonarr:8989"\n}\n',
+            encoding="utf-8",
+        )
+        config = load_media_config(path)
+        assert config.radarr_url == "http://radarr:7878"
+        assert config.sonarr_url == "http://sonarr:8989"
+
+    def test_default_empty(self, tmp_path):
+        config = load_media_config(tmp_path / "nope.kdl")
+        assert config.radarr_url == ""
+        assert config.sonarr_url == ""
