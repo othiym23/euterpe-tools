@@ -201,6 +201,13 @@ _DEFAULT_EXTRA_CATEGORY = "Featurettes"
 
 _RE_RELEASE_GROUP_SUFFIX = re.compile(r"-[A-Za-z0-9]+$")
 
+_RE_SAMPLE = re.compile(r"(?:^|[\W_])sample(?:[\W_]|$)", re.IGNORECASE)
+
+
+def is_sample(stem: str) -> bool:
+    """Torrent sample clips are junk to drop, not extras to keep."""
+    return bool(_RE_SAMPLE.search(stem))
+
 
 def extra_display_name(stem: str) -> str:
     """Clean a torrent extra's filename into its display title.

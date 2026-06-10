@@ -1080,7 +1080,7 @@ class TestDuplicateDests:
         statuses = sorted(str(e.status) for e in entries)
         assert statuses == ["ready", "skip"]
         skipped = next(e for e in entries if e.status is EntryStatus.SKIP)
-        assert "duplicates" in skipped.note
+        assert "additional version" in skipped.note
 
     def test_apply_rejects_handmade_duplicates(self, tmp_path, register):
         src, dest = self._two_identical_movies(tmp_path)
@@ -1614,3 +1614,127 @@ class TestSameTitleMerging:
         manifest = parse_plan_manifest(tmp_path / "plan.kdl")
         editions = sorted(b.edition for b in manifest.blocks)
         assert editions == ["Criterion Collection", "Theatrical"]
+
+
+class TestTvDuplicateDests:
+    def test_same_episode_twice_marks_second_skip(self, tmp_path, register):
+        src = tmp_path / "television"
+        show = src / "Severance (2022)"
+        _mkfile(show / "Season 01" / "Severance - S01E01 - A WEBDL-1080p.mkv")
+        _mkfile(show / "Season 01" / "Severance - S01E01 - B WEBDL-1080p.mkv", size=128)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        rc = run_plan(
+            MediaKind.TV, tv_config(src, dest), plan_opts(tmp_path), tv_providers()
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        entries = manifest.blocks[0].entries
+        statuses = sorted(str(e.status) for e in entries)
+        assert statuses == ["ready", "skip"]
+        skipped = next(e for e in entries if e.status is EntryStatus.SKIP)
+        assert "duplicates" in skipped.note
+
+
+class TestSamplesAndVersions:
+    def _providers(self):
+        return movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(
+                    MetadataProvider.TMDB, 152584, "The Last of the Unjust", 2013
+                )
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: MovieInfo(
+                tmdb_id=152584, title="The Last of the Unjust", year=2013
+            ),
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+
+    def test_sample_clip_dropped_entirely(self, tmp_path, register):
+        dl = tmp_path / "downloads"
+        torrent = dl / "The.Last.of.the.Unjust.2013.720p.BluRay.x265-SARTRE"
+        _mkfile(torrent / "The.Last.of.the.Unjust.2013.720p.x265-SARTRE.mkv", 10_000)
+        _mkfile(torrent / "sample.mkv", size=75)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(downloads_dir=dl, movies_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        sources = [e.source for b in manifest.blocks for e in b.entries]
+        assert len(sources) == 1
+        assert Path(sources[0]).name != "sample.mkv"
+
+    def test_extra_encode_skipped_when_library_has_film(self, tmp_path, register):
+        managed = tmp_path / "movies"
+        downloads = tmp_path / "downloads"
+        _mkfile(
+            managed
+            / "The Last of the Unjust (2013)"
+            / "The Last of the Unjust (2013) - complete movie - [TRiPS,720p].mkv",
+            size=9000,
+        )
+        # The library already holds the managed encode under older naming.
+        dest = tmp_path / "dest"
+        _mkfile(
+            dest / "The Last of the Unjust (2013)" / "old library name.mkv", size=9000
+        )
+        # A different re-encode is still sitting in downloads.
+        _mkfile(
+            downloads / "The.Last.of.the.Unjust.2013.720p.x265-SARTRE.mkv", size=3600
+        )
+        config = MediaIngestConfig(
+            downloads_dir=downloads, movies_source_dir=managed, movies_dest_dir=dest
+        )
+        opts = plan_opts(tmp_path, managed=True, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert len(manifest.blocks) == 1
+        by_status = {str(e.status): e for e in manifest.blocks[0].entries}
+        assert by_status["conflict"].conflict is ConflictAction.KEEP  # managed copy
+        skipped = by_status["skip"]
+        assert "x265-SARTRE" in skipped.source
+        assert skipped.note == "additional version; the library already has this film"
+
+    def test_first_new_encode_stays_ready(self, tmp_path, register):
+        downloads = tmp_path / "downloads"
+        _mkfile(downloads / "The.Last.of.the.Unjust.2013.720p-TRiPS.mkv", size=9000)
+        _mkfile(downloads / "The.Last.of.the.Unjust.2013.720p.x265-SARTRE.mkv", 3600)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(downloads_dir=downloads, movies_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        statuses = sorted(str(e.status) for e in manifest.blocks[0].entries)
+        assert statuses == ["ready", "skip"]
+        skipped = next(
+            e for e in manifest.blocks[0].entries if e.status is EntryStatus.SKIP
+        )
+        assert skipped.note.startswith("additional version of ")
+
+    def test_multipart_versions_not_skipped(self, tmp_path, register):
+        downloads = tmp_path / "downloads"
+        torrent = downloads / "Goemon.2009.DVDRip"
+        _mkfile(torrent / "Goemon.2009.cd1.mkv", size=5000)
+        _mkfile(torrent / "Goemon.2009.cd2.mkv", size=4800)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        providers = movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TMDB, 25050, "Goemon", 2009)
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: MovieInfo(
+                tmdb_id=25050, title="Goemon", year=2009
+            ),
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+        config = MediaIngestConfig(downloads_dir=downloads, movies_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, providers)
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert all(e.status is EntryStatus.READY for e in manifest.blocks[0].entries)

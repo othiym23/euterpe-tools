@@ -56,6 +56,7 @@ from etp_lib.naming import (
     crc_suffixed,
     extra_display_name,
     format_movie_dirname,
+    is_sample,
     format_movie_filename,
     format_tv_episode_filename,
     format_tv_series_dirname,
@@ -302,7 +303,8 @@ def _detect_movie_extras(
         for path in members:
             if path is main or sizes[path] * 2 > sizes[main]:
                 continue
-            extras[path] = (main, classify_extra(path.stem))
+            category = "" if is_sample(path.stem) else classify_extra(path.stem)
+            extras[path] = (main, category)
     return extras
 
 
@@ -387,6 +389,8 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
             group_of_main[path] = group
 
     for path, (main, category) in sorted(extras.items()):
+        if not category:
+            continue  # torrent sample clip — junk, not an extra
         group = group_of_main.get(main)
         if group is None:
             continue  # main film didn't group; extras stay out too
@@ -1058,6 +1062,7 @@ def _build_movie_block(
     if existing and not block.note:
         block.note = "reusing existing library directory"
 
+    versions: list[FileEntry] = []
     for f in scanned.files:
         if f.extra_category:
             # Extras keep clean names — Plex/Jellyfin display the
@@ -1083,6 +1088,37 @@ def _build_movie_block(
         )
         _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
         block.entries.append(entry)
+        if f.part is None:
+            versions.append(entry)
+    _skip_additional_versions(versions)
+
+
+def _skip_additional_versions(versions: list[FileEntry]) -> None:
+    """Default additional encodes of one film to ``skip``.
+
+    A movie block can collect several distinct encodes (the managed copy
+    plus stray re-encodes in downloads). Stacking versions is a curation
+    decision, so only one copy stays actionable: an existing library
+    copy if there is one, else the first new encode (the managed tree
+    scans first). The rest are skipped with a note; flip them back to
+    ``ready`` to keep multiple versions deliberately.
+    """
+    present = [
+        e
+        for e in versions
+        if e.status is EntryStatus.CONFLICT or "already in library" in e.note
+    ]
+    ready = [e for e in versions if e.status is EntryStatus.READY]
+    keeper = None if present else (ready[0] if ready else None)
+    for e in ready:
+        if e is keeper:
+            continue
+        e.status = EntryStatus.SKIP
+        if present:
+            e.note = "additional version; the library already has this film"
+        else:
+            assert keeper is not None
+            e.note = f"additional version of {Path(keeper.source).name}"
 
 
 def _build_series_block(
