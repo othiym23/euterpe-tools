@@ -1351,3 +1351,53 @@ class TestArrResolution:
             MediaKind.MOVIE, movie_config(src, dest), plan_opts(tmp_path), providers
         )
         assert rc == 0
+
+
+class TestHardlinkTwins:
+    def test_downloads_twin_of_managed_file_dropped(self, tmp_path, register):
+        import os
+
+        managed = tmp_path / "movies"
+        downloads = tmp_path / "downloads"
+        src_file = _mkfile(
+            managed / "Heat (1995)" / "Heat (1995) - complete movie - [X,1080p].mkv"
+        )
+        # Radarr-style import: downloads copy is a hardlink of the same bytes.
+        twin = downloads / "Heat.1995.1080p.REMUX.GARBLED-GRP.mkv"
+        twin.parent.mkdir(parents=True)
+        os.link(src_file, twin)
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(
+            downloads_dir=downloads,
+            movies_source_dir=managed,
+            movies_dest_dir=dest,
+        )
+        opts = plan_opts(tmp_path, managed=True, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, movie_providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        sources = [e.source for b in manifest.blocks for e in b.entries]
+        assert len(sources) == 1
+        assert str(src_file) in sources[0]  # the managed copy won
+
+    def test_unrelated_downloads_file_kept(self, tmp_path, register):
+        managed = tmp_path / "movies"
+        downloads = tmp_path / "downloads"
+        _mkfile(managed / "Heat (1995)" / "Heat (1995) - complete movie.mkv")
+        _mkfile(downloads / "Heat.1995.Other.Encode-GRP.mkv", size=128)
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(
+            downloads_dir=downloads,
+            movies_source_dir=managed,
+            movies_dest_dir=dest,
+        )
+        opts = plan_opts(tmp_path, managed=True, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, movie_providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        sources = [e.source for b in manifest.blocks for e in b.entries]
+        assert len(sources) == 2  # distinct files both planned

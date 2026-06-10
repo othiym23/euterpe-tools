@@ -1124,6 +1124,14 @@ def run_plan(
     if opts.downloads:
         scanned.extend(scan_downloads(downloads_dirs, kind))
         modes.append("downloads")
+    if opts.managed and opts.downloads:
+        twins = _drop_hardlink_twins(scanned)
+        if twins:
+            _say(
+                opts.json_output,
+                f"{twins} hardlinked duplicate source(s) skipped"
+                " (managed tree and downloads share the file)",
+            )
     if opts.pattern:
         needle = opts.pattern.lower()
         scanned = [t for t in scanned if needle in t.raw_title.lower()]
@@ -1275,6 +1283,36 @@ def run_plan(
     for w in summary["warnings"]:
         _say(opts.json_output, f"warning: {w['title']}: {w['detail']}")
     return 0
+
+
+def _drop_hardlink_twins(scanned: list[ScannedTitle]) -> int:
+    """Drop sources that are hardlinks of an earlier-scanned file.
+
+    Radarr/Sonarr import by hardlinking, so a still-seeding download is
+    the same inode as its managed-tree copy and would otherwise show up
+    twice (the downloads side usually with a garbled torrent name). The
+    managed tree scans first, so it claims the inode. Returns the number
+    of twins dropped; *scanned* is pruned in place.
+    """
+    seen: dict[tuple[int, int], Path] = {}
+    twins = 0
+    for t in scanned:
+        kept: list[ScannedFile] = []
+        for f in t.files:
+            try:
+                st = f.source.path.stat()
+            except OSError:
+                kept.append(f)
+                continue
+            key = (st.st_dev, st.st_ino)
+            first = seen.setdefault(key, f.source.path)
+            if first == f.source.path:
+                kept.append(f)
+            else:
+                twins += 1
+        t.files = kept
+    scanned[:] = [t for t in scanned if t.files]
+    return twins
 
 
 def _library_pick(
