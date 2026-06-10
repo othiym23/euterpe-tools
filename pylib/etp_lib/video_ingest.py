@@ -51,7 +51,7 @@ from etp_lib.ingest_register import load_register, save_register
 from etp_lib.manifest import _MAX_FILENAME_BYTES, copy_subtitle_sidecars, escape_kdl
 from etp_lib.media_config import anime_source_dir, lookup_mapping
 from etp_lib.media_scanner import iter_media_files, parse_source_filename
-from etp_lib.media_vocab import _PVR_TOOL_NAMES, _VIDEO_EXTENSIONS
+from etp_lib.media_vocab import _PVR_TOOL_NAMES
 from etp_lib.mediainfo import analyze_file
 from etp_lib.mediainfo_cache import analyze_file_cached, save_cache
 from etp_lib.naming import (
@@ -66,6 +66,7 @@ from etp_lib.naming import (
     format_tv_series_dirname,
     normalize_title,
     season_subdir,
+    word_prefix,
 )
 from etp_lib.types import (
     AnimeInfo,
@@ -236,11 +237,17 @@ def scan_managed_tree(root: Path, kind: MediaKind) -> list[ScannedTitle]:
     return titles
 
 
+def _scanned_source(path: Path) -> SourceFile:
+    """Parse a file's name and attach its path."""
+    sf = parse_source_filename(path.name)
+    sf.path = path
+    return sf
+
+
 def _scan_managed_file(
     path: Path, title_dir: Path, kind: MediaKind, scanned: ScannedTitle
 ) -> ScannedFile:
-    sf = parse_source_filename(path.name)
-    sf.path = path
+    sf = _scanned_source(path)
     # Radarr/Sonarr naming templates leave their own name where a release
     # group would appear ("[Radarr Remux-1080p,...]"); it is not a group.
     if sf.parsed.release_group in _PVR_TOOL_NAMES:
@@ -384,6 +391,15 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         extras, season_pack_files = _analyze_movie_torrents(files, roots)
     group_of_main: dict[Path, ScannedTitle] = {}
 
+    # Directory names get parsed once, not once per contained file (a
+    # season pack re-reads its dirname for every episode).
+    dir_parses: dict[str, media_parser.ParsedMedia] = {}
+
+    def parse_dir(name: str) -> media_parser.ParsedMedia:
+        if name not in dir_parses:
+            dir_parses[name] = media_parser.parse_component(name)
+        return dir_parses[name]
+
     groups: dict[str, ScannedTitle] = {}
     for path in files:
         if path in season_pack_files:
@@ -401,7 +417,7 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
             if is_sample(path.stem):
                 continue
             owner, category = ctx
-            owner_pm = media_parser.parse_component(owner.name)
+            owner_pm = parse_dir(owner.name)
             owner_episodic = (
                 owner_pm.season is not None
                 or owner_pm.episode is not None
@@ -409,26 +425,19 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
             )
             if not owner_pm.series_name or (kind is MediaKind.TV) != owner_episodic:
                 continue
-            key = normalize_title(owner_pm.series_name)
-            if kind is MediaKind.MOVIE and owner_pm.year:
-                key = f"{key} ({owner_pm.year})"
-            group = groups.get(key)
-            if group is None:
-                group = groups[key] = ScannedTitle(
-                    raw_title=owner_pm.series_name,
-                    title=owner_pm.series_name,
-                    year=owner_pm.year or 0,
-                    alt_title=owner_pm.series_name_alt,
-                )
-            if owner_pm.year and not group.year:
-                group.year = owner_pm.year
-            sf = parse_source_filename(path.name)
-            sf.path = path
-            group.files.append(ScannedFile(source=sf, extra_category=category))
+            group = _group_for(
+                groups,
+                kind,
+                owner_pm.series_name,
+                owner_pm.series_name_alt,
+                owner_pm.year or 0,
+            )
+            group.files.append(
+                ScannedFile(source=_scanned_source(path), extra_category=category)
+            )
             continue
 
-        sf = parse_source_filename(path.name)
-        sf.path = path
+        sf = _scanned_source(path)
         pm = sf.parsed
 
         title = pm.series_name
@@ -456,7 +465,7 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         # release year. Only parse the directory when it could matter.
         dir_might_help = not title or (kind is MediaKind.MOVIE and not year)
         if dir_might_help and context_dir is not None:
-            dir_pm = media_parser.parse_component(context_dir.name)
+            dir_pm = parse_dir(context_dir.name)
             if not title or (dir_pm.series_name and dir_pm.year):
                 title = dir_pm.series_name
                 alt = dir_pm.series_name_alt
@@ -473,21 +482,7 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         if (kind is MediaKind.TV) != looks_episodic:
             continue
 
-        # Movies group by title AND year: a remake must not collapse
-        # into its original ("Suspiria.1977" vs "Suspiria.2018" are two
-        # films). Same-film copies that differ only in having a year
-        # split here but re-merge by provider ID after resolution.
-        # Shows group by title alone — a series spans years.
-        key = normalize_title(title)
-        if kind is MediaKind.MOVIE and year:
-            key = f"{key} ({year})"
-        group = groups.get(key)
-        if group is None:
-            group = groups[key] = ScannedTitle(
-                raw_title=title, title=title, year=year, alt_title=alt
-            )
-        if year and not group.year:
-            group.year = year
+        group = _group_for(groups, kind, title, alt, year)
 
         if kind is MediaKind.TV:
             season = pm.season
@@ -522,11 +517,39 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         group = group_of_main.get(main)
         if group is None:
             continue  # main film didn't group; extras stay out too
-        sf = parse_source_filename(path.name)
-        sf.path = path
-        group.files.append(ScannedFile(source=sf, extra_category=category))
+        group.files.append(
+            ScannedFile(source=_scanned_source(path), extra_category=category)
+        )
 
     return [groups[key] for key in sorted(groups)]
+
+
+def _group_for(
+    groups: dict[str, ScannedTitle],
+    kind: MediaKind,
+    title: str,
+    alt: str,
+    year: int,
+) -> ScannedTitle:
+    """Get or create the downloads group a title belongs to.
+
+    Movies group by title AND year: a remake must not collapse into its
+    original ("Suspiria.1977" vs "Suspiria.2018" are two films);
+    same-film copies that differ only in having a year split here and
+    re-merge by provider ID after resolution. Shows group by title
+    alone — a series spans years.
+    """
+    key = normalize_title(title)
+    if kind is MediaKind.MOVIE and year:
+        key = f"{key} ({year})"
+    group = groups.get(key)
+    if group is None:
+        group = groups[key] = ScannedTitle(
+            raw_title=title, title=title, year=year, alt_title=alt
+        )
+    if year and not group.year:
+        group.year = year
+    return group
 
 
 # ---------------------------------------------------------------------------
@@ -1140,59 +1163,36 @@ def _match_extra_to_special(
     target = normalize_title(name)
     if len(target.replace(" ", "")) < 8:
         return None  # short generic names match far too easily
-    matches = []
-    for ep in info.episodes:
-        if ep.season != 0 or not ep.title_en:
-            continue
-        title = normalize_title(ep.title_en)
-        if title == target or title.startswith(target + " "):
-            matches.append(ep)
+    matches = [
+        ep
+        for ep in info.episodes
+        if ep.season == 0
+        and ep.title_en
+        and word_prefix(normalize_title(ep.title_en), target)
+    ]
     return matches[0] if len(matches) == 1 else None
 
 
-def _existing_same_size(dest_parent: Path, size: int, dest_name: str) -> Path | None:
-    """A video of identical size already in the destination directory.
+def _dest_size_index(dest_root: Path) -> dict[int, list[Path]]:
+    """Map file size → existing library videos, in one walk of the tree.
 
-    The library predates this tool's naming, so an already-ingested file
-    usually exists under a *different* name; matching by exact byte size
-    catches it where the dest-path check cannot.
+    The library predates this tool's naming, so an already-ingested copy
+    usually exists under a *different* name — sometimes in the title's
+    own directory, sometimes elsewhere (a trilogy box dir, an alternate
+    naming). One size-keyed index answers both questions for every
+    planned entry without re-listing destination directories.
     """
-    if not size:
-        return None
-    try:
-        children = sorted(dest_parent.iterdir())
-    except OSError:
-        return None
-    for child in children:
-        if child.name == dest_name or child.suffix.lower() not in _VIDEO_EXTENSIONS:
-            continue
-        try:
-            if child.is_file() and child.stat().st_size == size:
-                return child
-        except OSError:
-            continue
-    return None
-
-
-def _dest_size_index(dest_root: Path) -> dict[int, Path]:
-    """Map file size → one existing library video, across the whole tree.
-
-    The library predates this tool, so an already-ingested copy may live
-    in a directory the title doesn't resolve to (a trilogy box dir, an
-    alternate naming). Size is checked library-wide so those surface as
-    skips instead of duplicate copies.
-    """
-    index: dict[int, Path] = {}
+    index: dict[int, list[Path]] = {}
     for path in iter_media_files([dest_root]):
         try:
-            index.setdefault(path.stat().st_size, path)
+            index.setdefault(path.stat().st_size, []).append(path)
         except OSError:
             continue
     return index
 
 
 def _check_entry_placement(
-    entry: FileEntry, dest_root: Path, dest_dir: str, size_index: dict[int, Path]
+    entry: FileEntry, dest_root: Path, dest_dir: str, size_index: dict[int, list[Path]]
 ) -> None:
     """Plan-time checks shared by all entries: length limits, conflicts."""
     dest_path = dest_root / dest_dir / entry.dest
@@ -1212,25 +1212,26 @@ def _check_entry_placement(
         except OSError:
             entry.note = "destination exists"
         return
-    same_size = _existing_same_size(dest_path.parent, entry.size, dest_path.name)
-    if same_size is not None:
+    twins = size_index.get(entry.size, []) if entry.size else []
+    in_dir = next(
+        (p for p in twins if p.parent == dest_path.parent and p.name != dest_path.name),
+        None,
+    )
+    if in_dir is not None:
         # Point the entry at the existing file: "keep" records it as
         # ingested, "replace" re-encodes it in place, "both" keeps both.
         entry.status = EntryStatus.CONFLICT
         entry.conflict = ConflictAction.KEEP
-        entry.dest = str(same_size.relative_to(dest_root / dest_dir))
-        entry.note = f"same-size file already in library: {same_size.name}"
+        entry.dest = str(in_dir.relative_to(dest_root / dest_dir))
+        entry.note = f"same-size file already in library: {in_dir.name}"
         return
-    if entry.size:
-        library_twin = size_index.get(entry.size)
-        if library_twin is not None:
-            # The copy lives outside this title's directory, so the entry
-            # can't point at it — surface it and let the curator decide.
-            entry.status = EntryStatus.SKIP
-            entry.note = (
-                "same-size file already in library:"
-                f" {library_twin.relative_to(dest_root)}"
-            )
+    if twins:
+        # The copy lives outside this title's directory, so the entry
+        # can't point at it — surface it and let the curator decide.
+        entry.status = EntryStatus.SKIP
+        entry.note = (
+            f"same-size file already in library: {twins[0].relative_to(dest_root)}"
+        )
 
 
 def _build_movie_block(
@@ -1239,7 +1240,7 @@ def _build_movie_block(
     info: MovieInfo | None,
     dest_root: Path,
     dest_index: dict[str, str],
-    size_index: dict[int, Path],
+    size_index: dict[int, list[Path]],
     providers: Providers,
 ) -> None:
     if info is None:
@@ -1299,7 +1300,7 @@ def _extra_entry(
     release_group: str,
     dest_root: Path,
     dest_dir: str,
-    size_index: dict[int, Path],
+    size_index: dict[int, list[Path]],
 ) -> FileEntry:
     """Plan one extras file into its Plex/Jellyfin extras subdirectory.
 
@@ -1352,7 +1353,7 @@ def _build_series_block(
     info: AnimeInfo | None,
     dest_root: Path,
     dest_index: dict[str, str],
-    size_index: dict[int, Path],
+    size_index: dict[int, list[Path]],
     providers: Providers,
 ) -> None:
     if info is None:
@@ -1476,6 +1477,57 @@ def _load_refine(
     return blocks, entries
 
 
+def _resolve_title(
+    t: ScannedTitle,
+    block: TitleBlock,
+    *,
+    mapped_id: int | None,
+    refined_id: int | None,
+    arr_id: int | None,
+    resolver: Callable[..., MovieInfo | AnimeInfo | None],
+    providers: Providers,
+    dest_index: dict[str, str],
+) -> tuple[MovieInfo | AnimeInfo | None, bool]:
+    """Run the ID-resolution ladder for one scanned title.
+
+    Precedence: config mapping → ``--refine`` manifest ID → the
+    Radarr/Sonarr record → provider search inside *resolver*; an
+    ambiguous search gets one retry with the candidate that matches an
+    existing library directory. Returns the resolved info and whether
+    the Radarr/Sonarr record supplied the ID.
+    """
+    override = mapped_id or refined_id
+    arr_used = override is None and arr_id is not None
+    if arr_used:
+        override = arr_id
+    info = resolver(t, block, override, providers)
+    if info is None and block.confidence is Confidence.AMBIGUOUS:
+        pick = _library_pick(block.candidates, dest_index)
+        if pick is not None:
+            info = resolver(t, block, pick.id, providers)
+            if info is not None:
+                _note_library_pick(block)
+    return info, arr_used
+
+
+def _fetch_arr_index(
+    name: str,
+    url: str,
+    fetch: Callable[..., dict[str, arr.ArrEntry]],
+    api_key: str,
+    degraded: str,
+    json_output: bool,
+) -> dict[str, arr.ArrEntry]:
+    """Fetch one PVR tool's index, degrading to empty with a warning."""
+    if not url or not api_key:
+        return {}
+    try:
+        return fetch(url, api_key)
+    except _PROVIDER_ERRORS as e:
+        _say(json_output, f"warning: {name} query failed ({e}); {degraded}")
+        return {}
+
+
 def run_plan(
     kind: MediaKind,
     config: MediaIngestConfig,
@@ -1530,45 +1582,23 @@ def run_plan(
         providers = dc_replace(providers, analyze=analyze_file_cached)
 
     # Radarr/Sonarr know the provider IDs (and domains) of everything
-    # they manage — fetched up front so both the foreign-domain filter
-    # and ID resolution can use the index.
-    arr_name = "Radarr" if kind is MediaKind.MOVIE else "Sonarr"
-    arr_url = config.radarr_url if kind is MediaKind.MOVIE else config.sonarr_url
-    arr_index: dict[str, arr.ArrEntry] = {}
-    if arr_url and providers.arr_key:
-        arr_fetch = (
-            providers.radarr_fetch
-            if kind is MediaKind.MOVIE
-            else providers.sonarr_fetch
-        )
-        try:
-            arr_index = arr_fetch(arr_url, providers.arr_key)
-        except _PROVIDER_ERRORS as e:
-            _say(
-                opts.json_output,
-                f"warning: {arr_name} query failed ({e}); falling back to search",
-            )
-
-    # The other PVR tool's index matters for the domain filter only:
-    # without it, Radarr-managed anime movies leak into television plans
-    # (and vice versa). Never used for ID resolution.
-    cross_name = "Sonarr" if kind is MediaKind.MOVIE else "Radarr"
-    cross_url = config.sonarr_url if kind is MediaKind.MOVIE else config.radarr_url
-    cross_index: dict[str, arr.ArrEntry] = {}
-    if cross_url and providers.cross_arr_key:
-        cross_fetch = (
-            providers.sonarr_fetch
-            if kind is MediaKind.MOVIE
-            else providers.radarr_fetch
-        )
-        try:
-            cross_index = cross_fetch(cross_url, providers.cross_arr_key)
-        except _PROVIDER_ERRORS as e:
-            _say(
-                opts.json_output,
-                f"warning: {cross_name} query failed ({e});"
-                " cross-domain exclusion degraded",
-            )
+    # they manage — this kind's index feeds both the foreign-domain
+    # filter and ID resolution. The other tool's index matters for the
+    # domain filter only: without it, Radarr-managed anime movies leak
+    # into television plans (and vice versa).
+    radarr = ("Radarr", config.radarr_url, providers.radarr_fetch)
+    sonarr = ("Sonarr", config.sonarr_url, providers.sonarr_fetch)
+    own, cross = (radarr, sonarr) if kind is MediaKind.MOVIE else (sonarr, radarr)
+    arr_name = own[0]
+    arr_index = _fetch_arr_index(
+        *own, providers.arr_key, "falling back to search", opts.json_output
+    )
+    cross_index = _fetch_arr_index(
+        *cross,
+        providers.cross_arr_key,
+        "cross-domain exclusion degraded",
+        opts.json_output,
+    )
 
     managed_titles: list[ScannedTitle] = []
     downloads_titles: list[ScannedTitle] = []
@@ -1668,45 +1698,28 @@ def run_plan(
             t.edition = mapping.edition
         block.edition = t.edition
 
-        info: MovieInfo | AnimeInfo | None
         if kind is MediaKind.MOVIE:
-            override = (mapping.tmdb_id if mapping else None) or (
-                refined.tmdb_id if refined else None
+            info, arr_used = _resolve_title(
+                t,
+                block,
+                mapped_id=mapping.tmdb_id if mapping else None,
+                refined_id=refined.tmdb_id if refined else None,
+                arr_id=arr_entry.tmdb_id if arr_entry else None,
+                resolver=_resolve_movie,
+                providers=providers,
+                dest_index=dest_index,
             )
-            arr_used = (
-                override is None
-                and arr_entry is not None
-                and arr_entry.tmdb_id is not None
-            )
-            if arr_used and arr_entry is not None:
-                override = arr_entry.tmdb_id
-            movie_info = _resolve_movie(t, block, override, providers)
-            if movie_info is None and block.confidence is Confidence.AMBIGUOUS:
-                pick = _library_pick(block.candidates, dest_index)
-                if pick is not None:
-                    movie_info = _resolve_movie(t, block, pick.id, providers)
-                    if movie_info is not None:
-                        _note_library_pick(block)
-            info = movie_info
         else:
-            override = (mapping.tvdb_id if mapping else None) or (
-                refined.tvdb_id if refined else None
+            info, arr_used = _resolve_title(
+                t,
+                block,
+                mapped_id=mapping.tvdb_id if mapping else None,
+                refined_id=refined.tvdb_id if refined else None,
+                arr_id=arr_entry.tvdb_id if arr_entry else None,
+                resolver=_resolve_series,
+                providers=providers,
+                dest_index=dest_index,
             )
-            arr_used = (
-                override is None
-                and arr_entry is not None
-                and arr_entry.tvdb_id is not None
-            )
-            if arr_used and arr_entry is not None:
-                override = arr_entry.tvdb_id
-            series_info = _resolve_series(t, block, override, providers)
-            if series_info is None and block.confidence is Confidence.AMBIGUOUS:
-                pick = _library_pick(block.candidates, dest_index)
-                if pick is not None:
-                    series_info = _resolve_series(t, block, pick.id, providers)
-                    if series_info is not None:
-                        _note_library_pick(block)
-            info = series_info
 
         if arr_used and info is not None and not block.note:
             block.note = f"resolved via {arr_name}"
@@ -1823,6 +1836,7 @@ def _drop_foreign_domain(
     index can match, but they ship inside the show's own torrent.
     """
     foreign_tree = _anime_tree_names()
+    phrases = arr.loose_phrases(arr_index)  # once, not per title
     kept: list[ScannedTitle] = []
     dropped: list[ScannedTitle] = []
     for t in titles:
@@ -1830,7 +1844,9 @@ def _drop_foreign_domain(
         if mapping is not None and mapping.domain:
             (kept if mapping.domain == own_root else dropped).append(t)
             continue
-        domain = arr.domain_of(arr_index, t.raw_title, t.title, t.alt_title, t.year)
+        domain = arr.domain_of(
+            arr_index, t.raw_title, t.title, t.alt_title, t.year, phrases
+        )
         in_foreign_tree = any(
             _normalize_dirname(name) in foreign_tree
             for name in (

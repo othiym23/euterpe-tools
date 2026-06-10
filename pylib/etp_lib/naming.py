@@ -351,6 +351,16 @@ def _title_year(title: str, year: int) -> str:
     return f"{title} ({year})" if year else title
 
 
+def word_prefix(longer: str, shorter: str) -> bool:
+    """True when *shorter* is the word-aligned opening of *longer*.
+
+    Operates on :func:`normalize_title` output; shared by arr domain
+    matching and TheTVDB specials matching so the fuzzy-title rule stays
+    in one place.
+    """
+    return longer == shorter or longer.startswith(shorter + " ")
+
+
 def normalize_title(text: str) -> str:
     """Normalize a title for comparison: casefolded alphanumeric words.
 

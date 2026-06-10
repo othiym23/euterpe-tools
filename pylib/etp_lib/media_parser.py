@@ -671,6 +671,37 @@ _TITLE_NUMBER_PREFIXES = frozenset({"part", "vol", "volume", "chapter", "movie"}
 _AMBIGUOUS_METADATA_WORDS = frozenset({"it", "ma", "stan", "opus"})
 
 
+def _is_ambiguous_metadata(token: Token | None, text: str, seen_metadata: bool) -> bool:
+    """True when a recognized tag is really a title word by position.
+
+    The single home of the ambiguous-word rule; both the dot-segment
+    scanner and the classifier demote through it.
+    """
+    return (
+        token is not None
+        and token.kind in (TokenKind.SOURCE, TokenKind.AUDIO_CODEC)
+        and text.lower() in _AMBIGUOUS_METADATA_WORDS
+        and not seen_metadata
+    )
+
+
+# Audio channel layouts written as separate digits: front channels then
+# LFE ("5 1", "5.1", "7.1", "2.0"). The single home of the digit sets —
+# four call sites across the tokenizer and classifier use them.
+_CHANNEL_FRONT = "2567"
+_CHANNEL_BACK = "012"
+
+
+def _is_channel_pair(front: str, back: str) -> bool:
+    """True when two single-character digits form a channel layout."""
+    return (
+        len(front) == 1
+        and len(back) == 1
+        and front in _CHANNEL_FRONT
+        and back in _CHANNEL_BACK
+    )
+
+
 def _result_to_token(result: object, text: str) -> Token:
     """Convert a parsy primitive result to a Token for the existing pipeline."""
     kind = _TYPE_TO_KIND.get(type(result), TokenKind.UNKNOWN)
@@ -970,11 +1001,7 @@ def scan_dot_segments(text: str) -> list[Token]:
         # title position (no metadata yet) the digit pair is part of the
         # title instead ("Evangelion.2.0.You.Can.Not.Advance", the film
         # "2.0"), so it stays text.
-        if (
-            part in ("2", "5", "6", "7")
-            and i + 1 < len(raw_parts)
-            and raw_parts[i + 1] in ("0", "1", "2")
-        ):
+        if i + 1 < len(raw_parts) and _is_channel_pair(part, raw_parts[i + 1]):
             seen_metadata = any(t.kind in _METADATA_KINDS for t in tokens)
             tokens.append(
                 Token(
@@ -987,14 +1014,10 @@ def scan_dot_segments(text: str) -> list[Token]:
 
         # Single segment
         token = _try_recognize(part)
-        if (
-            token is not None
-            and token.kind in (TokenKind.SOURCE, TokenKind.AUDIO_CODEC)
-            and part.lower() in _AMBIGUOUS_METADATA_WORDS
-            and not any(t.kind in _METADATA_KINDS for t in tokens)
+        if _is_ambiguous_metadata(
+            token, part, any(t.kind in _METADATA_KINDS for t in tokens)
         ):
-            # "It"/"Ma"/"Stan"/"Opus" are service/codec tags only after
-            # the title; in title position they're ordinary words
+            # "It"/"Ma"/"Stan"/"Opus" in title position
             # ("Go.For.It.Nakamura-kun", the film "Opus").
             token = None
         if token is not None:
@@ -1093,20 +1116,13 @@ def _try_recognize(text: str) -> Token | None:
 
 
 def classify_text(text: str) -> TokenKind | None:
-    """Classify a bare text string as a known metadata type.
-
-    Drop-in replacement for media_parser._classify_text_content, using
-    parsy recognizers instead of manual regex/set checks.
-    """
+    """Classify a bare text string as a known metadata type."""
     token = _try_recognize(text.strip())
     return token.kind if token is not None else None
 
 
 def is_metadata_word(word: str) -> bool:
-    """Check if a word (or any of its dash-separated parts) is metadata.
-
-    Drop-in replacement for media_parser._is_metadata_word.
-    """
+    """Check if a word (or any of its dash-separated parts) is metadata."""
     if classify_text(word) is not None:
         return True
     if "-" in word:
@@ -1361,13 +1377,13 @@ def _split_text_with_embedded(token: Token) -> list[Token]:
                     or preceding[-1].isdigit()
                 ):
                     continue
-            # A lone 2/5/6/7 followed by a lone 0/1/2 is an audio channel
-            # layout written with spaces ("DD 5 1"), not an episode.
+            # A channel layout written with spaces ("DD 5 1") is not an
+            # episode number.
             word_end = text.find(" ", pos)
             word = text[pos:] if word_end < 0 else text[pos:word_end]
-            if word in ("2", "5", "6", "7") and word_end >= 0:
+            if word_end >= 0:
                 following = text[word_end:].split()
-                if following and following[0] in ("0", "1", "2"):
+                if following and _is_channel_pair(word, following[0]):
                     continue
             bare_result = _bare_episode_parser(text, pos)
             if bare_result.status:
@@ -1461,9 +1477,7 @@ def _is_channel_count_segment(tokens: list[Token], i: int) -> bool:
     text = tokens[i].text.strip()
     if not (len(text) == 1 and text.isdigit()):
         return False
-    return (text in "2567" and seg(i + 1) in ("0", "1", "2")) or (
-        text in "012" and seg(i - 1) in ("2", "5", "6", "7")
-    )
+    return _is_channel_pair(text, seg(i + 1)) or _is_channel_pair(seg(i - 1), text)
 
 
 def _has_numbered_episode(tokens: list[Token]) -> bool:
@@ -1638,8 +1652,7 @@ def classify(tokens: list[Token]) -> list[Token]:
             if (
                 len(text) == 3
                 and text[1] == "."
-                and text[0] in "2567"
-                and text[2] in "012"
+                and _is_channel_pair(text[0], text[2])
                 and not _component_has_metadata(result)
             ):
                 result.append(Token(kind=token.kind, text=text))
@@ -1661,15 +1674,11 @@ def classify(tokens: list[Token]) -> list[Token]:
             # Known metadata keyword? Use the full token from _try_recognize
             # to preserve numeric fields (version, season, episode, etc.)
             recognized_meta = _try_recognize(text)
-            if (
-                recognized_meta is not None
-                and recognized_meta.kind in (TokenKind.SOURCE, TokenKind.AUDIO_CODEC)
-                and text.lower() in _AMBIGUOUS_METADATA_WORDS
-                and not _component_has_metadata(result)
+            if _is_ambiguous_metadata(
+                recognized_meta, text, _component_has_metadata(result)
             ):
-                # "It"/"Ma"/"Stan"/"Opus" are service/codec tags only
-                # after the title; in title position they're ordinary
-                # words ("Stan Against Evil", the film "Opus").
+                # "It"/"Ma"/"Stan"/"Opus" in title position
+                # ("Stan Against Evil", the film "Opus").
                 recognized_meta = None
             if recognized_meta is not None:
                 result.append(recognized_meta)

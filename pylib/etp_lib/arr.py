@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from etp_lib.naming import normalize_title
+from etp_lib.naming import normalize_title, word_prefix
 
 
 @dataclass
@@ -61,46 +61,34 @@ def _index(
             entries.setdefault("~" + loose.replace(" ", ""), entry)
 
 
+def _fetch_index(
+    url: str, api_key: str, endpoint: str, id_field: str, id_key: str
+) -> dict[str, ArrEntry]:
+    """Fetch and index every managed item from one PVR tool."""
+    entries: dict[str, ArrEntry] = {}
+    for item in _arr_request(url, endpoint, api_key):
+        raw_id = item.get(id_key)
+        path = PurePosixPath(str(item.get("path") or ""))
+        entry = ArrEntry(
+            title=item.get("title") or "",
+            year=int(item.get("year") or 0),
+            folder=path.name,
+            imdb_id=item.get("imdbId") or "",
+            root=path.parent.name,
+        )
+        setattr(entry, id_field, int(raw_id) if raw_id else None)
+        _index(entries, entry, _alt_titles(item))
+    return entries
+
+
 def fetch_radarr_index(url: str, api_key: str) -> dict[str, ArrEntry]:
     """Index every Radarr-managed movie by folder name and title+year."""
-    entries: dict[str, ArrEntry] = {}
-    for item in _arr_request(url, "/api/v3/movie", api_key):
-        raw_tmdb = item.get("tmdbId")
-        path = PurePosixPath(str(item.get("path") or ""))
-        _index(
-            entries,
-            ArrEntry(
-                title=item.get("title") or "",
-                year=int(item.get("year") or 0),
-                folder=path.name,
-                tmdb_id=int(raw_tmdb) if raw_tmdb else None,
-                imdb_id=item.get("imdbId") or "",
-                root=path.parent.name,
-            ),
-            _alt_titles(item),
-        )
-    return entries
+    return _fetch_index(url, api_key, "/api/v3/movie", "tmdb_id", "tmdbId")
 
 
 def fetch_sonarr_index(url: str, api_key: str) -> dict[str, ArrEntry]:
     """Index every Sonarr-managed series by folder name and title+year."""
-    entries: dict[str, ArrEntry] = {}
-    for item in _arr_request(url, "/api/v3/series", api_key):
-        raw_tvdb = item.get("tvdbId")
-        path = PurePosixPath(str(item.get("path") or ""))
-        _index(
-            entries,
-            ArrEntry(
-                title=item.get("title") or "",
-                year=int(item.get("year") or 0),
-                folder=path.name,
-                tvdb_id=int(raw_tvdb) if raw_tvdb else None,
-                imdb_id=item.get("imdbId") or "",
-                root=path.parent.name,
-            ),
-            _alt_titles(item),
-        )
-    return entries
+    return _fetch_index(url, api_key, "/api/v3/series", "tvdb_id", "tvdbId")
 
 
 def _alt_titles(item: dict) -> list[str]:
@@ -126,9 +114,18 @@ def _phrase_in(haystack: str, needle: str) -> bool:
     return f" {needle} " in f" {haystack} "
 
 
-def _word_prefix(longer: str, shorter: str) -> bool:
-    """True when *shorter* is the word-aligned opening of *longer*."""
-    return longer == shorter or longer.startswith(shorter + " ")
+def loose_phrases(index: dict[str, ArrEntry]) -> list[tuple[str, int, ArrEntry]]:
+    """Precompute (phrase, alphanumeric length, entry) for fuzzy matching.
+
+    :func:`domain_of` scans every loose key per unmatched title; callers
+    checking many titles against one index (the foreign-domain filter)
+    should compute this once and pass it in.
+    """
+    return [
+        (key[1:], len(key[1:].replace(" ", "")), entry)
+        for key, entry in index.items()
+        if key.startswith("~")
+    ]
 
 
 def domain_of(
@@ -137,6 +134,7 @@ def domain_of(
     title: str,
     alt_title: str,
     year: int,
+    phrases: list[tuple[str, int, ArrEntry]] | None = None,
 ) -> str | None:
     """Root-folder name of the managed entry a title matches, or None.
 
@@ -158,21 +156,20 @@ def domain_of(
             if entry is not None:
                 break
     if entry is None:
-        loose_keys = sorted(k for k in index if k.startswith("~"))
+        if phrases is None:
+            phrases = loose_phrases(index)
         for name in names:
             loose = normalize_title(name)
             scanned_alnum = len(loose.replace(" ", ""))
-            for key in loose_keys:
-                indexed = key[1:]
-                indexed_alnum = len(indexed.replace(" ", ""))
+            for indexed, indexed_alnum, candidate in phrases:
                 contained = (
                     indexed_alnum >= _MIN_PHRASE_ALNUM and _phrase_in(loose, indexed)
                 ) or (scanned_alnum >= _MIN_PHRASE_ALNUM and _phrase_in(indexed, loose))
                 prefixed = min(indexed_alnum, scanned_alnum) >= _MIN_PREFIX_ALNUM and (
-                    _word_prefix(loose, indexed) or _word_prefix(indexed, loose)
+                    word_prefix(loose, indexed) or word_prefix(indexed, loose)
                 )
                 if contained or prefixed:
-                    entry = index[key]
+                    entry = candidate
                     break
             if entry is not None:
                 break
