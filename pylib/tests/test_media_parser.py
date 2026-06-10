@@ -1651,3 +1651,38 @@ class TestQARegression:
         assert pm.is_special is expected_special
         if expected_ep is not None:
             assert pm.episode == expected_ep
+
+
+class TestDashedEpisodeBeforeDelimiter:
+    """`Title - 01 - (tags)`: the trailing dash before a bracket/paren
+    block must not glue onto the episode token (regression: Police in a
+    Pod / Shoushimin Series batches parsed as title-only)."""
+
+    @pytest.mark.parametrize(
+        ("name", "title", "episode", "season"),
+        [
+            (
+                "[Pod] Police in a Pod - 01 - (BD 1080p AVC FLAC)",
+                "Police in a Pod",
+                1,
+                None,
+            ),
+            (
+                "[P9] Shoushimin Series - S01E01 - (BD 1080p HEVC Opus) [B21341D8]",
+                "Shoushimin Series",
+                1,
+                1,
+            ),
+            (
+                "[P9] Shoushimin Series - S01E02 - [BD 1080p HEVC Opus] [E9EDD0F7]",
+                "Shoushimin Series",
+                2,
+                1,
+            ),
+        ],
+    )
+    def test_episode_recognized(self, name, title, episode, season):
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+        assert pm.episode == episode
+        assert pm.season == season

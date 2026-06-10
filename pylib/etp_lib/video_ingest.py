@@ -274,10 +274,10 @@ def _torrent_dir(path: Path, roots: list[Path]) -> Path | None:
     return None
 
 
-def _detect_movie_extras(
+def _analyze_movie_torrents(
     files: list[Path], roots: list[Path]
-) -> dict[Path, tuple[Path, str]]:
-    """Find featurettes packed beside a main film in its torrent directory.
+) -> tuple[dict[Path, tuple[Path, str]], set[Path]]:
+    """Sort each torrent directory's videos into a main film and extras.
 
     A movie torrent often carries extras as sibling videos (interviews,
     making-ofs, trailers) that would otherwise each become a junk
@@ -285,6 +285,11 @@ def _detect_movie_extras(
     is the main film; videos under half its size are its extras, mapped
     to ``(main file, extras subdirectory)``. The half-size guard keeps
     multi-part mains (cd1/cd2) and alternate cuts out of the extras bin.
+
+    A directory with three or more main-sized videos that aren't movie
+    parts is a season pack, not a movie — every file in it is returned
+    in the exclusion set so episode batches can never flood a movie plan
+    one "movie" per episode, however their filenames parse.
     """
     by_dir: dict[Path, list[Path]] = {}
     for path in files:
@@ -293,6 +298,7 @@ def _detect_movie_extras(
             by_dir.setdefault(torrent, []).append(path)
 
     extras: dict[Path, tuple[Path, str]] = {}
+    season_pack_files: set[Path] = set()
     for members in by_dir.values():
         if len(members) < 2:
             continue
@@ -300,12 +306,20 @@ def _detect_movie_extras(
         main = max(members, key=lambda p: sizes[p])
         if not sizes[main]:
             continue
+        mains = [
+            p
+            for p in members
+            if sizes[p] * 2 > sizes[main] and not _RE_PART_SUFFIX.search(p.stem)
+        ]
+        if len(mains) >= 3:
+            season_pack_files.update(members)
+            continue
         for path in members:
             if path is main or sizes[path] * 2 > sizes[main]:
                 continue
             category = "" if is_sample(path.stem) else classify_extra(path.stem)
             extras[path] = (main, category)
-    return extras
+    return extras, season_pack_files
 
 
 def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
@@ -320,11 +334,16 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
     destination.
     """
     files = sorted(iter_media_files(roots))
-    extras = _detect_movie_extras(files, roots) if kind is MediaKind.MOVIE else {}
+    extras: dict[Path, tuple[Path, str]] = {}
+    season_pack_files: set[Path] = set()
+    if kind is MediaKind.MOVIE:
+        extras, season_pack_files = _analyze_movie_torrents(files, roots)
     group_of_main: dict[Path, ScannedTitle] = {}
 
     groups: dict[str, ScannedTitle] = {}
     for path in files:
+        if path in season_pack_files:
+            continue  # episode batch, not movie material
         if path in extras:
             continue  # attached to its main film's group below
         sf = parse_source_filename(path.name)

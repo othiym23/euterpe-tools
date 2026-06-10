@@ -1146,12 +1146,17 @@ def tokenize_component(text: str) -> list[Token]:
         """Flush accumulated bare text as TEXT or DOT_TEXT tokens."""
         if not buf:
             return
-        raw = "".join(buf).strip()
+        # Keep the raw edges for separator splitting: stripping first would
+        # turn a trailing " - " (before a bracket/paren block, as in
+        # "Title - 01 - (BD 1080p)") into a dangling " -" that the
+        # separator regex can't see, gluing the dash onto the episode.
+        raw = "".join(buf)
         buf.clear()
-        if not raw:
+        stripped = raw.strip()
+        if not stripped:
             return
-        if _is_scene_style(raw):
-            tokens.extend(scan_dot_segments(raw))
+        if _is_scene_style(stripped):
+            tokens.extend(scan_dot_segments(stripped))
         else:
             tokens.extend(_split_separators(raw))
 

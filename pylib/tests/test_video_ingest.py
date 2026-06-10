@@ -1738,3 +1738,38 @@ class TestSamplesAndVersions:
         assert rc == 0
         manifest = parse_plan_manifest(tmp_path / "plan.kdl")
         assert all(e.status is EntryStatus.READY for e in manifest.blocks[0].entries)
+
+
+class TestSeasonPackGuard:
+    def test_episode_batch_excluded_from_movie_plan(self, tmp_path):
+        dl = tmp_path / "downloads"
+        pack = dl / "[Pod] Police in a Pod - (BD 1080p AVC FLAC)"
+        for n in range(1, 14):
+            # Unparseable-as-episode or not, similar-size batches are TV.
+            _mkfile(pack / f"[Pod] Police in a Pod - {n:02d} - (BD 1080p).mkv", 5000)
+        from etp_lib.video_ingest import scan_downloads
+
+        assert scan_downloads([dl], MediaKind.MOVIE) == []
+
+    def test_movie_with_extras_unaffected(self, tmp_path):
+        dl = tmp_path / "downloads"
+        torrent = dl / "Anomalisa.2015.1080p.BluRay.x264-Grym"
+        _mkfile(torrent / "Anomalisa.2015.1080p.BluRay.x264-Grym.mkv", size=10_000)
+        _mkfile(torrent / "Crafting.Anomalisa-Grym.mkv", size=900)
+        _mkfile(torrent / "Intimacy.in.Miniature-Grym.mkv", size=800)
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 1
+        assert sum(1 for f in titles[0].files if f.extra_category) == 2
+
+    def test_three_part_movie_not_a_pack(self, tmp_path):
+        dl = tmp_path / "downloads"
+        torrent = dl / "Shoah.1985.DVDRip"
+        for n in (1, 2, 3):
+            _mkfile(torrent / f"Shoah.1985.pt{n}.mkv", size=5000)
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 1
+        assert len(titles[0].files) == 3
