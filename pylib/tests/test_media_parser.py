@@ -1686,3 +1686,65 @@ class TestDashedEpisodeBeforeDelimiter:
         assert pm.series_name == title
         assert pm.episode == episode
         assert pm.season == season
+
+
+class TestEpisodeTitleKeepsNumbers:
+    """Once an SxxEyy marker is classified, later numbers and Season/Episode
+    words belong to the episode title (regression: The Expanse specials lost
+    'Episode 1' and 'Season 2 Episode 4' from their titles)."""
+
+    @pytest.mark.parametrize(
+        ("name", "season", "episode", "ep_title"),
+        [
+            (
+                "The Expanse (2015) S00E01 Inside The Expanse꞉ Episode 1"
+                " (1080p BluRay x265 Ghost)",
+                0,
+                1,
+                "Inside The Expanse꞉ Episode 1",
+            ),
+            (
+                "The Expanse (2015) S00E13 The Expanse Aftershow Season 2"
+                " Episode 4 (1080p BluRay x265 Ghost)",
+                0,
+                13,
+                "The Expanse Aftershow Season 2 Episode 4",
+            ),
+        ],
+    )
+    def test_trailing_numbers_stay_in_title(self, name, season, episode, ep_title):
+        pm = mp.parse_component(name)
+        assert pm.series_name == "The Expanse"
+        assert pm.season == season
+        assert pm.episode == episode
+        assert pm.episode_title == ep_title
+
+    def test_bare_episode_before_title_still_recognized(self):
+        pm = mp.parse_component("Columbo - 01 Murder by the Book")
+        assert pm.series_name == "Columbo"
+        assert pm.episode == 1
+        assert pm.episode_title == "Murder by the Book"
+
+
+class TestChannelCountNotEpisode:
+    """Audio channel layouts split into bare digits ("DDP 5 1",
+    "DTSHD-MA.5.1") must not be read as episode numbers (regression:
+    Bourne movies appeared in television plans as s01e05)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "The Bourne Identity 2002 BluRay 1080p DDP 5 1 x264-hallowed",
+            "Hellboy 2004 Directors Cut UHD BluRay 1080p DD Atmos 5 1 HDR10 x265",
+            "The.Bourne.Supremacy.2004.Bluray.1080p.VC1.DTSHD-MA.5.1.Remux-HiFi",
+        ],
+    )
+    def test_no_episode_from_channels(self, name):
+        pm = mp.parse_component(name)
+        assert pm.episode is None
+        assert pm.season is None
+
+    def test_bare_dot_episode_still_recognized(self):
+        pm = mp.parse_component("Show.05.1080p.BluRay.x265-GRP")
+        assert pm.series_name == "Show"
+        assert pm.episode == 5

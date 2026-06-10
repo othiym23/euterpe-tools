@@ -8,6 +8,7 @@ from etp_lib.naming import (
     build_metadata_block,
     classify_extra,
     extra_display_name,
+    extras_dir_category,
     extras_relpath,
     format_display_title,
     format_episode_filename,
@@ -713,3 +714,29 @@ class TestExtrasNaming:
 
     def test_default_is_featurettes(self):
         assert classify_extra("Crafting.Anomalisa-Grym") == "Featurettes"
+
+    def test_extras_dir_category(self):
+        assert extras_dir_category("Featurettes") == "Featurettes"
+        assert extras_dir_category("featurettes") == "Featurettes"
+        assert extras_dir_category("Behind The Scenes") == "Behind The Scenes"
+        assert extras_dir_category("Trailers") == "Trailers"
+        # Generic Extras and anime creditless dirs: classify each file
+        # by its own name.
+        assert extras_dir_category("Extras") == ""
+        assert extras_dir_category("NC") == ""
+        assert extras_dir_category("Season 01") is None
+        assert extras_dir_category("The Expanse (2015) S01") is None
+
+
+class TestModifierColonSanitization:
+    """U+A789/U+2236 colon stand-ins normalize through the colon rules."""
+
+    def test_modifier_colon_in_display_name(self):
+        assert (
+            extra_display_name("Season 4 - It Reaches Out꞉ ProtoMiller's Point of View")
+            == "Season 4 - It Reaches Out - ProtoMiller's Point of View"
+        )
+
+    def test_ratio_colon_in_dirname(self):
+        result = format_tv_series_dirname("Steins∶Gate", 2011, 244061)
+        assert result == "Steins-Gate (2011) {tvdb-244061}"

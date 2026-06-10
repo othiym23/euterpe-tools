@@ -957,6 +957,20 @@ def scan_dot_segments(text: str) -> list[Token]:
                     i += 2
                     continue
 
+        # Orphaned channel layout ("DTSHD-MA.5.1": the codec isn't in the
+        # audio vocabulary, leaving its digit pair unconsumed) — claim it
+        # before the single-segment pass misreads "5" as an episode.
+        if (
+            part in ("2", "5", "6", "7")
+            and i + 1 < len(raw_parts)
+            and raw_parts[i + 1] in ("0", "1", "2")
+        ):
+            tokens.append(
+                Token(kind=TokenKind.AUDIO_CODEC, text=f"{part}.{raw_parts[i + 1]}")
+            )
+            i += 2
+            continue
+
         # Single segment
         token = _try_recognize(part)
         if token is not None:
@@ -1314,9 +1328,22 @@ def _split_text_with_embedded(token: Token) -> list[Token]:
             if not text[pos].isdigit():
                 continue
             # Skip bare numbers after title-context words (Part 1, Vol 2)
+            # and after another bare digit ("DDP 5 1": the second digit
+            # of a space-separated audio channel layout).
             if pos > 0:
                 preceding = text[:pos].rstrip().rsplit(None, 1)
-                if preceding and preceding[-1].lower() in _TITLE_NUMBER_PREFIXES:
+                if preceding and (
+                    preceding[-1].lower() in _TITLE_NUMBER_PREFIXES
+                    or preceding[-1].isdigit()
+                ):
+                    continue
+            # A lone 2/5/6/7 followed by a lone 0/1/2 is an audio channel
+            # layout written with spaces ("DD 5 1"), not an episode.
+            word_end = text.find(" ", pos)
+            word = text[pos:] if word_end < 0 else text[pos:word_end]
+            if word in ("2", "5", "6", "7") and word_end >= 0:
+                following = text[word_end:].split()
+                if following and following[0] in ("0", "1", "2"):
                     continue
             bare_result = _bare_episode_parser(text, pos)
             if bare_result.status:
@@ -1393,6 +1420,36 @@ def _classify_paren(token: Token) -> Token | list[Token]:
         return Token(kind=TokenKind.LANGUAGE, text=text)
 
     return token
+
+
+def _is_channel_count_segment(tokens: list[Token], i: int) -> bool:
+    """True when ``tokens[i]`` is one digit of an audio channel layout
+    split across segments ("DTSHD-MA.5.1" → DOT_TEXT '5', DOT_TEXT '1')."""
+
+    def seg(j: int) -> str:
+        if 0 <= j < len(tokens) and tokens[j].kind in (
+            TokenKind.TEXT,
+            TokenKind.DOT_TEXT,
+        ):
+            return tokens[j].text.strip()
+        return ""
+
+    text = tokens[i].text.strip()
+    if not (len(text) == 1 and text.isdigit()):
+        return False
+    return (text in "2567" and seg(i + 1) in ("0", "1", "2")) or (
+        text in "012" and seg(i - 1) in ("2", "5", "6", "7")
+    )
+
+
+def _has_numbered_episode(tokens: list[Token]) -> bool:
+    """True when the current path component already has a numbered episode."""
+    for token in reversed(tokens):
+        if token.kind is TokenKind.PATH_SEP:
+            break
+        if token.kind is TokenKind.EPISODE and token.episode is not None:
+            return True
+    return False
 
 
 def classify(tokens: list[Token]) -> list[Token]:
@@ -1534,6 +1591,13 @@ def classify(tokens: list[Token]) -> list[Token]:
         if token.kind in (TokenKind.TEXT, TokenKind.DOT_TEXT):
             text = token.text.strip()
 
+            # Audio channel counts split across segments ("DTSHD-MA.5.1"):
+            # a lone 2/5/6/7 followed by a lone 0/1/2 is a channel
+            # layout, not an episode number.
+            if _is_channel_count_segment(tokens, i):
+                result.append(Token(kind=TokenKind.UNKNOWN, text=text))
+                continue
+
             # Episode/season (full match)?
             ep_token = _classify_episode_text(text)
             if ep_token is not None:
@@ -1554,8 +1618,12 @@ def classify(tokens: list[Token]) -> list[Token]:
                 result.append(recognized_meta)
                 continue
 
-            # Try splitting TEXT with embedded episode/season markers
-            if token.kind == TokenKind.TEXT:
+            # Try splitting TEXT with embedded episode/season markers.
+            # A numbered episode already classified in this component
+            # (S00E01, not a bare OVA/SP marker) means later markers are
+            # episode-title text ("Inside The Expanse Episode 1", "The
+            # Expanse Aftershow Season 2 Episode 4"), not new candidates.
+            if token.kind == TokenKind.TEXT and not _has_numbered_episode(result):
                 split = _split_text_with_embedded(token)
                 if len(split) > 1:
                     # Re-classify the split tokens
@@ -1571,9 +1639,11 @@ def classify(tokens: list[Token]) -> list[Token]:
                 meta_start = None
                 for i, w in enumerate(words):
                     if is_metadata_word(w):
-                        # A bare number after Part/Vol/Chapter is a title
-                        # fragment, not metadata (e.g., "Part 1", "Vol 2")
-                        if i > 0 and words[i - 1].lower() in _TITLE_NUMBER_PREFIXES:
+                        # A bare number never starts a metadata block — at
+                        # this point it's a title fragment ("Episode 1",
+                        # "Part 1"); real metadata runs begin with a
+                        # resolution/codec/source keyword.
+                        if w.isdigit():
                             continue
                         meta_start = i
                         break

@@ -57,6 +57,7 @@ from etp_lib.naming import (
     classify_extra,
     crc_suffixed,
     extra_display_name,
+    extras_dir_category,
     format_movie_dirname,
     is_sample,
     format_movie_filename,
@@ -276,6 +277,27 @@ def _torrent_dir(path: Path, roots: list[Path]) -> Path | None:
     return None
 
 
+def _extras_dir_context(path: Path, roots: list[Path]) -> tuple[Path, str] | None:
+    """The owning directory and extras category for a file stored under a
+    recognized extras directory (``Featurettes/``, ``Extras/``, ...).
+
+    Returns ``(owner directory, category)`` where the owner is the
+    directory containing the extras directory, or None when no ancestor
+    inside the downloads tree is an extras directory (or the extras
+    directory sits directly in a root, leaving no owner to attach to).
+    """
+    for parent in path.parents:
+        if parent in roots:
+            return None
+        category = extras_dir_category(parent.name)
+        if category is not None:
+            owner = parent.parent
+            if owner in roots:
+                return None
+            return owner, category or classify_extra(path.stem)
+    return None
+
+
 def _analyze_movie_torrents(
     files: list[Path], roots: list[Path]
 ) -> tuple[dict[Path, tuple[Path, str]], set[Path]]:
@@ -319,7 +341,13 @@ def _analyze_movie_torrents(
         for path in members:
             if path is main or sizes[path] * 2 > sizes[main]:
                 continue
-            category = "" if is_sample(path.stem) else classify_extra(path.stem)
+            if is_sample(path.stem):
+                category = ""
+            else:
+                # An enclosing Featurettes/Extras/... directory names the
+                # category more reliably than the filename does.
+                ctx = _extras_dir_context(path, roots)
+                category = ctx[1] if ctx else classify_extra(path.stem)
             extras[path] = (main, category)
     return extras, season_pack_files
 
@@ -348,6 +376,41 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
             continue  # episode batch, not movie material
         if path in extras:
             continue  # attached to its main film's group below
+
+        # A file under a recognized extras directory (Featurettes/,
+        # Extras/, ...) belongs to the title named by the directory above
+        # the extras directory, not to whatever its own filename parses
+        # as — featurette names look nothing like episodes and would each
+        # become a junk block of their own.
+        ctx = _extras_dir_context(path, roots)
+        if ctx is not None:
+            if is_sample(path.stem):
+                continue
+            owner, category = ctx
+            owner_pm = media_parser.parse_component(owner.name)
+            owner_episodic = (
+                owner_pm.season is not None
+                or owner_pm.episode is not None
+                or owner_pm.is_special
+            )
+            if not owner_pm.series_name or (kind is MediaKind.TV) != owner_episodic:
+                continue
+            key = normalize_title(owner_pm.series_name)
+            group = groups.get(key)
+            if group is None:
+                group = groups[key] = ScannedTitle(
+                    raw_title=owner_pm.series_name,
+                    title=owner_pm.series_name,
+                    year=owner_pm.year or 0,
+                    alt_title=owner_pm.series_name_alt,
+                )
+            if owner_pm.year and not group.year:
+                group.year = owner_pm.year
+            sf = parse_source_filename(path.name)
+            sf.path = path
+            group.files.append(ScannedFile(source=sf, extra_category=category))
+            continue
+
         sf = parse_source_filename(path.name)
         sf.path = path
         pm = sf.parsed
@@ -1186,6 +1249,20 @@ def _build_series_block(
         block.note = "reusing existing library directory"
 
     for f in scanned.files:
+        if f.extra_category:
+            # Extras keep clean names — Plex/Jellyfin display the
+            # filename as the extra's title — and skip the quality block.
+            ext = f.source.path.suffix or ".mkv"
+            display = extra_display_name(f.source.path.stem)
+            entry = FileEntry(
+                source=str(f.source.path),
+                size=_size_of(f.source.path),
+                status=EntryStatus.READY,
+                dest=str(Path(f.extra_category) / f"{display}{ext}"),
+            )
+            _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
+            block.entries.append(entry)
+            continue
         season = f.season if f.season is not None else 1
         entry = FileEntry(
             source=str(f.source.path),

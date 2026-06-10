@@ -172,8 +172,11 @@ def _sanitize_path(name: str) -> str:
     Replaces ``/`` with `` - ``. A colon followed by a space is a
     title/subtitle separator and becomes `` - `` ("Hellboy II: The Golden
     Army" → "Hellboy II - The Golden Army", the library's convention);
-    a bare colon is squeezed to ``-`` ("Re:ZERO" → "Re-ZERO").
+    a bare colon is squeezed to ``-`` ("Re:ZERO" → "Re-ZERO"). The
+    filesystem-safe colon stand-ins some release tools use (U+A789 ꞉,
+    U+2236 ∶) are treated as colons.
     """
+    name = name.replace("꞉", ":").replace("∶", ":")
     return name.replace("/", " - ").replace(": ", " - ").replace(":", "-")
 
 
@@ -198,6 +201,33 @@ _EXTRA_CATEGORIES: list[tuple[str, str]] = [
     ("short", "Shorts"),
 ]
 _DEFAULT_EXTRA_CATEGORY = "Featurettes"
+
+# Directory names that mark their contents as extras: the set both
+# servers recognize, the generic "extras", and the anime creditless
+# convention ("NC" dirs of NCOP/NCED files). Maps to the canonical
+# category; "" means generic — classify each file by its own name.
+_EXTRAS_DIR_NAMES: dict[str, str] = {
+    "featurettes": "Featurettes",
+    "behind the scenes": "Behind The Scenes",
+    "deleted scenes": "Deleted Scenes",
+    "interviews": "Interviews",
+    "scenes": "Scenes",
+    "shorts": "Shorts",
+    "trailers": "Trailers",
+    "other": "Other",
+    "extras": "",
+    "nc": "",
+}
+
+
+def extras_dir_category(dirname: str) -> str | None:
+    """Canonical extras category for a directory name.
+
+    Returns None when the directory is not an extras directory, and ""
+    for the generic ``Extras`` (classify each file by its own name).
+    """
+    return _EXTRAS_DIR_NAMES.get(dirname.casefold())
+
 
 _RE_RELEASE_GROUP_SUFFIX = re.compile(r"-[A-Za-z0-9]+$")
 

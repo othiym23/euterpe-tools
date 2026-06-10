@@ -39,6 +39,7 @@ from etp_lib.video_ingest import (
     pick_candidate,
     run_apply,
     run_plan,
+    scan_downloads,
     scan_managed_tree,
     write_plan_manifest,
 )
@@ -1511,6 +1512,97 @@ class TestMovieExtras:
         extras = [f for f in titles[0].files if f.extra_category]
         assert len(extras) == 1
         assert extras[0].extra_category == "Featurettes"
+
+
+class TestTvExtrasDirs:
+    """Featurettes/Extras directories inside TV batch torrents attach to
+    the show named by the directory above them (the Expanse layout)."""
+
+    def _expanse_tree(self, tmp_path):
+        dl = tmp_path / "downloads"
+        batch = (
+            dl / "The Expanse (2015) S01-S06 (1080p BluRay x265 10bit EAC3 5.1 Ghost)"
+        )
+        s1 = batch / "The Expanse (2015) S01"
+        s2 = batch / "The Expanse (2015) S02"
+        _mkfile(
+            s1 / "The Expanse (2015) S01E01 Dulcinea (1080p BluRay x265 Ghost).mkv",
+            size=10_000,
+        )
+        _mkfile(
+            s1
+            / "The Expanse (2015) S01E02 The Big Empty (1080p BluRay x265 Ghost).mkv",
+            size=10_000,
+        )
+        _mkfile(
+            s2 / "The Expanse (2015) S02E01 Safe (1080p BluRay x265 Ghost).mkv",
+            size=10_000,
+        )
+        _mkfile(
+            s1 / "Featurettes" / "Season 1 - 2015 New York Comic Con Panel.mkv",
+            size=900,
+        )
+        _mkfile(s2 / "Featurettes" / "Season 2 - Blooper Reel.mkv", size=800)
+        return dl
+
+    def test_scan_attaches_featurettes_to_show(self, tmp_path):
+        dl = self._expanse_tree(tmp_path)
+        titles = scan_downloads([dl], MediaKind.TV)
+        assert len(titles) == 1  # no junk groups for the featurettes
+        t = titles[0]
+        assert t.title == "The Expanse"
+        assert t.year == 2015
+        extras = sorted(
+            f.source.path.name for f in t.files if f.extra_category == "Featurettes"
+        )
+        assert extras == [
+            "Season 1 - 2015 New York Comic Con Panel.mkv",
+            "Season 2 - Blooper Reel.mkv",
+        ]
+        assert sum(1 for f in t.files if not f.extra_category) == 3
+
+    def test_show_featurettes_stay_out_of_movie_plans(self, tmp_path):
+        dl = self._expanse_tree(tmp_path)
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert titles == []  # season pack: nothing here is movie material
+
+    def test_extras_dir_directly_in_root_ignored(self, tmp_path):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Featurettes" / "Some Orphan Clip.mkv")
+        assert scan_downloads([dl], MediaKind.TV) == []
+
+    def test_sample_in_extras_dir_dropped(self, tmp_path):
+        dl = self._expanse_tree(tmp_path)
+        batch = next(dl.iterdir())
+        _mkfile(
+            batch / "The Expanse (2015) S01" / "Featurettes" / "Sample.mkv", size=10
+        )
+        (titles,) = scan_downloads([dl], MediaKind.TV)
+        assert all(f.source.path.name != "Sample.mkv" for f in titles.files)
+
+    def test_plan_places_show_extras_at_show_level(self, tmp_path, register):
+        dl = tmp_path / "downloads"
+        torrent = dl / "Severance (2022) S01 (1080p WEB-DL)"
+        _mkfile(
+            torrent / "Severance (2022) S01E01 Good News About Hell (1080p).mkv",
+            size=10_000,
+        )
+        _mkfile(torrent / "Featurettes" / "Season 1 - Making Severance.mkv", size=500)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(downloads_dir=dl, television_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.TV, config, opts, tv_providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert len(manifest.blocks) == 1
+        block = manifest.blocks[0]
+        dests = sorted(e.dest for e in block.entries)
+        # The extra lands in a show-level Featurettes/ dir with a clean
+        # name; the episode keeps its Season NN placement.
+        assert dests[0] == "Featurettes/Season 1 - Making Severance.mkv"
+        assert dests[1].startswith("Season 01/")
+        assert all(e.status is EntryStatus.READY for e in block.entries)
 
 
 class TestSameTitleMerging:
