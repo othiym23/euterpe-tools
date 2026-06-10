@@ -27,6 +27,7 @@ class ArrEntry:
     tmdb_id: int | None = None
     tvdb_id: int | None = None
     imdb_id: str = ""
+    root: str = ""  # basename of the root folder ("anime", "television", ...)
 
 
 def _arr_request(base_url: str, endpoint: str, api_key: str) -> list[dict]:
@@ -38,12 +39,22 @@ def _arr_request(base_url: str, endpoint: str, api_key: str) -> list[dict]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _index(entries: dict[str, ArrEntry], entry: ArrEntry) -> None:
-    """Index an entry by folder name and by normalized ``Title (Year)``."""
+def _index(
+    entries: dict[str, ArrEntry], entry: ArrEntry, alt_titles: list[str]
+) -> None:
+    """Index an entry by folder name and by normalized ``Title (Year)``.
+
+    Titles and alternate titles are also indexed bare under a ``~`` prefix
+    — loose keys for :func:`domain_of` only, never for ID resolution,
+    where a year-less match could pick a wrong-year remake.
+    """
     if entry.folder:
         entries.setdefault(entry.folder.casefold(), entry)
     if entry.title and entry.year:
         entries.setdefault(normalize_title(f"{entry.title} ({entry.year})"), entry)
+    for name in (entry.title, *alt_titles):
+        if name:
+            entries.setdefault("~" + normalize_title(name), entry)
 
 
 def fetch_radarr_index(url: str, api_key: str) -> dict[str, ArrEntry]:
@@ -51,15 +62,18 @@ def fetch_radarr_index(url: str, api_key: str) -> dict[str, ArrEntry]:
     entries: dict[str, ArrEntry] = {}
     for item in _arr_request(url, "/api/v3/movie", api_key):
         raw_tmdb = item.get("tmdbId")
+        path = PurePosixPath(str(item.get("path") or ""))
         _index(
             entries,
             ArrEntry(
                 title=item.get("title") or "",
                 year=int(item.get("year") or 0),
-                folder=PurePosixPath(str(item.get("path") or "")).name,
+                folder=path.name,
                 tmdb_id=int(raw_tmdb) if raw_tmdb else None,
                 imdb_id=item.get("imdbId") or "",
+                root=path.parent.name,
             ),
+            _alt_titles(item),
         )
     return entries
 
@@ -69,17 +83,54 @@ def fetch_sonarr_index(url: str, api_key: str) -> dict[str, ArrEntry]:
     entries: dict[str, ArrEntry] = {}
     for item in _arr_request(url, "/api/v3/series", api_key):
         raw_tvdb = item.get("tvdbId")
+        path = PurePosixPath(str(item.get("path") or ""))
         _index(
             entries,
             ArrEntry(
                 title=item.get("title") or "",
                 year=int(item.get("year") or 0),
-                folder=PurePosixPath(str(item.get("path") or "")).name,
+                folder=path.name,
                 tvdb_id=int(raw_tvdb) if raw_tvdb else None,
                 imdb_id=item.get("imdbId") or "",
+                root=path.parent.name,
             ),
+            _alt_titles(item),
         )
     return entries
+
+
+def _alt_titles(item: dict) -> list[str]:
+    """Alternate titles from a Radarr/Sonarr record (romaji, translations)."""
+    return [
+        str(alt.get("title") or "")
+        for alt in item.get("alternateTitles") or []
+        if isinstance(alt, dict)
+    ]
+
+
+def domain_of(
+    index: dict[str, ArrEntry],
+    raw_title: str,
+    title: str,
+    alt_title: str,
+    year: int,
+) -> str | None:
+    """Root-folder name of the managed entry a title matches, or None.
+
+    Tries the strict resolution keys first, then the loose bare-title
+    keys (which include alternate titles, so a romaji fansub name finds
+    the Sonarr series it belongs to).
+    """
+    entry = lookup(index, raw_title, title, year)
+    if entry is None:
+        for name in (title, alt_title, raw_title):
+            if name:
+                entry = index.get("~" + normalize_title(name))
+                if entry is not None:
+                    break
+    if entry is not None and entry.root:
+        return entry.root
+    return None
 
 
 def lookup(index: dict[str, ArrEntry], raw_title: str, title: str, year: int):

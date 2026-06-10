@@ -123,6 +123,9 @@ Python shared library lives in `pylib/etp_lib/`:
   television
 - `conflicts.py` — destination conflict resolution with readline support
 - `mediainfo.py` — mediainfo subprocess wrapper for audio/video metadata
+- `mediainfo_cache.py` — persistent (path, size, mtime)-keyed cache of mediainfo
+  results, shared by all ingest commands
+- `arr.py` — Radarr/Sonarr API clients: authoritative IDs and domain roots
 - `ingest_register.py` — shared already-ingested register (all ingest commands;
   see ADR 2026-06-09-03)
 - `envfile.py` — KEY=VALUE env file loading
@@ -339,7 +342,10 @@ ingest plan --radarr|--sonarr and/or --downloads
                        Plex/Jellyfin-shared subdirs — Trailers, Interviews,
                        Deleted Scenes, Behind The Scenes, Shorts, Featurettes —
                        with cleaned display names and no quality block)
-  filter               shared ingest register (unless --force), pattern
+  filter               foreign-domain exclusion (Sonarr root folders +
+                       anime-tree names; see ADR 2026-06-10-01), hardlink
+                       twins, --refine scope (the manifest's sources only),
+                       shared ingest register (unless --force), pattern
   resolve              config mapping / --refine ID  -> confidence "exact"
                        else Radarr/Sonarr API record -> "exact" (authoritative;
                        requires radarr/sonarr url + RADARR/SONARR_API_KEY)
@@ -350,7 +356,8 @@ ingest plan --radarr|--sonarr and/or --downloads
                        needs-id + candidates
   cross-check          TV: TMDB external_ids must point back at the TVDB id
                        movies: TheTVDB movie search by exact title+year
-  enrich               mediainfo per file (quality block in dest names)
+  enrich               mediainfo per file (quality block in dest names),
+                       cached by (path, size, mtime) across runs
   place                reuse existing `Title (Year)` library dir, else
                        `Original [English] (Year) {tmdb-NNN}` / `{tvdb-NNN}`
                        (+ {edition-X}); English-only when the original title

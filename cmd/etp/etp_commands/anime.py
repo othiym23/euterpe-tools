@@ -55,7 +55,8 @@ from etp_lib.media_scanner import (
     iter_media_files as _iter_media_files,
     parse_source_filename,
 )
-from etp_lib.mediainfo import analyze_file
+from etp_lib.mediainfo_cache import analyze_file_cached as analyze_file
+from etp_lib.mediainfo_cache import save_cache as save_mediainfo_cache
 from etp_lib.naming import (
     build_metadata_block,  # noqa: F401 (re-export for tests)
     extras_relpath,
@@ -2512,6 +2513,13 @@ def run_ingest(args: argparse.Namespace, config: AnimeConfig) -> int:
 
 def main() -> int:
     """Entry point: parse args, load config, dispatch to subcommand."""
+    try:
+        return _main()
+    finally:
+        save_mediainfo_cache()
+
+
+def _main() -> int:
     _load_env_file()
 
     parser = build_parser()

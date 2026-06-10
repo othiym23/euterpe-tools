@@ -111,6 +111,12 @@ etp television ingest plan --sonarr --force
 #              --config FILE, --no-cache, -v (per-title resolution report)
 ```
 
+Downloads titles owned by another domain are excluded up front: a Sonarr series
+rooted in the anime tree (or a title matching an anime-tree folder name) never
+appears in a television or movie plan, and the exclusion count is reported.
+mediainfo results are cached across runs, so re-planning a large backlog is
+fast.
+
 ID resolution order: config mapping (`media-ingestion.kdl`) → IDs from a
 `--refine` manifest → **Radarr/Sonarr API** (authoritative, needs `radarr`/
 `sonarr` url config + API keys) → provider search (TMDB for movies, TheTVDB for
@@ -143,8 +149,11 @@ the extras subdirectories both Plex and Jellyfin recognize (`Featurettes/`,
 
 ### Step 2½ — plan --refine (after editing a needs-id manifest)
 
-Re-plans with the IDs and skip/conflict decisions carried forward from the
-edited manifest, recomputing destinations:
+Re-plans **only the sources still listed in the edited manifest**, carrying IDs
+and skip/conflict decisions forward and recomputing destinations. The manifest
+defines the scope: deleting a block or entry removes it from the refined plan
+(it will resurface in the next fresh `plan` unless ingested or excluded), and
+files that arrived after the original plan wait for the next fresh `plan`:
 
 ```sh
 etp movies ingest plan --radarr --refine /tmp/movies.kdl -o /tmp/movies2.kdl

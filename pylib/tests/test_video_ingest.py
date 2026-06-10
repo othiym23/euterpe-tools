@@ -1847,3 +1847,136 @@ class TestSeasonDirLayout:
         assert s1e1.dest.startswith(
             "Season 01/Columbo (1971) - s01e01 - Prescription - Murder ["
         )
+
+
+class TestRefineScope:
+    """--refine narrows the plan to the manifest's contents."""
+
+    def test_deleted_block_stays_deleted(self, tv_tree, tmp_path, register):
+        src, dest = tv_tree
+        # Add a second show so the manifest has two blocks.
+        _mkfile(
+            src
+            / "Other Show (2020)"
+            / "Season 01"
+            / "Other Show - S01E01 - X WEBDL-1080p.mkv"
+        )
+        providers = tv_providers(
+            tvdb_search_series=lambda q, key, no_cache=False: (
+                [SearchCandidate(MetadataProvider.TVDB, 371980, "Severance", 2022)]
+                if "severance" in q.lower()
+                else []
+            ),
+        )
+        first = plan_opts(tmp_path, output=tmp_path / "first.kdl")
+        assert run_plan(MediaKind.TV, tv_config(src, dest), first, providers) == 0
+        text = (tmp_path / "first.kdl").read_text(encoding="utf-8")
+        assert "Other Show" in text
+        # The curator deletes the unwanted block wholesale.
+        kept_lines = []
+        skipping = False
+        for line in text.splitlines():
+            if line.startswith('series "Other Show'):
+                skipping = True
+            if not skipping:
+                kept_lines.append(line)
+            if skipping and line == "}":
+                skipping = False
+        (tmp_path / "first.kdl").write_text("\n".join(kept_lines), encoding="utf-8")
+
+        second = plan_opts(
+            tmp_path, output=tmp_path / "second.kdl", refine=tmp_path / "first.kdl"
+        )
+        assert run_plan(MediaKind.TV, tv_config(src, dest), second, providers) == 0
+        refined = (tmp_path / "second.kdl").read_text(encoding="utf-8")
+        assert "Other Show" not in refined
+        assert "Severance" in refined
+
+    def test_deleted_entry_stays_deleted(self, tv_tree, tmp_path, register):
+        src, dest = tv_tree
+        first = plan_opts(tmp_path, output=tmp_path / "first.kdl")
+        assert run_plan(MediaKind.TV, tv_config(src, dest), first, tv_providers()) == 0
+        manifest = parse_plan_manifest(tmp_path / "first.kdl")
+        victim = manifest.blocks[0].entries[0].source
+        # Remove just that episode node from the manifest.
+        manifest.blocks[0].entries = [
+            e for e in manifest.blocks[0].entries if e.source != victim
+        ]
+        write_plan_manifest(manifest, tmp_path / "first.kdl")
+
+        second = plan_opts(
+            tmp_path, output=tmp_path / "second.kdl", refine=tmp_path / "first.kdl"
+        )
+        assert run_plan(MediaKind.TV, tv_config(src, dest), second, tv_providers()) == 0
+        refined = parse_plan_manifest(tmp_path / "second.kdl")
+        sources = [e.source for b in refined.blocks for e in b.entries]
+        assert victim not in sources
+        assert len(sources) == 2  # the other two episodes survive
+
+
+class TestDomainPartitioning:
+    """Foreign-domain titles in downloads stay out of TV/movie plans."""
+
+    def _downloads_with_anime(self, tmp_path):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Frieren - S01E01 - (BD 1080p).mkv")
+        _mkfile(dl / "Severance - S01E01 - Good News WEBDL-1080p.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        return dl, dest
+
+    def test_sonarr_root_excludes_anime(self, tmp_path, register, monkeypatch):
+        from etp_lib.arr import ArrEntry
+
+        dl, dest = self._downloads_with_anime(tmp_path)
+        monkeypatch.setattr(video_ingest, "_anime_tree_names", lambda: set())
+        index = {
+            "~frieren": ArrEntry(
+                title="Frieren: Beyond Journey's End",
+                year=2023,
+                folder="Frieren (2023)",
+                tvdb_id=424536,
+                root="anime",
+            ),
+        }
+        config = MediaIngestConfig(
+            downloads_dir=dl, television_dest_dir=dest, sonarr_url="http://s:8989"
+        )
+        providers = tv_providers(arr_key="sk", sonarr_fetch=lambda url, key: index)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.TV, config, opts, providers)
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        titles = [b.raw_title for b in manifest.blocks]
+        assert titles == ["Severance"]
+
+    def test_anime_tree_fallback_excludes(self, tmp_path, register, monkeypatch):
+        dl, dest = self._downloads_with_anime(tmp_path)
+        anime_tree = tmp_path / "anime"
+        (anime_tree / "Frieren (2023)").mkdir(parents=True)
+        monkeypatch.setattr(video_ingest, "anime_source_dir", lambda: anime_tree)
+        config = MediaIngestConfig(downloads_dir=dl, television_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.TV, config, opts, tv_providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        titles = [b.raw_title for b in manifest.blocks]
+        assert titles == ["Severance"]
+
+    def test_managed_titles_never_filtered(
+        self, tv_tree, tmp_path, register, monkeypatch
+    ):
+        src, dest = tv_tree
+        # Even if the anime tree claims the same name, the managed
+        # television tree is in-domain by definition.
+        monkeypatch.setattr(
+            video_ingest,
+            "_anime_tree_names",
+            lambda: {video_ingest._normalize_dirname("Severance (2022)")},
+        )
+        rc = run_plan(
+            MediaKind.TV, tv_config(src, dest), plan_opts(tmp_path), tv_providers()
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert manifest.blocks[0].raw_title == "Severance (2022)"

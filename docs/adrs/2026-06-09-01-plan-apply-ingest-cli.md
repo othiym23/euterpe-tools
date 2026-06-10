@@ -32,10 +32,12 @@ The reviewable artifact between the two steps is a file on disk, editable by any
 tool. Agent-editable fields are per-entry `status` (`ready` → `skip`), per-entry
 `conflict` (`keep`/`replace`/`both`/`skip`, replacing the anime flow's
 interactive k/r/b/s prompt with a declarative choice), and provider IDs on
-`needs-id` blocks. `plan --refine PREVIOUS.kdl` carries IDs and decisions
-forward into a regenerated manifest, so the agent loop is _plan → edit → plan
---refine → apply_. Destinations are always computed by plan; apply never invents
-names.
+`needs-id` blocks. `plan --refine PREVIOUS.kdl` re-plans **exactly the sources
+listed in the manifest**, carrying IDs and decisions forward — the manifest
+defines the scope, so deleting a block or entry deletes it from the plan, and
+files that arrived after the original plan wait for the next fresh `plan`. The
+agent loop is _plan → edit → plan --refine → apply_. Destinations are always
+computed by plan; apply never invents names.
 
 Ambiguity is data, not a prompt: a title whose metadata search has no single
 exact title+year match becomes a `needs-id` block carrying the candidate list,

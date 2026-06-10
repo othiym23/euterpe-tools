@@ -26,7 +26,7 @@ from pathlib import Path
 import kdl
 
 from etp_lib.manifest import escape_kdl
-from etp_lib.types import MediaIngestConfig, TitleMapping
+from etp_lib.types import DEFAULT_ANIME_SOURCE_DIR, MediaIngestConfig, TitleMapping
 
 
 class MediaConfigError(Exception):
@@ -82,6 +82,32 @@ def load_media_config(path: Path | None = None) -> MediaIngestConfig:
     _read_mappings(doc, "movie", config.movie_mappings)
     _read_mappings(doc, "series", config.series_mappings)
     return config
+
+
+def anime_source_dir(path: Path | None = None) -> Path:
+    """The anime managed tree, read from anime-ingestion.kdl.
+
+    Movies/television planning needs it to recognize foreign-domain
+    (anime) titles in the shared downloads directory. A missing or
+    malformed anime config falls back to the default — domain filtering
+    must never break a movie/television plan.
+    """
+    if path is None:
+        from etp_lib import paths as etp_paths
+
+        path = etp_paths.anime_config()
+
+    if path.exists():
+        try:
+            doc = kdl.parse(path.read_text(encoding="utf-8"))
+            paths_node = doc.get("paths")
+            if paths_node is not None:
+                for child in paths_node.nodes:
+                    if child.name == "anime-source-dir" and child.args:
+                        return Path(str(child.args[0]))
+        except Exception:  # kdl.errors don't share a public base class
+            pass
+    return DEFAULT_ANIME_SOURCE_DIR
 
 
 def _read_mappings(

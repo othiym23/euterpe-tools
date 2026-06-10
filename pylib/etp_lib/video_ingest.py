@@ -37,6 +37,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -47,10 +48,11 @@ from etp_lib import arr, media_parser, tmdb, tvdb
 from etp_lib.conflicts import compute_crc32, copy_reflink
 from etp_lib.ingest_register import load_register, save_register
 from etp_lib.manifest import _MAX_FILENAME_BYTES, copy_subtitle_sidecars, escape_kdl
-from etp_lib.media_config import lookup_mapping
+from etp_lib.media_config import anime_source_dir, lookup_mapping
 from etp_lib.media_scanner import iter_media_files, parse_source_filename
 from etp_lib.media_vocab import _PVR_TOOL_NAMES, _VIDEO_EXTENSIONS
 from etp_lib.mediainfo import analyze_file
+from etp_lib.mediainfo_cache import analyze_file_cached, save_cache
 from etp_lib.naming import (
     classify_extra,
     crc_suffixed,
@@ -1313,14 +1315,54 @@ def run_plan(
             print(f"error: {e}", file=sys.stderr)
             return 1
 
-    scanned: list[ScannedTitle] = []
+    # mediainfo dominates plan time and its inputs are immutable, so the
+    # real analyzer runs behind a persistent cache (test stubs bypass it).
+    if providers.analyze is analyze_file:
+        providers = dc_replace(providers, analyze=analyze_file_cached)
+
+    # Radarr/Sonarr know the provider IDs (and domains) of everything
+    # they manage — fetched up front so both the foreign-domain filter
+    # and ID resolution can use the index.
+    arr_name = "Radarr" if kind is MediaKind.MOVIE else "Sonarr"
+    arr_url = config.radarr_url if kind is MediaKind.MOVIE else config.sonarr_url
+    arr_index: dict[str, arr.ArrEntry] = {}
+    if arr_url and providers.arr_key:
+        arr_fetch = (
+            providers.radarr_fetch
+            if kind is MediaKind.MOVIE
+            else providers.sonarr_fetch
+        )
+        try:
+            arr_index = arr_fetch(arr_url, providers.arr_key)
+        except _PROVIDER_ERRORS as e:
+            _say(
+                opts.json_output,
+                f"warning: {arr_name} query failed ({e}); falling back to search",
+            )
+
+    managed_titles: list[ScannedTitle] = []
+    downloads_titles: list[ScannedTitle] = []
     modes: list[str] = []
     if opts.managed:
-        scanned.extend(scan_managed_tree(source_root, kind))
+        managed_titles = scan_managed_tree(source_root, kind)
         modes.append(kind.managed_mode)
     if opts.downloads:
-        scanned.extend(scan_downloads(downloads_dirs, kind))
+        downloads_titles = scan_downloads(downloads_dirs, kind)
         modes.append("downloads")
+
+    # The downloads directory is shared with the anime pipeline; titles
+    # another domain owns are not this command's to plan.
+    if downloads_titles:
+        downloads_titles, foreign = _drop_foreign_domain(
+            downloads_titles, arr_index, source_root.name
+        )
+        if foreign:
+            _say(
+                opts.json_output,
+                f"{foreign} downloads title(s) excluded as foreign-domain (anime)",
+            )
+
+    scanned: list[ScannedTitle] = managed_titles + downloads_titles
     if opts.managed and opts.downloads:
         twins = _drop_hardlink_twins(scanned)
         if twins:
@@ -1329,6 +1371,23 @@ def run_plan(
                 f"{twins} hardlinked duplicate source(s) skipped"
                 " (managed tree and downloads share the file)",
             )
+
+    # --refine narrows the plan to the manifest's contents: deleting a
+    # block or entry from the manifest deletes it from the plan. Files
+    # that arrived since the original plan wait for the next fresh plan.
+    if opts.refine is not None:
+        dropped = 0
+        for t in scanned:
+            kept_files = [f for f in t.files if str(f.source.path) in refine_entries]
+            dropped += len(t.files) - len(kept_files)
+            t.files = kept_files
+        scanned = [t for t in scanned if t.files]
+        if dropped:
+            _say(
+                opts.json_output,
+                f"{dropped} source(s) outside the refine manifest dropped",
+            )
+
     if opts.pattern:
         needle = opts.pattern.lower()
         scanned = [t for t in scanned if needle in t.raw_title.lower()]
@@ -1358,25 +1417,6 @@ def run_plan(
         if opts.json_output:
             print(json.dumps(_plan_summary(manifest, None, already_ingested)))
         return 2
-
-    # Radarr/Sonarr know the provider IDs of everything they manage —
-    # authoritative for managed-tree titles, no search ambiguity.
-    arr_name = "Radarr" if kind is MediaKind.MOVIE else "Sonarr"
-    arr_url = config.radarr_url if kind is MediaKind.MOVIE else config.sonarr_url
-    arr_index: dict[str, arr.ArrEntry] = {}
-    if arr_url and providers.arr_key:
-        arr_fetch = (
-            providers.radarr_fetch
-            if kind is MediaKind.MOVIE
-            else providers.sonarr_fetch
-        )
-        try:
-            arr_index = arr_fetch(arr_url, providers.arr_key)
-        except _PROVIDER_ERRORS as e:
-            _say(
-                opts.json_output,
-                f"warning: {arr_name} query failed ({e}); falling back to search",
-            )
 
     dest_index = _dest_dir_index(dest_root)
     size_index = _dest_size_index(dest_root)
@@ -1483,6 +1523,7 @@ def run_plan(
             )
 
     _mark_duplicate_dests(manifest)
+    save_cache()  # persist newly analyzed mediainfo results
 
     out_path = opts.output or Path(
         f"{kind.tool}-plan-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.kdl"
@@ -1502,6 +1543,62 @@ def run_plan(
     for w in summary["warnings"]:
         _say(opts.json_output, f"warning: {w['title']}: {w['detail']}")
     return 0
+
+
+_RE_TRAILING_YEAR = re.compile(r"\s*\(\d{4}\)\s*$")
+
+
+def _anime_tree_names() -> set[str]:
+    """Normalized series-folder names from the anime managed tree.
+
+    Sonarr creates a folder there for every anime it manages, so the
+    tree's top level is a ready-made list of anime-domain titles even
+    when the Sonarr API isn't configured. Each name is indexed with and
+    without its year, since downloads groups often parse without one.
+    """
+    names: set[str] = set()
+    try:
+        for child in anime_source_dir().iterdir():
+            if child.is_dir():
+                names.add(_normalize_dirname(child.name))
+                names.add(_normalize_dirname(_RE_TRAILING_YEAR.sub("", child.name)))
+    except OSError:
+        pass
+    return names
+
+
+def _drop_foreign_domain(
+    titles: list[ScannedTitle],
+    arr_index: dict[str, arr.ArrEntry],
+    own_root: str,
+) -> tuple[list[ScannedTitle], int]:
+    """Drop downloads titles that belong to another domain's pipeline.
+
+    Authoritative signal: the Sonarr/Radarr record's root folder (a
+    series rooted in ``anime`` is not television's to plan; alternate
+    titles cover romaji fansub names). Fallback/supplement: a title
+    matching a series folder in the anime managed tree. Never consults
+    AniDB, so it is safe to run during AniDB-heavy operations.
+    """
+    foreign_tree = _anime_tree_names()
+    kept: list[ScannedTitle] = []
+    dropped = 0
+    for t in titles:
+        domain = arr.domain_of(arr_index, t.raw_title, t.title, t.alt_title, t.year)
+        in_foreign_tree = any(
+            _normalize_dirname(name) in foreign_tree
+            for name in (
+                f"{t.title} ({t.year})" if t.year else "",
+                t.title,
+                t.alt_title,
+            )
+            if name
+        )
+        if (domain is not None and domain != own_root) or in_foreign_tree:
+            dropped += 1
+        else:
+            kept.append(t)
+    return kept, dropped
 
 
 def _drop_hardlink_twins(scanned: list[ScannedTitle]) -> int:
