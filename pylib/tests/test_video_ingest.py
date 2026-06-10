@@ -1632,6 +1632,48 @@ class TestTvExtrasDirs:
         assert all(e.status is EntryStatus.READY for e in block.entries)
 
 
+class TestTvdbCacheSeparation:
+    """General-television TheTVDB records must not land in the anime
+    pipeline's tvdb cache (build_title_index slurps it wholesale, so a
+    live-action Death Note would merge into the anime's alias group)."""
+
+    def test_default_fetcher_uses_tv_cache(self, monkeypatch):
+        from etp_lib import tvdb as tvdb_mod
+
+        seen = {}
+
+        def capture(series_id, api_key, no_cache=False, *, cache_name="tvdb"):
+            seen["cache_name"] = cache_name
+            return SEVERANCE
+
+        monkeypatch.setattr(tvdb_mod, "fetch_tvdb_series", capture)
+        assert Providers().tvdb_fetch_series(371980, "key") is SEVERANCE
+        assert seen["cache_name"] == "tvdb-tv"
+
+    def test_fetch_tvdb_series_honors_cache_name(self, tmp_path, monkeypatch):
+        from etp_lib import tvdb as tvdb_mod
+
+        def fake_cache_dir(provider: str):
+            d = tmp_path / provider
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
+        monkeypatch.setattr(tvdb_mod, "cache_dir", fake_cache_dir)
+        record = {
+            "series": {"name": "Murderbot", "year": "2025", "aliases": []},
+            "episodes": [{"seasonNumber": 1, "number": 1, "name": "FreeCommerce"}],
+            "translations": {"eng": "Murderbot"},
+        }
+        (tmp_path / "tvdb-tv").mkdir()
+        (tmp_path / "tvdb-tv" / "443396.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+        # Must read the tvdb-tv copy, never touching the anime tvdb dir.
+        info = tvdb_mod.fetch_tvdb_series(443396, "key", cache_name="tvdb-tv")
+        assert info.title_en == "Murderbot"
+        assert not (tmp_path / "tvdb" / "443396.json").exists()
+
+
 class TestMatchExtraToSpecial:
     """Title matching between extras files and TheTVDB season-0 specials."""
 

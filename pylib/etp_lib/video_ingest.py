@@ -526,6 +526,19 @@ ARR_KEY_ENV = {
 }
 
 
+def _fetch_tvdb_series_tv(
+    series_id: int, api_key: str, no_cache: bool = False
+) -> AnimeInfo:
+    """fetch_tvdb_series against a television-only cache directory.
+
+    The anime pipeline's title-alias index slurps every record in the
+    default ``tvdb`` cache, so general-television records fetched here
+    must never land there (a live-action Death Note would merge into the
+    anime's alias group and contaminate anime download matching).
+    """
+    return tvdb.fetch_tvdb_series(series_id, api_key, no_cache, cache_name="tvdb-tv")
+
+
 @dataclass
 class Providers:
     """Provider call points and credentials, injectable for tests."""
@@ -536,7 +549,7 @@ class Providers:
     tmdb_fetch_tv: Callable[..., TmdbTvInfo] = tmdb.fetch_tmdb_tv
     tvdb_search_series: Callable[..., list[SearchCandidate]] = tvdb.search_tvdb_series
     tvdb_search_movies: Callable[..., list[SearchCandidate]] = tvdb.search_tvdb_movies
-    tvdb_fetch_series: Callable[..., AnimeInfo] = tvdb.fetch_tvdb_series
+    tvdb_fetch_series: Callable[..., AnimeInfo] = _fetch_tvdb_series_tv
     radarr_fetch: Callable[..., dict[str, arr.ArrEntry]] = arr.fetch_radarr_index
     sonarr_fetch: Callable[..., dict[str, arr.ArrEntry]] = arr.fetch_sonarr_index
     analyze: Callable[..., MediaInfo | None] = analyze_file

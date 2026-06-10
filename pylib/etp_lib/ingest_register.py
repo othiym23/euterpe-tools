@@ -50,8 +50,16 @@ def load_register() -> set[str]:
 
 
 def save_register(copied: set[str]) -> None:
-    """Persist the register atomically."""
+    """Persist the register atomically, merging with the file on disk.
+
+    The register is shared by three commands and entries are only ever
+    added, so saving the union protects against stale snapshots: a
+    long-lived interactive ``etp anime`` session must not erase entries
+    a concurrent ``etp movies/television ingest apply`` recorded while
+    the anime session sat at a prompt.
+    """
     path = register_path()
+    merged = copied | load_register()
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(sorted(copied), ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps(sorted(merged), ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)

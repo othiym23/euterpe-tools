@@ -237,9 +237,20 @@ def fetch_tvdb_series(
     series_id: int,
     api_key: str,
     no_cache: bool = False,
+    *,
+    cache_name: str = "tvdb",
 ) -> AnimeInfo:
-    """Fetch series info from TheTVDB with caching."""
-    cache_file = cache_dir("tvdb") / f"{series_id}.json"
+    """Fetch series info from TheTVDB with caching.
+
+    *cache_name* selects the cache directory. The anime pipeline's
+    ``build_title_index`` slurps every record in the default ``tvdb``
+    cache into its title-alias index, so callers fetching general
+    (non-anime) television must use a separate cache — a live-action
+    show sharing titles with an anime (Death Note, ONE PIECE) would
+    otherwise merge into the anime's alias group and contaminate
+    download matching.
+    """
+    cache_file = cache_dir(cache_name) / f"{series_id}.json"
 
     # Check cache (24h validity).  Re-fetch if the cached result has no
     # episodes — the entry may have been fetched before episodes were added.

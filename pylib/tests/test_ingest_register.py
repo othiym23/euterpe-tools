@@ -54,6 +54,21 @@ class TestRegisterRoundtrip:
         ]
         assert leftovers == []
 
+    def test_save_merges_concurrent_writes(self, cache):
+        """A stale snapshot must not erase another command's entries.
+
+        Models an interactive anime session that loaded the register,
+        then a movies apply recording entries before the session saves.
+        """
+        anime_snapshot = ingest_register.load_register()
+        anime_snapshot.add("/vol/anime.mkv")
+        ingest_register.save_register({"/vol/movie.mkv"})  # concurrent apply
+        ingest_register.save_register(anime_snapshot)  # stale session save
+        assert ingest_register.load_register() == {
+            "/vol/anime.mkv",
+            "/vol/movie.mkv",
+        }
+
 
 class TestLegacyMigration:
     """The pre-sharing anime triage register is merged in on load."""
