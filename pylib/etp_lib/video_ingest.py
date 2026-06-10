@@ -69,6 +69,7 @@ from etp_lib.naming import (
 from etp_lib.types import (
     AnimeInfo,
     ConflictAction,
+    Episode,
     MediaIngestConfig,
     MediaInfo,
     MetadataProvider,
@@ -1061,6 +1062,35 @@ def _episode_title(info: AnimeInfo, season: int, number: int | None) -> str:
     return ""
 
 
+# Extras files from per-season directories carry a "Season N - " prefix
+# that TheTVDB special titles don't.
+_RE_SEASON_NAME_PREFIX = re.compile(r"^season\s+\d+\s*-\s*", re.IGNORECASE)
+
+
+def _match_extra_to_special(info: AnimeInfo, stem: str) -> Episode | None:
+    """The TheTVDB season-0 special an extras file is, if it is one.
+
+    Many BD batches ship featurettes that TheTVDB tracks as specials
+    (after-shows, panels, blooper reels); those belong in ``Specials/``
+    under their special number, not in a ``Featurettes/`` directory.
+    Matches by normalized title — exact, or the file's name opening the
+    special's title word-for-word (TheTVDB often appends guest lists).
+    Anything ambiguous or unmatched stays an extra.
+    """
+    name = _RE_SEASON_NAME_PREFIX.sub("", extra_display_name(stem))
+    target = normalize_title(name)
+    if len(target.replace(" ", "")) < 8:
+        return None  # short generic names match far too easily
+    matches = []
+    for ep in info.episodes:
+        if ep.season != 0 or not ep.title_en:
+            continue
+        title = normalize_title(ep.title_en)
+        if title == target or title.startswith(target + " "):
+            matches.append(ep)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _existing_same_size(dest_parent: Path, size: int, dest_name: str) -> Path | None:
     """A video of identical size already in the destination directory.
 
@@ -1253,19 +1283,33 @@ def _build_series_block(
 
     for f in scanned.files:
         if f.extra_category:
-            # Extras keep clean names — Plex/Jellyfin display the
-            # filename as the extra's title — and skip the quality block.
-            ext = f.source.path.suffix or ".mkv"
-            display = extra_display_name(f.source.path.stem)
-            entry = FileEntry(
-                source=str(f.source.path),
-                size=_size_of(f.source.path),
-                status=EntryStatus.READY,
-                dest=str(Path(f.extra_category) / f"{display}{ext}"),
-            )
-            _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
-            block.entries.append(entry)
-            continue
+            # A featurette TheTVDB tracks as a season-0 special gets its
+            # special number and the standard episode naming; the rest
+            # keep clean names in their extras subdirectory —
+            # Plex/Jellyfin display the filename as the extra's title —
+            # and skip the quality block.
+            special = _match_extra_to_special(info, f.source.path.stem)
+            if special is not None:
+                f = dc_replace(
+                    f,
+                    season=0,
+                    episode=special.number,
+                    episodes=[],
+                    episode_title="",
+                    extra_category="",
+                )
+            else:
+                ext = f.source.path.suffix or ".mkv"
+                display = extra_display_name(f.source.path.stem)
+                entry = FileEntry(
+                    source=str(f.source.path),
+                    size=_size_of(f.source.path),
+                    status=EntryStatus.READY,
+                    dest=str(Path(f.extra_category) / f"{display}{ext}"),
+                )
+                _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
+                block.entries.append(entry)
+                continue
         season = f.season if f.season is not None else 1
         entry = FileEntry(
             source=str(f.source.path),

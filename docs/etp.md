@@ -160,6 +160,14 @@ the extras subdirectories both Plex and Jellyfin recognize (`Featurettes/`,
 `Trailers/`, `Interviews/`, `Behind The Scenes/`, …) with cleaned display names
 (`Crafting.Anomalisa-Grym.mkv` → `Featurettes/Crafting Anomalisa.mkv`).
 
+For television, a featurette whose name matches a TheTVDB season-0 special
+(exactly, or as the word-for-word opening of the special's title — TheTVDB often
+appends guest lists) is planned as that special instead: numbered,
+quality-blocked, under `Specials/`. Unmatched featurettes stay in their extras
+subdirectory; if you add the missing specials to TheTVDB, the next plan picks
+them up once the 24h provider cache refreshes (or immediately with
+`--no-cache`).
+
 ### Step 2½ — plan --refine (after editing a needs-id manifest)
 
 Re-plans **only the sources still listed in the edited manifest**, carrying IDs

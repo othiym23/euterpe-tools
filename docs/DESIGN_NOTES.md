@@ -341,7 +341,10 @@ ingest plan --radarr|--sonarr and/or --downloads
                        main film become its extras, classified into the
                        Plex/Jellyfin-shared subdirs — Trailers, Interviews,
                        Deleted Scenes, Behind The Scenes, Shorts, Featurettes —
-                       with cleaned display names and no quality block)
+                       with cleaned display names and no quality block; a TV
+                       featurette whose name matches a TheTVDB season-0
+                       special becomes that special — numbered, quality-
+                       blocked, under Specials/ — instead of an extra)
   filter               foreign-domain exclusion (config `domain` mappings
                        are authoritative both ways; then Radarr+Sonarr root
                        folders — both indexes, so the other kind's anime

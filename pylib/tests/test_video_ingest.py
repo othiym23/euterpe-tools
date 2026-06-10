@@ -1581,6 +1581,32 @@ class TestTvExtrasDirs:
         (titles,) = scan_downloads([dl], MediaKind.TV)
         assert all(f.source.path.name != "Sample.mkv" for f in titles.files)
 
+    def test_featurette_matching_tvdb_special_becomes_special(self, tmp_path, register):
+        """A featurette TheTVDB tracks as a season-0 special is planned
+        into Specials/ under its special number (the Expanse aftershow
+        pattern), not Featurettes/."""
+        dl = tmp_path / "downloads"
+        torrent = dl / "Severance (2022) S01 (1080p WEB-DL)"
+        _mkfile(
+            torrent / "Severance (2022) S01E01 Good News About Hell (1080p).mkv",
+            size=10_000,
+        )
+        _mkfile(torrent / "Featurettes" / "Season 1 - Inside Severance.mkv", size=500)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(downloads_dir=dl, television_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        assert run_plan(MediaKind.TV, config, opts, tv_providers()) == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        (block,) = manifest.blocks
+        special = next(e for e in block.entries if "Inside Severance" in e.source)
+        assert special.season == 0
+        assert special.number == 5
+        assert special.title == "Inside Severance"
+        assert special.dest.startswith("Specials/")
+        assert "s00e05" in special.dest
+        assert special.status is EntryStatus.READY
+
     def test_plan_places_show_extras_at_show_level(self, tmp_path, register):
         dl = tmp_path / "downloads"
         torrent = dl / "Severance (2022) S01 (1080p WEB-DL)"
@@ -1604,6 +1630,56 @@ class TestTvExtrasDirs:
         assert dests[0] == "Featurettes/Season 1 - Making Severance.mkv"
         assert dests[1].startswith("Season 01/")
         assert all(e.status is EntryStatus.READY for e in block.entries)
+
+
+class TestMatchExtraToSpecial:
+    """Title matching between extras files and TheTVDB season-0 specials."""
+
+    def _info(self, *titles):
+        return AnimeInfo(
+            anidb_id=None,
+            tvdb_id=1,
+            title_ja="Show",
+            title_en="Show",
+            year=2020,
+            episodes=[
+                Episode(i + 1, EpisodeType.SPECIAL, t, "", f"s0e{i + 1:02d}", season=0)
+                for i, t in enumerate(titles)
+            ],
+        )
+
+    def _match(self, info, stem):
+        from etp_lib.video_ingest import _match_extra_to_special
+
+        return _match_extra_to_special(info, stem)
+
+    def test_exact_title_with_season_prefix(self):
+        info = self._info("Inside Severance")
+        ep = self._match(info, "Season 1 - Inside Severance")
+        assert ep is not None and ep.number == 1
+
+    def test_file_name_opens_tvdb_title(self):
+        """TheTVDB appends guest lists; the file's name is the opening."""
+        info = self._info(
+            "The Expanse Aftershow - Season 5, Episode 1:"
+            " Wes Chatham, Ty Franck, & Naren Shankar"
+        )
+        ep = self._match(
+            info, "Season 5 - “The Expanse” Aftershow - Season 5, Episode 1"
+        )
+        assert ep is not None and ep.number == 1
+
+    def test_ambiguous_title_stays_extra(self):
+        info = self._info("Blooper Reel Extended", "Blooper Reel Extended")
+        assert self._match(info, "Blooper Reel Extended") is None
+
+    def test_short_generic_name_stays_extra(self):
+        info = self._info("Trailer")
+        assert self._match(info, "Trailer") is None
+
+    def test_unmatched_stays_extra(self):
+        info = self._info("Inside Severance")
+        assert self._match(info, "Making the Music") is None
 
 
 class TestSameTitleMerging:
