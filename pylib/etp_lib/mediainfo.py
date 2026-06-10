@@ -121,7 +121,8 @@ _STILL_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "GIF", "BMP"})
 
 def parse_mediainfo_json(data: dict) -> MediaInfo:
     """Parse mediainfo JSON output into a MediaInfo dataclass."""
-    tracks = data.get("media", {}).get("track", [])
+    # mediainfo emits "media": null for files it cannot open.
+    tracks = (data.get("media") or {}).get("track", [])
 
     video_codec = ""
     resolution = ""

@@ -24,6 +24,7 @@ from pathlib import Path
 from etp_lib import paths as etp_paths
 from etp_lib.envfile import load_env_file
 from etp_lib.media_config import MediaConfigError, load_media_config
+from etp_lib.mediainfo_cache import save_cache
 from etp_lib.video_ingest import (
     API_KEY_ENV,
     ARR_KEY_ENV,
@@ -213,15 +214,21 @@ def main(kind: MediaKind) -> int:
         args.ingest_parser.print_help()
         return 0
 
-    if args.action == "plan":
-        return _run_plan(kind, args)
-    return run_apply(
-        kind,
-        args.manifest,
-        ApplyOptions(
-            dry_run=args.dry_run,
-            json_output=args.json_output,
-            verbose=args.verbose,
-            sub_lang=args.sub_lang,
-        ),
-    )
+    # mediainfo analysis is the dominant cost of planning a backlog;
+    # persist whatever was analyzed even when the plan crashes or is
+    # interrupted (mirrors anime.py's main).
+    try:
+        if args.action == "plan":
+            return _run_plan(kind, args)
+        return run_apply(
+            kind,
+            args.manifest,
+            ApplyOptions(
+                dry_run=args.dry_run,
+                json_output=args.json_output,
+                verbose=args.verbose,
+                sub_lang=args.sub_lang,
+            ),
+        )
+    finally:
+        save_cache()

@@ -664,10 +664,11 @@ _REDISTRIBUTORS = frozenset({"tgx", "eztv", "eztvx.to", "rartv", "ettv", "ion10"
 # of the title (not an episode number): "Part 1", "Vol 2", "Chapter 3"
 _TITLE_NUMBER_PREFIXES = frozenset({"part", "vol", "volume", "chapter", "movie"})
 
-# Streaming-service source tags that are also ordinary English words;
-# they only count as sources after the title (i.e. once other metadata
-# has been seen), never in title position.
-_AMBIGUOUS_SOURCE_WORDS = frozenset({"it", "ma", "stan"})
+# Service/codec tags that are also ordinary words or real titles
+# ("Stan Against Evil", the film "Opus"); they only count as metadata
+# after the title (i.e. once other metadata has been seen), never in
+# title position.
+_AMBIGUOUS_METADATA_WORDS = frozenset({"it", "ma", "stan", "opus"})
 
 
 def _result_to_token(result: object, text: str) -> Token:
@@ -965,14 +966,21 @@ def scan_dot_segments(text: str) -> list[Token]:
 
         # Orphaned channel layout ("DTSHD-MA.5.1": the codec isn't in the
         # audio vocabulary, leaving its digit pair unconsumed) — claim it
-        # before the single-segment pass misreads "5" as an episode.
+        # before the single-segment pass misreads "5" as an episode. In
+        # title position (no metadata yet) the digit pair is part of the
+        # title instead ("Evangelion.2.0.You.Can.Not.Advance", the film
+        # "2.0"), so it stays text.
         if (
             part in ("2", "5", "6", "7")
             and i + 1 < len(raw_parts)
             and raw_parts[i + 1] in ("0", "1", "2")
         ):
+            seen_metadata = any(t.kind in _METADATA_KINDS for t in tokens)
             tokens.append(
-                Token(kind=TokenKind.AUDIO_CODEC, text=f"{part}.{raw_parts[i + 1]}")
+                Token(
+                    kind=TokenKind.AUDIO_CODEC if seen_metadata else TokenKind.DOT_TEXT,
+                    text=f"{part}.{raw_parts[i + 1]}",
+                )
             )
             i += 2
             continue
@@ -981,13 +989,13 @@ def scan_dot_segments(text: str) -> list[Token]:
         token = _try_recognize(part)
         if (
             token is not None
-            and token.kind is TokenKind.SOURCE
-            and part.lower() in _AMBIGUOUS_SOURCE_WORDS
+            and token.kind in (TokenKind.SOURCE, TokenKind.AUDIO_CODEC)
+            and part.lower() in _AMBIGUOUS_METADATA_WORDS
             and not any(t.kind in _METADATA_KINDS for t in tokens)
         ):
-            # "It"/"Ma"/"Stan" are streaming-service tags only after the
-            # title; in title position they're ordinary English words
-            # ("Go.For.It.Nakamura-kun").
+            # "It"/"Ma"/"Stan"/"Opus" are service/codec tags only after
+            # the title; in title position they're ordinary words
+            # ("Go.For.It.Nakamura-kun", the film "Opus").
             token = None
         if token is not None:
             tokens.append(token)
@@ -1624,6 +1632,19 @@ def classify(tokens: list[Token]) -> list[Token]:
                 result.append(Token(kind=TokenKind.UNKNOWN, text=text))
                 continue
 
+            # A channel-layout-shaped decimal in title position is title
+            # text ("Evangelion 2.0", the film "2.0"), not a decimal
+            # episode marker.
+            if (
+                len(text) == 3
+                and text[1] == "."
+                and text[0] in "2567"
+                and text[2] in "012"
+                and not _component_has_metadata(result)
+            ):
+                result.append(Token(kind=token.kind, text=text))
+                continue
+
             # Episode/season (full match)?
             ep_token = _classify_episode_text(text)
             if ep_token is not None:
@@ -1642,13 +1663,13 @@ def classify(tokens: list[Token]) -> list[Token]:
             recognized_meta = _try_recognize(text)
             if (
                 recognized_meta is not None
-                and recognized_meta.kind is TokenKind.SOURCE
-                and text.lower() in _AMBIGUOUS_SOURCE_WORDS
+                and recognized_meta.kind in (TokenKind.SOURCE, TokenKind.AUDIO_CODEC)
+                and text.lower() in _AMBIGUOUS_METADATA_WORDS
                 and not _component_has_metadata(result)
             ):
-                # "It"/"Ma"/"Stan" are streaming-service tags only after
-                # the title; in title position they're ordinary words
-                # ("Stan Against Evil", "Go For It, Nakamura-kun").
+                # "It"/"Ma"/"Stan"/"Opus" are service/codec tags only
+                # after the title; in title position they're ordinary
+                # words ("Stan Against Evil", the film "Opus").
                 recognized_meta = None
             if recognized_meta is not None:
                 result.append(recognized_meta)

@@ -700,10 +700,26 @@ class TestExtrasNaming:
 
     def test_display_name_strips_release_cruft(self):
         assert extra_display_name("Crafting.Anomalisa-Grym") == "Crafting Anomalisa"
-        assert extra_display_name("Intimacy in Miniature-Grym") == (
+        assert extra_display_name("Intimacy in Miniature-Grym", "Grym") == (
             "Intimacy in Miniature"
         )
         assert extra_display_name("Some_Other_Extra") == "Some Other Extra"
+
+    def test_display_name_keeps_hyphenated_names(self):
+        """A trailing hyphenated name is not release cruft: only the
+        torrent's known group (or a dotted scene-style suffix) strips."""
+        assert (
+            extra_display_name("Q&A with Director Park Chan-wook")
+            == "Q&A with Director Park Chan-wook"
+        )
+        assert (
+            extra_display_name("Interview.with.Bong.Joon-ho", "GRP")
+            == "Interview with Bong Joon-ho"
+        )
+        # No known group + spaces: keep the suffix rather than guess.
+        assert extra_display_name("Intimacy in Miniature-Grym") == (
+            "Intimacy in Miniature-Grym"
+        )
 
     def test_classification(self):
         assert classify_extra("Theatrical.Trailer-Grym") == "Trailers"

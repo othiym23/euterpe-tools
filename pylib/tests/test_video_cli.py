@@ -122,6 +122,36 @@ class TestMainDispatch:
         assert seen["providers"].tmdb_key == "tk"
         assert seen["providers"].tvdb_key == "vk"
 
+    @pytest.mark.parametrize(
+        ("entry", "kind", "own_key", "cross_key"),
+        [("tv", MediaKind.TV, "sk", "rk"), ("movies", MediaKind.MOVIE, "rk", "sk")],
+    )
+    def test_arr_keys_wired_per_kind(
+        self, monkeypatch, entry, kind, own_key, cross_key
+    ):
+        """A swap of the Radarr/Sonarr keys silently degrades domain
+        filtering at runtime (both fetches 401 into warnings), so the
+        env-var-to-field wiring must be pinned per kind."""
+        flag = "--sonarr" if kind is MediaKind.TV else "--radarr"
+        monkeypatch.setattr("sys.argv", [f"etp-{entry}", "ingest", "plan", flag])
+        monkeypatch.setenv("TMDB_API_KEY", "tk")
+        monkeypatch.setenv("TVDB_API_KEY", "vk")
+        monkeypatch.setenv("RADARR_API_KEY", "rk")
+        monkeypatch.setenv("SONARR_API_KEY", "sk")
+        monkeypatch.setattr(video_cli, "load_env_file", lambda *paths: None)
+        monkeypatch.setattr(video_cli, "load_media_config", lambda path=None: "CONFIG")
+        seen = {}
+
+        def fake_run_plan(kind, config, opts, providers):
+            seen["providers"] = providers
+            return 0
+
+        monkeypatch.setattr(video_cli, "run_plan", fake_run_plan)
+        main = television.main if kind is MediaKind.TV else movies.main
+        assert main() == 0
+        assert seen["providers"].arr_key == own_key
+        assert seen["providers"].cross_arr_key == cross_key
+
     def test_apply_dispatches_to_run_apply(self, monkeypatch, tmp_path):
         manifest = tmp_path / "plan.kdl"
         monkeypatch.setattr(

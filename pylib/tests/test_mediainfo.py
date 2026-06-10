@@ -186,6 +186,12 @@ class TestMediaInfoParsing:
         assert mi.resolution == "720p"
         assert (mi.width, mi.height) == (960, 720)
 
+    def test_null_media_tolerated(self):
+        """mediainfo emits "media": null for files it cannot open."""
+        mi = parse_mediainfo_json({"media": None})
+        assert mi.video_codec == ""
+        assert mi.audio_tracks == []
+
     def test_hevc_dual_audio(self):
         mi = parse_mediainfo_json(MEDIAINFO_HEVC_DUAL_AUDIO)
         assert mi.video_codec == "HEVC"

@@ -1795,3 +1795,43 @@ class TestAmbiguousSourceWords:
         pm = mp.parse_component(name)
         assert pm.series_name == "Show"
         assert pm.episode == 1
+
+    @pytest.mark.parametrize(
+        ("name", "title"),
+        [
+            ("Opus.2025.1080p.WEB.H264-FLUX", "Opus"),
+            ("Mr.Hollands.Opus.1995.1080p.BluRay.x264-GRP", "Mr Hollands Opus"),
+        ],
+    )
+    def test_opus_in_title_position_stays_text(self, name, title):
+        """'Opus' is an audio codec only after the title — films named
+        Opus must not parse to an empty/truncated title and vanish."""
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+
+
+class TestDecimalNumberInTitle:
+    """Channel-layout-shaped decimals in title position are title text
+    (the film '2.0', 'Evangelion 2.0'), not channel counts or decimal
+    episode markers."""
+
+    def test_evangelion_two_point_oh(self):
+        pm = mp.parse_component(
+            "Evangelion.2.0.You.Can.Not.Advance.2009.1080p.BluRay.x264-GRP"
+        )
+        assert pm.series_name == "Evangelion 2.0 You Can Not Advance"
+        assert pm.episode is None
+        assert pm.year == 2009
+
+    def test_film_titled_two_point_oh(self):
+        pm = mp.parse_component("2.0.2018.1080p.BluRay.x264-TT")
+        assert pm.series_name == "2.0"
+        assert pm.episode is None
+        assert pm.year == 2018
+
+    def test_post_metadata_decimal_still_channels(self):
+        pm = mp.parse_component(
+            "The.Bourne.Supremacy.2004.Bluray.1080p.VC1.DTSHD-MA.5.1.Remux-HiFi"
+        )
+        assert pm.episode is None
+        assert pm.season is None

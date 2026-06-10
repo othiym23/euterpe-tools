@@ -240,20 +240,31 @@ def is_sample(stem: str) -> bool:
     return bool(_RE_SAMPLE.search(stem))
 
 
-def extra_display_name(stem: str) -> str:
+def extra_display_name(stem: str, release_group: str = "") -> str:
     """Clean a torrent extra's filename into its display title.
 
     Plex and Jellyfin show an extra's filename as its title, so release
     cruft must go: ``Crafting.Anomalisa-Grym`` → ``Crafting Anomalisa``.
+    A trailing ``-word`` is only stripped when it matches the torrent's
+    known *release_group*, or — when no group is known — in dotted
+    scene-style names; titles ending in hyphenated names ("Q&A with
+    Park Chan-wook") must keep their last word.
     """
-    name = _RE_RELEASE_GROUP_SUFFIX.sub("", stem)
+    name = stem
+    m = _RE_RELEASE_GROUP_SUFFIX.search(stem)
+    if m is not None:
+        suffix = m.group(0)[1:]
+        if (release_group and suffix.casefold() == release_group.casefold()) or (
+            not release_group and " " not in stem
+        ):
+            name = stem[: m.start()]
     name = name.replace(".", " ").replace("_", " ")
     return _sanitize_path(" ".join(name.split()))
 
 
-def classify_extra(stem: str) -> str:
+def classify_extra(stem: str, release_group: str = "") -> str:
     """Map an extra's name to its Plex/Jellyfin extras subdirectory."""
-    name = extra_display_name(stem).casefold()
+    name = extra_display_name(stem, release_group).casefold()
     for keyword, category in _EXTRA_CATEGORIES:
         if keyword in name:
             return category

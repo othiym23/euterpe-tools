@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -113,6 +114,17 @@ class MediaKind(StrEnum):
     def managed_mode(self) -> str:
         """Name of the managed-tree source mode (matches the CLI flag)."""
         return "radarr" if self is MediaKind.MOVIE else "sonarr"
+
+    @property
+    def domain(self) -> str:
+        """This kind's domain label for foreign-domain partitioning.
+
+        Matches the Radarr/Sonarr root-folder basename convention and
+        the ``domain`` property in config mappings. A fixed label, not
+        the scan root's basename — a ``--source`` override must not
+        change what counts as our own domain.
+        """
+        return "movies" if self is MediaKind.MOVIE else "television"
 
     @property
     def primary_provider(self) -> MetadataProvider:
@@ -398,6 +410,8 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
             if not owner_pm.series_name or (kind is MediaKind.TV) != owner_episodic:
                 continue
             key = normalize_title(owner_pm.series_name)
+            if kind is MediaKind.MOVIE and owner_pm.year:
+                key = f"{key} ({owner_pm.year})"
             group = groups.get(key)
             if group is None:
                 group = groups[key] = ScannedTitle(
@@ -459,7 +473,14 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         if (kind is MediaKind.TV) != looks_episodic:
             continue
 
+        # Movies group by title AND year: a remake must not collapse
+        # into its original ("Suspiria.1977" vs "Suspiria.2018" are two
+        # films). Same-film copies that differ only in having a year
+        # split here but re-merge by provider ID after resolution.
+        # Shows group by title alone — a series spans years.
         key = normalize_title(title)
+        if kind is MediaKind.MOVIE and year:
+            key = f"{key} ({year})"
         group = groups.get(key)
         if group is None:
             group = groups[key] = ScannedTitle(
@@ -786,9 +807,13 @@ def parse_plan_manifest(path: Path) -> PlanManifest:
             elif name == "edition":
                 block.edition = str(_first_arg(child))
             elif name == "confidence":
-                block.confidence = Confidence(str(_first_arg(child)))
+                block.confidence = _enum_field(
+                    Confidence, str(_first_arg(child)), "confidence", path
+                )
             elif name == "cross-check":
-                block.cross_check = CrossCheck(str(_first_arg(child)))
+                block.cross_check = _enum_field(
+                    CrossCheck, str(_first_arg(child)), "cross-check", path
+                )
                 block.cross_check_note = str(child.props.get("note") or "")
             elif name == "note":
                 block.note = str(_first_arg(child))
@@ -797,7 +822,12 @@ def parse_plan_manifest(path: Path) -> PlanManifest:
             elif name == "candidate":
                 block.candidates.append(
                     SearchCandidate(
-                        provider=MetadataProvider(str(child.props.get("provider"))),
+                        provider=_enum_field(
+                            MetadataProvider,
+                            str(child.props.get("provider")),
+                            "candidate provider",
+                            path,
+                        ),
                         id=_to_int(child.props.get("id")),
                         title=str(child.props.get("name") or ""),
                         year=_to_int(child.props.get("year")),
@@ -807,6 +837,21 @@ def parse_plan_manifest(path: Path) -> PlanManifest:
                 block.entries.append(_parse_entry(child, path))
         manifest.blocks.append(block)
     return manifest
+
+
+def _enum_field[E: StrEnum](enum_cls: type[E], value: str, what: str, path: Path) -> E:
+    """Coerce a manifest field to its enum, with a clean error on typos.
+
+    Several of these fields are documented as hand-editable; a typo must
+    surface as a ManifestError naming the field, never a raw traceback.
+    """
+    try:
+        return enum_cls(value)
+    except ValueError as e:
+        allowed = ", ".join(m.value for m in enum_cls)
+        raise ManifestError(
+            f"{path}: bad {what} {value!r} (expected one of: {allowed})"
+        ) from e
 
 
 def _parse_entry(node: kdl.Node, path: Path) -> FileEntry:
@@ -823,12 +868,7 @@ def _parse_entry(node: kdl.Node, path: Path) -> FileEntry:
     source = text("source")
     if not source:
         raise ManifestError(f"{path}: entry with no source")
-    try:
-        status = EntryStatus(text("status"))
-    except ValueError as e:
-        raise ManifestError(
-            f"{path}: bad status {text('status')!r} for {source}"
-        ) from e
+    status = _enum_field(EntryStatus, text("status"), f"status for {source}", path)
     conflict_text = text("conflict")
     episodes_node = vals.get("episodes")
     return FileEntry(
@@ -840,7 +880,11 @@ def _parse_entry(node: kdl.Node, path: Path) -> FileEntry:
         number=num("number"),
         episodes=[_to_int(a) for a in episodes_node.args] if episodes_node else [],
         title=text("title"),
-        conflict=ConflictAction(conflict_text) if conflict_text else None,
+        conflict=_enum_field(
+            ConflictAction, conflict_text, f"conflict for {source}", path
+        )
+        if conflict_text
+        else None,
         note=text("note"),
     )
 
@@ -1080,7 +1124,9 @@ def _episode_title(info: AnimeInfo, season: int, number: int | None) -> str:
 _RE_SEASON_NAME_PREFIX = re.compile(r"^season\s+\d+\s*-\s*", re.IGNORECASE)
 
 
-def _match_extra_to_special(info: AnimeInfo, stem: str) -> Episode | None:
+def _match_extra_to_special(
+    info: AnimeInfo, stem: str, release_group: str = ""
+) -> Episode | None:
     """The TheTVDB season-0 special an extras file is, if it is one.
 
     Many BD batches ship featurettes that TheTVDB tracks as specials
@@ -1090,7 +1136,7 @@ def _match_extra_to_special(info: AnimeInfo, stem: str) -> Episode | None:
     special's title word-for-word (TheTVDB often appends guest lists).
     Anything ambiguous or unmatched stays an extra.
     """
-    name = _RE_SEASON_NAME_PREFIX.sub("", extra_display_name(stem))
+    name = _RE_SEASON_NAME_PREFIX.sub("", extra_display_name(stem, release_group))
     target = normalize_title(name)
     if len(target.replace(" ", "")) < 8:
         return None  # short generic names match far too easily
@@ -1213,20 +1259,11 @@ def _build_movie_block(
     if existing and not block.note:
         block.note = "reusing existing library directory"
 
+    group = _block_release_group(scanned)
     versions: list[FileEntry] = []
     for f in scanned.files:
         if f.extra_category:
-            # Extras keep clean names — Plex/Jellyfin display the
-            # filename as the extra's title — and skip the quality block.
-            ext = f.source.path.suffix or ".mkv"
-            display = extra_display_name(f.source.path.stem)
-            entry = FileEntry(
-                source=str(f.source.path),
-                size=_size_of(f.source.path),
-                status=EntryStatus.READY,
-                dest=str(Path(f.extra_category) / f"{display}{ext}"),
-            )
-            _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
+            entry = _extra_entry(f, group, dest_root, block.dest_dir, size_index)
             block.entries.append(entry)
             continue
         _analyze(f.source, providers)
@@ -1242,6 +1279,43 @@ def _build_movie_block(
         if f.part is None:
             versions.append(entry)
     _skip_additional_versions(versions)
+
+
+def _block_release_group(scanned: ScannedTitle) -> str:
+    """The release group of the title's main files, for extras cleanup.
+
+    A torrent's extras carry its group as a ``-Suffix``; knowing the
+    group lets :func:`extra_display_name` strip exactly it and nothing
+    else (titles ending in hyphenated names keep their last word).
+    """
+    for f in scanned.files:
+        if not f.extra_category and f.source.parsed.release_group:
+            return f.source.parsed.release_group
+    return ""
+
+
+def _extra_entry(
+    f: ScannedFile,
+    release_group: str,
+    dest_root: Path,
+    dest_dir: str,
+    size_index: dict[int, Path],
+) -> FileEntry:
+    """Plan one extras file into its Plex/Jellyfin extras subdirectory.
+
+    Extras keep clean names — both servers display the filename as the
+    extra's title — and skip the quality block.
+    """
+    ext = f.source.path.suffix or ".mkv"
+    display = extra_display_name(f.source.path.stem, release_group)
+    entry = FileEntry(
+        source=str(f.source.path),
+        size=_size_of(f.source.path),
+        status=EntryStatus.READY,
+        dest=str(Path(f.extra_category) / f"{display}{ext}"),
+    )
+    _check_entry_placement(entry, dest_root, dest_dir, size_index)
+    return entry
 
 
 def _skip_additional_versions(versions: list[FileEntry]) -> None:
@@ -1294,14 +1368,13 @@ def _build_series_block(
     if existing and not block.note:
         block.note = "reusing existing library directory"
 
+    group = _block_release_group(scanned)
     for f in scanned.files:
         if f.extra_category:
             # A featurette TheTVDB tracks as a season-0 special gets its
             # special number and the standard episode naming; the rest
-            # keep clean names in their extras subdirectory —
-            # Plex/Jellyfin display the filename as the extra's title —
-            # and skip the quality block.
-            special = _match_extra_to_special(info, f.source.path.stem)
+            # land in their extras subdirectory.
+            special = _match_extra_to_special(info, f.source.path.stem, group)
             if special is not None:
                 f = dc_replace(
                     f,
@@ -1312,15 +1385,7 @@ def _build_series_block(
                     extra_category="",
                 )
             else:
-                ext = f.source.path.suffix or ".mkv"
-                display = extra_display_name(f.source.path.stem)
-                entry = FileEntry(
-                    source=str(f.source.path),
-                    size=_size_of(f.source.path),
-                    status=EntryStatus.READY,
-                    dest=str(Path(f.extra_category) / f"{display}{ext}"),
-                )
-                _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
+                entry = _extra_entry(f, group, dest_root, block.dest_dir, size_index)
                 block.entries.append(entry)
                 continue
         season = f.season if f.season is not None else 1
@@ -1385,10 +1450,17 @@ def _size_of(path: Path) -> int:
 
 
 def _analyze(sf: SourceFile, providers: Providers) -> None:
+    """Run mediainfo on a source, degrading to no-metadata on failure.
+
+    One unreadable file (permission denied, mid-seed, corrupt) must
+    never abort a whole plan; mediainfo failures surface as a missing
+    quality block, not a crash. SubprocessError covers the mediainfo
+    binary exiting non-zero, which _PROVIDER_ERRORS does not.
+    """
     if sf.media is None:
         try:
             sf.media = providers.analyze(sf.path)
-        except _PROVIDER_ERRORS:
+        except (*_PROVIDER_ERRORS, subprocess.SubprocessError):
             sf.media = None
 
 
@@ -1513,7 +1585,7 @@ def run_plan(
     if downloads_titles:
         domain_index = {**cross_index, **arr_index}
         downloads_titles, foreign = _drop_foreign_domain(
-            downloads_titles, domain_index, source_root.name, downloads_dirs, mappings
+            downloads_titles, domain_index, kind.domain, downloads_dirs, mappings
         )
         if foreign:
             _say(

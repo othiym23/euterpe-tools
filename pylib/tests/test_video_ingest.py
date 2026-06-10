@@ -383,6 +383,30 @@ class TestManifestRoundtrip:
         with pytest.raises(ManifestError, match="invalid KDL"):
             parse_plan_manifest(path)
 
+    @pytest.mark.parametrize(
+        ("field", "value", "match"),
+        [
+            ("conflict", "kep", "bad conflict"),
+            ("status", "rady", "bad status"),
+        ],
+    )
+    def test_bad_editable_enum_is_clean_error(self, tmp_path, field, value, match):
+        """`conflict` and `status` are documented as hand-editable; a
+        typo must raise ManifestError, never a raw ValueError."""
+        manifest = _sample_manifest(MediaKind.TV)
+        path = tmp_path / "plan.kdl"
+        write_plan_manifest(manifest, path)
+        text = path.read_text(encoding="utf-8")
+        if field == "conflict":
+            text = text.replace(
+                'status "ready"', 'status "ready"\n    conflict "kep"', 1
+            )
+        else:
+            text = text.replace('status "ready"', f'status "{value}"', 1)
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ManifestError, match=match):
+            parse_plan_manifest(path)
+
     @given(
         title=st.text(
             alphabet=st.characters(blacklist_categories=("Cs", "Cc")),
@@ -1632,6 +1656,48 @@ class TestTvExtrasDirs:
         assert all(e.status is EntryStatus.READY for e in block.entries)
 
 
+class TestAnalyzeRobustness:
+    """One unreadable file must degrade to a missing quality block, not
+    abort the whole plan."""
+
+    def test_mediainfo_subprocess_failure_degrades(self):
+        import subprocess
+
+        from etp_lib.media_scanner import parse_source_filename
+        from etp_lib.video_ingest import _analyze
+
+        def boom(path):
+            raise subprocess.CalledProcessError(1, ["mediainfo"])
+
+        sf = parse_source_filename("Show - S01E01.mkv")
+        sf.path = Path("/nope/Show - S01E01.mkv")
+        _analyze(sf, Providers(analyze=boom))
+        assert sf.media is None
+
+
+class TestRemakeGrouping:
+    """Same-titled films of different years are different films."""
+
+    def test_remake_splits_from_original(self, tmp_path):
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Suspiria.1977.1080p.BluRay.x264-GRP.mkv", size=5000)
+        _mkfile(dl / "Suspiria.2018.1080p.WEB.H264-GRP.mkv", size=6000)
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert sorted((t.title, t.year) for t in titles) == [
+            ("Suspiria", 1977),
+            ("Suspiria", 2018),
+        ]
+
+    def test_yearless_copy_still_groups_alone(self, tmp_path):
+        """Provider-ID merging reunites same-film blocks after
+        resolution; grouping itself must never guess a year."""
+        dl = tmp_path / "downloads"
+        _mkfile(dl / "Heat.1995.1080p.BluRay.x264-GRP.mkv", size=5000)
+        _mkfile(dl / "Heat.720p.BluRay.x264-OLD.mkv", size=3000)
+        titles = scan_downloads([dl], MediaKind.MOVIE)
+        assert len(titles) == 2
+
+
 class TestTvdbCacheSeparation:
     """General-television TheTVDB records must not land in the anime
     pipeline's tvdb cache (build_title_index slurps it wholesale, so a
@@ -2360,6 +2426,38 @@ class TestForeignDomainDrop:
         mappings = {"hana yori dango": TitleMapping(domain="anime")}
         kept, dropped = _drop_foreign_domain(titles, {}, "television", [dl], mappings)
         assert dropped == 1 and kept == []
+
+    def test_source_override_keeps_own_domain_titles(
+        self, tmp_path, register, monkeypatch
+    ):
+        """--source must not change what counts as our own domain: a
+        Sonarr-managed television title stays in the plan even when the
+        downloads dir basename isn't 'television'."""
+        from etp_lib import arr as arr_mod
+        from etp_lib.arr import ArrEntry
+
+        dl = tmp_path / "dl"  # basename deliberately not 'television'
+        _mkfile(dl / "Severance - S01E01 - Good News WEBDL-1080p.mkv")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.setattr(video_ingest, "_anime_tree_names", lambda: set())
+        index = {}
+        arr_mod._index(
+            index,
+            ArrEntry(
+                title="Severance",
+                year=2022,
+                folder="Severance (2022)",
+                root="television",
+            ),
+            [],
+        )
+        config = MediaIngestConfig(television_dest_dir=dest, sonarr_url="http://s")
+        providers = tv_providers(arr_key="sk", sonarr_fetch=lambda url, key: index)
+        opts = plan_opts(tmp_path, managed=False, downloads=True, sources=[dl])
+        assert run_plan(MediaKind.TV, config, opts, providers) == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert [b.raw_title for b in manifest.blocks] == ["Severance"]
 
     def test_mapping_domain_protects_own_titles(self, tmp_path, monkeypatch):
         """domain matching own root wins over index/tree foreign signals."""
