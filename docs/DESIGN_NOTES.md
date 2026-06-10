@@ -353,7 +353,9 @@ ingest plan --radarr|--sonarr and/or --downloads
                        "conflict", conflict "keep"; a same-size video under a
                        different name in the dest dir -> conflict "keep"
                        pointed at the existing file (already ingested under
-                       the library's older naming)
+                       the library's older naming); a same-size video
+                       elsewhere in the library (box-set dirs etc.) ->
+                       status "skip" with a note naming its location
   write                KDL plan manifest (schema-version 1) + JSON summary
 
 ingest apply MANIFEST

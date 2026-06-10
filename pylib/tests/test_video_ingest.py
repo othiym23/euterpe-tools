@@ -1401,3 +1401,39 @@ class TestHardlinkTwins:
         manifest = parse_plan_manifest(tmp_path / "plan.kdl")
         sources = [e.source for b in manifest.blocks for e in b.entries]
         assert len(sources) == 2  # distinct files both planned
+
+
+class TestLibraryWideSameSize:
+    def test_copy_elsewhere_in_library_skips(self, movie_tree, tmp_path, register):
+        src, dest = movie_tree
+        # The same encode already lives in a box-set directory the title
+        # doesn't resolve to (e.g. a trilogy dir).
+        _mkfile(dest / "Crime Collection (1995)" / "Heat 1080p.mkv")
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        entry = manifest.blocks[0].entries[0]
+        assert entry.status is EntryStatus.SKIP
+        assert "Crime Collection (1995)" in entry.note
+
+    def test_same_dir_match_takes_precedence(self, movie_tree, tmp_path, register):
+        src, dest = movie_tree
+        _mkfile(dest / "Crime Collection (1995)" / "Heat 1080p.mkv")
+        existing = _mkfile(dest / "Heat (1995)" / "Heat (1995) - old name.mkv")
+        rc = run_plan(
+            MediaKind.MOVIE,
+            movie_config(src, dest),
+            plan_opts(tmp_path),
+            movie_providers(),
+        )
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        entry = manifest.blocks[0].entries[0]
+        # In-directory copy wins: conflict/keep pointing at it.
+        assert entry.status is EntryStatus.CONFLICT
+        assert entry.dest == existing.name

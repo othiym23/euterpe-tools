@@ -169,9 +169,12 @@ def build_metadata_block(source: SourceFile) -> str:
 def _sanitize_path(name: str) -> str:
     """Sanitize a string for use in file/directory names.
 
-    Replaces ``/`` with `` - `` and ``:`` with ``-``.
+    Replaces ``/`` with `` - ``. A colon followed by a space is a
+    title/subtitle separator and becomes `` - `` ("Hellboy II: The Golden
+    Army" → "Hellboy II - The Golden Army", the library's convention);
+    a bare colon is squeezed to ``-`` ("Re:ZERO" → "Re-ZERO").
     """
-    return name.replace("/", " - ").replace(":", "-")
+    return name.replace("/", " - ").replace(": ", " - ").replace(":", "-")
 
 
 def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Path:

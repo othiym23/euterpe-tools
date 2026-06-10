@@ -315,29 +315,53 @@ _RESOLUTION_BY_HEIGHT: list[tuple[int, str]] = [
     (360, "360"),
 ]
 
+# Width → standard resolution tag, for cropped widescreen encodes whose
+# height alone undersells them (a 2.39:1 "scope" Blu-ray is 1920x800).
+# Thresholds sit below the standard widths to tolerate slightly-narrow
+# crops, but above the next class's width (2560x1080 must not read as 4K).
+_RESOLUTION_BY_WIDTH: list[tuple[int, str]] = [
+    (3200, "4K"),
+    (1800, "1080"),
+    (1200, "720"),
+]
 
-def normalize_resolution(height: int, scan_type: str = "p") -> str:
-    """Normalize a vertical resolution to a standard tag.
 
-    Uses height as the sole indicator (width is irrelevant — anamorphic
-    encodes have non-standard widths but standard heights). ``scan_type``
-    should be ``"p"`` (progressive, default) or ``"i"`` (interlaced).
-    4K always returns ``"4K"`` regardless of scan type.
+def normalize_resolution(height: int, scan_type: str = "p", width: int = 0) -> str:
+    """Normalize video dimensions to a standard resolution tag.
+
+    Classifies by height and, when *width* is supplied, by width — taking
+    the larger class of the two. Both dimensions matter: anamorphic
+    encodes have non-standard widths but standard heights, while cropped
+    widescreen encodes have standard widths but short heights (a 2.39:1
+    "scope" Blu-ray at 1920x800 is 1080p, not 720p). ``scan_type`` should
+    be ``"p"`` (progressive, default) or ``"i"`` (interlaced). 4K always
+    returns ``"4K"`` regardless of scan type.
 
     Examples::
 
         normalize_resolution(1080)                → "1080p"
         normalize_resolution(1080, scan_type="i") → "1080i"
+        normalize_resolution(800, width=1920)     → "1080p"
         normalize_resolution(2160)                → "4K"
         normalize_resolution(480)                 → "480p"
     """
-    for threshold, tag in _RESOLUTION_BY_HEIGHT:
-        if height >= threshold:
-            if tag == "4K":
-                return "4K"
-            return f"{tag}{scan_type}"
-    # Fallback for very small resolutions
-    return f"{height}{scan_type}"
+    tag = next(
+        (t for threshold, t in _RESOLUTION_BY_HEIGHT if height >= threshold), None
+    )
+    if width:
+        width_tag = next(
+            (t for threshold, t in _RESOLUTION_BY_WIDTH if width >= threshold), None
+        )
+        if width_tag is not None:
+            ranks = [t for _threshold, t in _RESOLUTION_BY_HEIGHT]
+            if tag is None or ranks.index(width_tag) < ranks.index(tag):
+                tag = width_tag
+    if tag is None:
+        # Fallback for very small resolutions
+        return f"{height}{scan_type}"
+    if tag == "4K":
+        return "4K"
+    return f"{tag}{scan_type}"
 
 
 _RE_RES_NP = re.compile(r"^(\d{3,4})([pi])$", re.IGNORECASE)

@@ -240,3 +240,54 @@ class TestMediaInfoParsing:
     def test_no_encoding_lib(self):
         mi = parse_mediainfo_json(MEDIAINFO_COMMENTARY)
         assert mi.encoding_lib == ""
+
+
+class TestWidthAwareResolution:
+    """Cropped widescreen encodes classify by width, not just height."""
+
+    def test_scope_1080p_not_720p(self):
+        # 2.39:1 "scope" Blu-ray: 1920x800
+        assert normalize_resolution(800, width=1920) == "1080p"
+
+    def test_scope_4k(self):
+        assert normalize_resolution(1608, width=3840) == "4K"
+
+    def test_height_only_unchanged(self):
+        assert normalize_resolution(800) == "720p"
+
+    def test_ultrawide_1080_not_4k(self):
+        assert normalize_resolution(1080, width=2560) == "1080p"
+
+    def test_full_frame_unaffected(self):
+        assert normalize_resolution(1080, width=1920) == "1080p"
+        assert normalize_resolution(2160, width=3840) == "4K"
+
+    def test_anamorphic_dvd_height_wins(self):
+        # Anamorphic PAL DVD: narrow width, standard height
+        assert normalize_resolution(576, width=720) == "576p"
+
+    def test_interlaced_scope(self):
+        assert normalize_resolution(800, scan_type="i", width=1920) == "1080i"
+
+
+class TestAudioCodecFamilies:
+    """Lossless/lossy Dolby and DTS families stay distinct."""
+
+    def test_eac3_not_collapsed(self):
+        from etp_lib.mediainfo import _normalize_audio_codec
+
+        assert _normalize_audio_codec("E-AC-3") == "EAC3"
+        assert _normalize_audio_codec("E-AC-3 JOC") == "EAC3"  # Atmos
+
+    def test_truehd(self):
+        from etp_lib.mediainfo import _normalize_audio_codec
+
+        assert _normalize_audio_codec("TrueHD") == "TrueHD"
+        assert _normalize_audio_codec("MLP FBA") == "TrueHD"
+        assert _normalize_audio_codec("MLP FBA 16-ch") == "TrueHD"
+
+    def test_ac3_and_dts_unchanged(self):
+        from etp_lib.mediainfo import _normalize_audio_codec
+
+        assert _normalize_audio_codec("AC-3") == "AC3"
+        assert _normalize_audio_codec("DTS-HD MA") == "DTS"

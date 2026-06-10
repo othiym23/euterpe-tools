@@ -417,7 +417,7 @@ class TestFormatEpisodeFilename:
             episode_name="Those Who Challenge the Sun: Part 1",
             source=sf,
         )
-        assert "Those Who Challenge the Sun- Part 1" in result
+        assert "Those Who Challenge the Sun - Part 1" in result
         assert ":" not in result
 
     def test_slash_sanitized_in_concise_name(self):
@@ -448,7 +448,7 @@ class TestDirectoryNaming:
         result = format_series_dirname(
             "鋼の錬金術師 (2009)", "Fullmetal Alchemist: Brotherhood", 2009
         )
-        assert result == "鋼の錬金術師 [Fullmetal Alchemist- Brotherhood] (2009)"
+        assert result == "鋼の錬金術師 [Fullmetal Alchemist - Brotherhood] (2009)"
 
     def test_slash_sanitized(self):
         result = format_series_dirname("Fate/Zero", "Fate/Zero", 2011)
@@ -520,7 +520,7 @@ class TestFormatMovieDirname:
 
     def test_sanitizes_title(self):
         result = format_movie_dirname("Face/Off: Redux", 1997, 754)
-        assert result == "Face - Off- Redux (1997) {tmdb-754}"
+        assert result == "Face - Off - Redux (1997) {tmdb-754}"
 
     def test_redundant_year_stripped(self):
         assert format_movie_dirname("Heat (1995)", 1995, 949) == (
@@ -615,7 +615,7 @@ class TestFormatTvEpisodeFilename:
         result = format_tv_episode_filename(
             "Show", 2020, 1, 1, "Either/Or: Part 1", source
         )
-        assert " - Either - Or- Part 1 " in result
+        assert " - Either - Or - Part 1 " in result
 
 
 class TestFormatDisplayTitle:
@@ -677,3 +677,15 @@ class TestDualTitleDirnames:
             format_movie_dirname("Heat", 1995, 949, original_title="Heat")
             == "Heat (1995) {tmdb-949}"
         )
+
+
+class TestColonSanitization:
+    """': ' is a title/subtitle separator; bare ':' squeezes to '-'."""
+
+    def test_subtitle_separator(self):
+        result = format_movie_dirname("Hellboy II: The Golden Army", 2008, 11253)
+        assert result == "Hellboy II - The Golden Army (2008) {tmdb-11253}"
+
+    def test_bare_colon_squeezed(self):
+        result = format_tv_series_dirname("Re:ZERO", 2016, 305074)
+        assert result == "Re-ZERO (2016) {tvdb-305074}"

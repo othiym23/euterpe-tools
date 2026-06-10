@@ -23,7 +23,10 @@ _VIDEO_CODEC_MAP: dict[str, str] = {
     "MPEG Video": "MPEG2",
 }
 
-# Audio codec normalization: open-source lowercase, proprietary uppercase
+# Audio codec normalization: open-source lowercase, proprietary uppercase.
+# Lossless/lossy families stay distinct — the library's filenames carry
+# "TrueHD" and "EAC3" tags, so collapsing them into AC3/DTS loses real
+# information.
 _AUDIO_CODEC_MAP: dict[str, str] = {
     "AAC": "aac",
     "FLAC": "flac",
@@ -31,27 +34,30 @@ _AUDIO_CODEC_MAP: dict[str, str] = {
     "Vorbis": "vorbis",
     "PCM": "pcm",
     "AC-3": "AC3",
-    "E-AC-3": "AC3",
+    "E-AC-3": "EAC3",
     "DTS": "DTS",
     "DTS-HD": "DTS",
     "DTS-HD MA": "DTS",
     "DTS-HD Master Audio": "DTS",
-    "MLP FBA": "DTS",  # TrueHD/Atmos shows as MLP FBA in some cases
-    "TrueHD": "AC3",  # Dolby TrueHD -> treat as AC3 family
+    "MLP": "TrueHD",  # Dolby TrueHD is carried as MLP
+    "MLP FBA": "TrueHD",  # TrueHD/Atmos shows as MLP FBA in some cases
+    "TrueHD": "TrueHD",
     "MP3": "mp3",
     "MPEG Audio": "mp3",
     "mp2": "mp2",
 }
 
 
-def _resolution_from_mediainfo(height: int, scan_type: str) -> str:
-    """Convert mediainfo height + scan type to a standard resolution tag.
+def _resolution_from_mediainfo(height: int, scan_type: str, width: int = 0) -> str:
+    """Convert mediainfo dimensions + scan type to a standard resolution tag.
 
-    Uses the shared ``normalize_resolution`` table. ``scan_type`` comes from
-    mediainfo's ``ScanType`` field: ``"Progressive"`` or ``"Interlaced"``.
+    Uses the shared ``normalize_resolution`` table, width-aware so cropped
+    widescreen encodes classify by their standard width. ``scan_type``
+    comes from mediainfo's ``ScanType`` field: ``"Progressive"`` or
+    ``"Interlaced"``.
     """
     st = "i" if scan_type.lower().startswith("interlace") else "p"
-    return normalize_resolution(height, scan_type=st)
+    return normalize_resolution(height, scan_type=st, width=width)
 
 
 def _detect_hdr(video_track: dict) -> str:
@@ -131,7 +137,7 @@ def parse_mediainfo_json(data: dict) -> MediaInfo:
             height = int(track.get("Height", 0))
             bit_depth = int(track.get("BitDepth", 8))
             scan_type = track.get("ScanType", "Progressive")
-            resolution = _resolution_from_mediainfo(height, scan_type)
+            resolution = _resolution_from_mediainfo(height, scan_type, width)
             hdr_type = _detect_hdr(track)
             encoding_lib = _detect_encoding_lib(track)
 

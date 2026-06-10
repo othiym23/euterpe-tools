@@ -909,7 +909,26 @@ def _existing_same_size(dest_parent: Path, size: int, dest_name: str) -> Path | 
     return None
 
 
-def _check_entry_placement(entry: FileEntry, dest_root: Path, dest_dir: str) -> None:
+def _dest_size_index(dest_root: Path) -> dict[int, Path]:
+    """Map file size → one existing library video, across the whole tree.
+
+    The library predates this tool, so an already-ingested copy may live
+    in a directory the title doesn't resolve to (a trilogy box dir, an
+    alternate naming). Size is checked library-wide so those surface as
+    skips instead of duplicate copies.
+    """
+    index: dict[int, Path] = {}
+    for path in iter_media_files([dest_root]):
+        try:
+            index.setdefault(path.stat().st_size, path)
+        except OSError:
+            continue
+    return index
+
+
+def _check_entry_placement(
+    entry: FileEntry, dest_root: Path, dest_dir: str, size_index: dict[int, Path]
+) -> None:
     """Plan-time checks shared by all entries: length limits, conflicts."""
     dest_path = dest_root / dest_dir / entry.dest
     name_bytes = len(dest_path.name.encode("utf-8"))
@@ -936,6 +955,17 @@ def _check_entry_placement(entry: FileEntry, dest_root: Path, dest_dir: str) -> 
         entry.conflict = ConflictAction.KEEP
         entry.dest = str(same_size.relative_to(dest_root / dest_dir))
         entry.note = f"same-size file already in library: {same_size.name}"
+        return
+    if entry.size:
+        library_twin = size_index.get(entry.size)
+        if library_twin is not None:
+            # The copy lives outside this title's directory, so the entry
+            # can't point at it — surface it and let the curator decide.
+            entry.status = EntryStatus.SKIP
+            entry.note = (
+                "same-size file already in library:"
+                f" {library_twin.relative_to(dest_root)}"
+            )
 
 
 def _build_movie_block(
@@ -944,6 +974,7 @@ def _build_movie_block(
     info: MovieInfo | None,
     dest_root: Path,
     dest_index: dict[str, str],
+    size_index: dict[int, Path],
     providers: Providers,
 ) -> None:
     if info is None:
@@ -972,7 +1003,7 @@ def _build_movie_block(
             status=EntryStatus.READY,
             dest=format_movie_filename(base, f.source),
         )
-        _check_entry_placement(entry, dest_root, block.dest_dir)
+        _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
         block.entries.append(entry)
 
 
@@ -982,6 +1013,7 @@ def _build_series_block(
     info: AnimeInfo | None,
     dest_root: Path,
     dest_index: dict[str, str],
+    size_index: dict[int, Path],
     providers: Providers,
 ) -> None:
     if info is None:
@@ -1025,7 +1057,7 @@ def _build_series_block(
             episodes=f.episodes or None,
         )
         entry.dest = str(Path(subdir) / filename)
-        _check_entry_placement(entry, dest_root, block.dest_dir)
+        _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
         block.entries.append(entry)
 
 
@@ -1182,6 +1214,7 @@ def run_plan(
             )
 
     dest_index = _dest_dir_index(dest_root)
+    size_index = _dest_size_index(dest_root)
     for t in scanned:
         block = TitleBlock(raw_title=t.raw_title)
         mapping = lookup_mapping(
@@ -1213,7 +1246,9 @@ def run_plan(
                     movie_info = _resolve_movie(t, block, pick.id, providers)
                     if movie_info is not None:
                         _note_library_pick(block)
-            _build_movie_block(t, block, movie_info, dest_root, dest_index, providers)
+            _build_movie_block(
+                t, block, movie_info, dest_root, dest_index, size_index, providers
+            )
             resolved = movie_info is not None
         else:
             override = (mapping.tvdb_id if mapping else None) or (
@@ -1233,7 +1268,9 @@ def run_plan(
                     series_info = _resolve_series(t, block, pick.id, providers)
                     if series_info is not None:
                         _note_library_pick(block)
-            _build_series_block(t, block, series_info, dest_root, dest_index, providers)
+            _build_series_block(
+                t, block, series_info, dest_root, dest_index, size_index, providers
+            )
             resolved = series_info is not None
 
         if arr_used and resolved and not block.note:
