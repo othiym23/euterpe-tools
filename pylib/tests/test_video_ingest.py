@@ -1511,3 +1511,106 @@ class TestMovieExtras:
         extras = [f for f in titles[0].files if f.extra_category]
         assert len(extras) == 1
         assert extras[0].extra_category == "Featurettes"
+
+
+class TestSameTitleMerging:
+    """One resolved title -> one block, even across source modes."""
+
+    _ENZ = MovieInfo(tmdb_id=1156125, title="Evil Does Not Exist", year=2023)
+
+    def _providers(self):
+        return movie_providers(
+            tmdb_search_movie=lambda q, y, key, no_cache=False: [
+                SearchCandidate(
+                    MetadataProvider.TMDB, 1156125, "Evil Does Not Exist", 2023
+                )
+            ],
+            tmdb_fetch_movie=lambda i, key, no_cache=False: self._ENZ,
+            tvdb_search_movies=lambda q, key, no_cache=False: [],
+        )
+
+    def test_film_and_featurettes_share_one_block(self, tmp_path, register):
+        import os
+
+        managed = tmp_path / "movies"
+        downloads = tmp_path / "downloads"
+        radarr_copy = _mkfile(
+            managed
+            / "Evil Does Not Exist (2023)"
+            / "Evil Does Not Exist (2023) - complete movie - [GRP Bluray-1080p].mkv",
+            size=9000,
+        )
+        torrent = downloads / "Evil.Does.Not.Exist.2023.Criterion.1080p.BluRay-GRP"
+        main = torrent / "Evil.Does.Not.Exist.2023.Criterion.1080p.BluRay-GRP.mkv"
+        main.parent.mkdir(parents=True)
+        os.link(radarr_copy, main)  # Radarr imported by hardlinking
+        _mkfile(torrent / "On.the.Set.Interview-GRP.mkv", size=500)
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(
+            downloads_dir=downloads, movies_source_dir=managed, movies_dest_dir=dest
+        )
+        opts = plan_opts(tmp_path, managed=True, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert len(manifest.blocks) == 1  # film + extras, one block
+        block = manifest.blocks[0]
+        # Edition adopted from the torrent's Criterion marker.
+        assert block.edition == "Criterion Collection"
+        assert "{edition-Criterion Collection}" in block.dest_dir
+        dests = sorted(e.dest for e in block.entries)
+        assert len(dests) == 2  # hardlinked main deduped; film + interview
+        assert dests[0].startswith("Evil Does Not Exist (2023)")
+        assert dests[1] == "Interviews/On the Set Interview.mkv"
+
+    def test_distinct_encodes_merge_into_one_block(self, tmp_path, register):
+        managed = tmp_path / "movies"
+        downloads = tmp_path / "downloads"
+        _mkfile(
+            managed
+            / "Evil Does Not Exist (2023)"
+            / "Evil Does Not Exist (2023) - complete movie - [GRP Bluray-1080p].mkv",
+            size=9000,
+        )
+        _mkfile(
+            downloads / "Evil.Does.Not.Exist.2023.2160p.WEB-DL-OTHER.mkv", size=20000
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(
+            downloads_dir=downloads, movies_source_dir=managed, movies_dest_dir=dest
+        )
+        opts = plan_opts(tmp_path, managed=True, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        assert len(manifest.blocks) == 1
+        assert len(manifest.blocks[0].entries) == 2  # both versions, one dir
+
+    def test_conflicting_editions_stay_separate(self, tmp_path, register):
+        managed = tmp_path / "movies"
+        downloads = tmp_path / "downloads"
+        _mkfile(
+            managed
+            / "Evil Does Not Exist (2023)"
+            / "Evil Does Not Exist (2023) - complete movie - Theatrical"
+            " [GRP Bluray-1080p].mkv",
+            size=9000,
+        )
+        _mkfile(
+            downloads / "Evil.Does.Not.Exist.2023.Criterion.1080p.BluRay-GRP.mkv",
+            size=20000,
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        config = MediaIngestConfig(
+            downloads_dir=downloads, movies_source_dir=managed, movies_dest_dir=dest
+        )
+        opts = plan_opts(tmp_path, managed=True, downloads=True)
+        rc = run_plan(MediaKind.MOVIE, config, opts, self._providers())
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        editions = sorted(b.edition for b in manifest.blocks)
+        assert editions == ["Criterion Collection", "Theatrical"]

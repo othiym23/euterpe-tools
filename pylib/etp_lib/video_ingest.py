@@ -1293,6 +1293,11 @@ def run_plan(
 
     dest_index = _dest_dir_index(dest_root)
     size_index = _dest_size_index(dest_root)
+
+    # Phase 1: resolve every scanned title to provider IDs.
+    resolved_titles: list[
+        tuple[ScannedTitle, TitleBlock, MovieInfo | AnimeInfo | None]
+    ] = []
     for t in scanned:
         block = TitleBlock(raw_title=t.raw_title)
         mapping = lookup_mapping(
@@ -1305,7 +1310,7 @@ def run_plan(
             t.edition = mapping.edition
         block.edition = t.edition
 
-        resolved = False
+        info: MovieInfo | AnimeInfo | None
         if kind is MediaKind.MOVIE:
             override = (mapping.tmdb_id if mapping else None) or (
                 refined.tmdb_id if refined else None
@@ -1324,10 +1329,7 @@ def run_plan(
                     movie_info = _resolve_movie(t, block, pick.id, providers)
                     if movie_info is not None:
                         _note_library_pick(block)
-            _build_movie_block(
-                t, block, movie_info, dest_root, dest_index, size_index, providers
-            )
-            resolved = movie_info is not None
+            info = movie_info
         else:
             override = (mapping.tvdb_id if mapping else None) or (
                 refined.tvdb_id if refined else None
@@ -1346,13 +1348,28 @@ def run_plan(
                     series_info = _resolve_series(t, block, pick.id, providers)
                     if series_info is not None:
                         _note_library_pick(block)
+            info = series_info
+
+        if arr_used and info is not None and not block.note:
+            block.note = f"resolved via {arr_name}"
+        resolved_titles.append((t, block, info))
+
+    # Phase 2: one title, one block — the same film often arrives via both
+    # the managed tree and the downloads directory.
+    _merge_same_title_blocks(resolved_titles, kind)
+
+    # Phase 3: compute destinations and entries.
+    for t, block, info in resolved_titles:
+        if kind is MediaKind.MOVIE:
+            movie_info = info if isinstance(info, MovieInfo) else None
+            _build_movie_block(
+                t, block, movie_info, dest_root, dest_index, size_index, providers
+            )
+        else:
+            series_info = info if isinstance(info, AnimeInfo) else None
             _build_series_block(
                 t, block, series_info, dest_root, dest_index, size_index, providers
             )
-            resolved = series_info is not None
-
-        if arr_used and resolved and not block.note:
-            block.note = f"resolved via {arr_name}"
 
         # Carry forward decisions an agent made on a previous manifest.
         for entry in block.entries:
@@ -1456,6 +1473,43 @@ def _note_library_pick(block: TitleBlock) -> None:
     block.candidates = []
     block.confidence = Confidence.HIGH
     block.note = "disambiguated by existing library directory"
+
+
+def _merge_same_title_blocks(
+    items: list[tuple[ScannedTitle, TitleBlock, MovieInfo | AnimeInfo | None]],
+    kind: MediaKind,
+) -> None:
+    """Merge blocks that resolved to the same provider ID, in place.
+
+    The same film often arrives via both the managed tree and the
+    downloads directory — Radarr names its copy blandly while the torrent
+    carries edition markers and packs featurettes. One title must mean
+    one block, or the film and its extras land in different directories.
+    The first block (the managed tree scans first) absorbs the later
+    ones' files and adopts their edition when it has none of its own;
+    blocks with genuinely different editions stay separate — different
+    editions are different directories by design.
+    """
+    kept_by_id: dict[int, tuple[ScannedTitle, TitleBlock]] = {}
+    merged: list[tuple[ScannedTitle, TitleBlock, MovieInfo | AnimeInfo | None]] = []
+    for t, block, info in items:
+        key = block.tmdb_id if kind is MediaKind.MOVIE else block.tvdb_id
+        if info is None or not key:
+            merged.append((t, block, info))
+            continue
+        kept = kept_by_id.get(key)
+        if kept is None:
+            kept_by_id[key] = (t, block)
+            merged.append((t, block, info))
+            continue
+        kept_t, kept_block = kept
+        if kept_block.edition and block.edition and kept_block.edition != block.edition:
+            merged.append((t, block, info))
+            continue
+        kept_t.files.extend(t.files)
+        if block.edition and not kept_block.edition:
+            kept_block.edition = block.edition
+    items[:] = merged
 
 
 def _dest_key(dest_dir: str, dest: str) -> tuple[str, str]:
