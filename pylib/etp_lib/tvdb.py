@@ -74,8 +74,12 @@ def _parse_tvdb_json(
     raw_aliases = series_data.get("aliases", [])
     translations = translations or {}
 
-    # Canonical translations are preferred; fall back to primary name / aliases.
-    title_ja = translations.get("jpn") or name
+    # Canonical translations are preferred; fall back to primary name /
+    # aliases. Only the series' original-language translation counts as
+    # the original title — a Japanese translation of an American show is
+    # just a translation (マーダーボット is not Murderbot's original name).
+    original_language = series_data.get("originalLanguage") or ""
+    title_ja = translations.get(original_language) or name
     title_en = translations.get("eng") or ""
     if not title_en:
         for alias in raw_aliases:
@@ -256,9 +260,16 @@ def fetch_tvdb_series(
     series_resp = _tvdb_request(f"/series/{series_id}", token)
     series_data = series_resp.get("data", {})
 
-    # Fetch canonical translations for English and Japanese titles
+    # Fetch canonical translations for English and the series' original
+    # language (library convention: the original-language title leads
+    # directory names, whatever that language is).
     available = series_data.get("nameTranslations", [])
-    want = [lang for lang in ("eng", "jpn") if lang in available]
+    original_language = series_data.get("originalLanguage") or ""
+    want = [
+        lang
+        for lang in dict.fromkeys(("eng", original_language))
+        if lang and lang in available
+    ]
     translations = _fetch_tvdb_translations(series_id, token, want)
 
     # Fetch episodes with English translations when available

@@ -1007,9 +1007,10 @@ def _resolve_series(
 
     block.tvdb_id = info.tvdb_id
     block.title = info.title_en or info.title_ja
-    # TheTVDB's Japanese translation is the original-language title for the
-    # CJK shows in this library; TMDB's original_name (any language) fills
-    # the gap below when the cross-check resolves.
+    # title_ja carries TheTVDB's original-language translation (Japanese
+    # for anime, Korean for K-dramas, the primary name for English
+    # originals); TMDB's original_name fills the gap below when the
+    # cross-check resolves.
     if info.title_ja and info.title_ja != block.title:
         block.original_title = info.title_ja
     block.year = info.year or scanned.year

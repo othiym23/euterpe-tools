@@ -13,6 +13,7 @@ TVDB_SERIES_DATA = {
     "name": "テストアニメ",
     "year": "2020",
     "firstAired": "2020-01-01",
+    "originalLanguage": "jpn",
     "aliases": [
         {"language": "eng", "name": "Test Anime"},
         {"language": "fra", "name": "Anime de Test"},
@@ -89,6 +90,37 @@ class TestTvdbParsing:
         )
         assert info.title_ja == "公式日本語名"
         assert info.title_en == "Test Anime"  # from eng alias
+
+    def test_english_original_ignores_japanese_translation(self):
+        """A Japanese translation of an English-original show is not its
+        original title (regression: Murderbot's directory led with
+        マーダーボット)."""
+        data = {
+            "name": "Murderbot",
+            "year": "2025",
+            "originalLanguage": "eng",
+            "aliases": [],
+        }
+        translations = {"eng": "Murderbot", "jpn": "マーダーボット"}
+        info = _parse_tvdb_json(
+            data, TVDB_EPISODES_DATA, 443396, translations=translations
+        )
+        assert info.title_en == "Murderbot"
+        assert info.title_ja == "Murderbot"  # no distinct original title
+
+    def test_korean_original_uses_korean_translation(self):
+        data = {
+            "name": "Oldboy Series",
+            "year": "2003",
+            "originalLanguage": "kor",
+            "aliases": [],
+        }
+        translations = {"eng": "Oldboy Series", "kor": "올드보이"}
+        info = _parse_tvdb_json(
+            data, TVDB_EPISODES_DATA, 99999, translations=translations
+        )
+        assert info.title_ja == "올드보이"
+        assert info.title_en == "Oldboy Series"
 
     def test_null_episode_name(self):
         """TVDB returns null for episode name (TBA) — should not crash."""

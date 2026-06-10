@@ -101,6 +101,9 @@ class AnimeInfo:
     anidb_id: int | None
     tvdb_id: int | None
     title_ja: str
+    """Original-language title. Japanese for anime (the usual case); when
+    the TheTVDB client serves general television it carries the series'
+    original-language translation, falling back to the primary name."""
     title_en: str
     year: int
     tmdb_id: int | None = None
