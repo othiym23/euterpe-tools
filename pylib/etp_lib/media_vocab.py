@@ -72,7 +72,7 @@ class Token:
 # Media file extensions
 # ---------------------------------------------------------------------------
 
-_VIDEO_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi"})
+_VIDEO_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi", ".m4v"})
 _AUDIO_EXTENSIONS = frozenset({".flac", ".m4a", ".mp3"})
 _MEDIA_EXTENSIONS = _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS
 
@@ -85,7 +85,7 @@ _SCAN_EXCLUDE_DIRS = frozenset({"temp", ".tmp", "incomplete", ".incomplete"})
 # group would appear ("[Radarr Remux-1080p,...]") — not real groups.
 _PVR_TOOL_NAMES = frozenset({"Radarr", "Sonarr"})
 _ALL_EXTENSIONS = frozenset(
-    {".mkv", ".mp4", ".avi", ".rar", ".iso", ".zip", ".7z", ".webdl"}
+    {".mkv", ".mp4", ".m4v", ".avi", ".rar", ".iso", ".zip", ".7z", ".webdl"}
 )
 _ALL_EXTENSIONS_SORTED = tuple(
     sorted(_ALL_EXTENSIONS, key=lambda e: len(e), reverse=True)

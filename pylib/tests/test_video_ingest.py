@@ -1633,7 +1633,7 @@ class TestTvDuplicateDests:
         statuses = sorted(str(e.status) for e in entries)
         assert statuses == ["ready", "skip"]
         skipped = next(e for e in entries if e.status is EntryStatus.SKIP)
-        assert "duplicates" in skipped.note
+        assert "additional version" in skipped.note
 
 
 class TestSamplesAndVersions:
@@ -1696,7 +1696,9 @@ class TestSamplesAndVersions:
         assert by_status["conflict"].conflict is ConflictAction.KEEP  # managed copy
         skipped = by_status["skip"]
         assert "x265-SARTRE" in skipped.source
-        assert skipped.note == "additional version; the library already has this film"
+        assert skipped.note == (
+            "additional version; an existing copy is already in the library"
+        )
 
     def test_first_new_encode_stays_ready(self, tmp_path, register):
         downloads = tmp_path / "downloads"
@@ -1773,3 +1775,75 @@ class TestSeasonPackGuard:
         titles = scan_downloads([dl], MediaKind.MOVIE)
         assert len(titles) == 1
         assert len(titles[0].files) == 3
+
+
+class TestSeasonDirLayout:
+    """iTunes-style Show/Season N/NN Title.m4v trees inside downloads."""
+
+    def _columbo_tree(self, tmp_path):
+        dl = tmp_path / "downloads"
+        show = dl / "Columbo"
+        _mkfile(show / "Season 1" / "01 Prescription_ Murder (HD).m4v", size=5000)
+        _mkfile(show / "Season 1" / "01 Prescription_ Murder.m4v", size=2000)
+        _mkfile(show / "Season 1" / "02 Ransom for a Dead Man (HD).m4v", size=5100)
+        _mkfile(show / "Season 2" / "01 Etude in Black (HD).m4v", size=5200)
+        return dl
+
+    def test_scan_groups_by_show_and_season(self, tmp_path):
+        from etp_lib.video_ingest import scan_downloads
+
+        titles = scan_downloads([self._columbo_tree(tmp_path)], MediaKind.TV)
+        assert len(titles) == 1
+        t = titles[0]
+        assert t.title == "Columbo"
+        episodes = sorted((f.season, f.episode) for f in t.files)
+        assert episodes == [(1, 1), (1, 1), (1, 2), (2, 1)]
+
+    def test_excluded_from_movie_mode(self, tmp_path):
+        from etp_lib.video_ingest import scan_downloads
+
+        assert scan_downloads([self._columbo_tree(tmp_path)], MediaKind.MOVIE) == []
+
+    def test_plan_one_copy_per_episode(self, tmp_path, register):
+        dl = self._columbo_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = AnimeInfo(
+            anidb_id=None,
+            tvdb_id=71316,
+            title_ja="Columbo",
+            title_en="Columbo",
+            year=1971,
+            episodes=[
+                Episode(
+                    1, EpisodeType.REGULAR, "Prescription: Murder", "", "", season=1
+                ),
+                Episode(
+                    2, EpisodeType.REGULAR, "Ransom for a Dead Man", "", "", season=1
+                ),
+                Episode(1, EpisodeType.REGULAR, "Étude in Black", "", "", season=2),
+            ],
+        )
+        providers = tv_providers(
+            tvdb_search_series=lambda q, key, no_cache=False: [
+                SearchCandidate(MetadataProvider.TVDB, 71316, "Columbo", 1971)
+            ],
+            tvdb_fetch_series=lambda i, key, no_cache=False: info,
+            tmdb_search_tv=lambda q, y, key, no_cache=False: [],
+        )
+        config = MediaIngestConfig(downloads_dir=dl, television_dest_dir=dest)
+        opts = plan_opts(tmp_path, managed=False, downloads=True)
+        rc = run_plan(MediaKind.TV, config, opts, providers)
+        assert rc == 0
+        manifest = parse_plan_manifest(tmp_path / "plan.kdl")
+        block = manifest.blocks[0]
+        ready = [e for e in block.entries if e.status is EntryStatus.READY]
+        skipped = [e for e in block.entries if e.status is EntryStatus.SKIP]
+        assert len(ready) == 3  # one per episode
+        assert len(skipped) == 1  # the SD copy of s01e01
+        assert "additional version" in skipped[0].note
+        # Provider episode titles flow into destinations, colon convention.
+        s1e1 = next(e for e in ready if e.season == 1 and e.number == 1)
+        assert s1e1.dest.startswith(
+            "Season 01/Columbo (1971) - s01e01 - Prescription - Murder ["
+        )

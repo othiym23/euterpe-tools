@@ -353,13 +353,29 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         title = pm.series_name
         alt = pm.series_name_alt
         year = pm.year or 0
-        # A torrent directory often carries the descriptive name while the
-        # file inside is abbreviated. Prefer the directory when the filename
-        # gave nothing, or (for movies) when only the directory parse finds
-        # a release year. Only parse the directory when it could matter.
+
+        # Pre-organized Show/Season N/episode trees inside downloads: the
+        # season directory carries the season and the directory above it
+        # carries the show's name (the filename usually holds only the
+        # episode number and title).
+        season_from_dir: int | None = None
+        context_dir: Path | None = None
+        if path.parent not in roots:
+            season_match = _RE_SEASON_DIR.match(path.parent.name)
+            if season_match:
+                season_from_dir = int(season_match.group(1))
+                if path.parent.parent not in roots:
+                    context_dir = path.parent.parent
+            else:
+                context_dir = path.parent
+
+        # The containing directory often carries the descriptive name while
+        # the file inside is abbreviated. Prefer it when the filename gave
+        # nothing, or (for movies) when only the directory parse finds a
+        # release year. Only parse the directory when it could matter.
         dir_might_help = not title or (kind is MediaKind.MOVIE and not year)
-        if dir_might_help and path.parent not in roots:
-            dir_pm = media_parser.parse_component(path.parent.name)
+        if dir_might_help and context_dir is not None:
+            dir_pm = media_parser.parse_component(context_dir.name)
             if not title or (dir_pm.series_name and dir_pm.year):
                 title = dir_pm.series_name
                 alt = dir_pm.series_name_alt
@@ -368,7 +384,10 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
         if not title:
             continue
         looks_episodic = (
-            pm.episode is not None or pm.season is not None or pm.is_special
+            pm.episode is not None
+            or pm.season is not None
+            or pm.is_special
+            or season_from_dir is not None
         )
         if (kind is MediaKind.TV) != looks_episodic:
             continue
@@ -384,6 +403,8 @@ def scan_downloads(roots: list[Path], kind: MediaKind) -> list[ScannedTitle]:
 
         if kind is MediaKind.TV:
             season = pm.season
+            if season is None:
+                season = season_from_dir
             if season is None:
                 season = 0 if pm.is_special else 1
             group.files.append(
@@ -1113,14 +1134,14 @@ def _build_movie_block(
 
 
 def _skip_additional_versions(versions: list[FileEntry]) -> None:
-    """Default additional encodes of one film to ``skip``.
+    """Default additional encodes of one title to ``skip``.
 
-    A movie block can collect several distinct encodes (the managed copy
-    plus stray re-encodes in downloads). Stacking versions is a curation
-    decision, so only one copy stays actionable: an existing library
-    copy if there is one, else the first new encode (the managed tree
-    scans first). The rest are skipped with a note; flip them back to
-    ``ready`` to keep multiple versions deliberately.
+    A block can collect several distinct encodes of the same film or
+    episode (a managed copy plus stray re-encodes, HD/SD pairs). Stacking
+    versions is a curation decision, so only one copy stays actionable:
+    an existing library copy if there is one, else the first new encode
+    (the managed tree scans first). The rest are skipped with a note;
+    flip them back to ``ready`` to keep multiple versions deliberately.
     """
     present = [
         e
@@ -1134,7 +1155,7 @@ def _skip_additional_versions(versions: list[FileEntry]) -> None:
             continue
         e.status = EntryStatus.SKIP
         if present:
-            e.note = "additional version; the library already has this film"
+            e.note = "additional version; an existing copy is already in the library"
         else:
             assert keeper is not None
             e.note = f"additional version of {Path(keeper.source).name}"
@@ -1192,6 +1213,17 @@ def _build_series_block(
         entry.dest = str(Path(subdir) / filename)
         _check_entry_placement(entry, dest_root, block.dest_dir, size_index)
         block.entries.append(entry)
+
+    # One copy per episode, like movie versions: HD/SD pairs and repeated
+    # grabs of the same episode default to skip.
+    by_episode: dict[tuple[int | None, object], list[FileEntry]] = {}
+    for entry in block.entries:
+        if entry.number is None:
+            continue
+        key = (entry.season, tuple(entry.episodes) or entry.number)
+        by_episode.setdefault(key, []).append(entry)
+    for episode_entries in by_episode.values():
+        _skip_additional_versions(episode_entries)
 
 
 def _needs_id_entry(f: ScannedFile) -> FileEntry:
