@@ -70,6 +70,17 @@ def anime_env() -> Path:
     return config_dir() / "anime.env"
 
 
+def media_config() -> Path:
+    """Default movies/television ingestion config: media-ingestion.kdl
+    in the config directory."""
+    return config_dir() / "media-ingestion.kdl"
+
+
+def media_env() -> Path:
+    """Default movies/television env file: media.env in the config directory."""
+    return config_dir() / "media.env"
+
+
 def db_path() -> Path:
     """Default database: metadata.sqlite in the data directory."""
     return data_dir() / "metadata.sqlite"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 from etp_lib.types import AudioTrack, SourceFile
@@ -169,9 +170,15 @@ def build_metadata_block(source: SourceFile) -> str:
 def _sanitize_path(name: str) -> str:
     """Sanitize a string for use in file/directory names.
 
-    Replaces ``/`` with `` - `` and ``:`` with ``-``.
+    Replaces ``/`` with `` - ``. A colon followed by a space is a
+    title/subtitle separator and becomes `` - `` ("Hellboy II: The Golden
+    Army" → "Hellboy II - The Golden Army", the library's convention);
+    a bare colon is squeezed to ``-`` ("Re:ZERO" → "Re-ZERO"). The
+    filesystem-safe colon stand-ins some release tools use (U+A789 ꞉,
+    U+2236 ∶) are treated as colons.
     """
-    return name.replace("/", " - ").replace(":", "-")
+    name = name.replace("꞉", ":").replace("∶", ":")
+    return name.replace("/", " - ").replace(": ", " - ").replace(":", "-")
 
 
 def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Path:
@@ -179,6 +186,98 @@ def season_subdir(series_dir: Path, season: int, is_special: bool = False) -> Pa
     if is_special or season == 0:
         return series_dir / "Specials"
     return series_dir / f"Season {season:02d}"
+
+
+# Extras subdirectory names recognized by BOTH Plex and Jellyfin inside a
+# movie folder (Plex matches these exact title-case names; Jellyfin's
+# folder matching is case-insensitive and its supported list includes all
+# of them). Ordered keyword → subdirectory; first match wins.
+_EXTRA_CATEGORIES: list[tuple[str, str]] = [
+    ("trailer", "Trailers"),
+    ("interview", "Interviews"),
+    ("deleted", "Deleted Scenes"),
+    ("behind the scenes", "Behind The Scenes"),
+    ("behindthescenes", "Behind The Scenes"),
+    ("making of", "Behind The Scenes"),
+    ("short", "Shorts"),
+]
+_DEFAULT_EXTRA_CATEGORY = "Featurettes"
+
+# Directory names that mark their contents as extras: the set both
+# servers recognize, the generic "extras", and the anime creditless
+# convention ("NC" dirs of NCOP/NCED files). Maps to the canonical
+# category; "" means generic — classify each file by its own name.
+_EXTRAS_DIR_NAMES: dict[str, str] = {
+    "featurettes": "Featurettes",
+    "behind the scenes": "Behind The Scenes",
+    "deleted scenes": "Deleted Scenes",
+    "interviews": "Interviews",
+    "scenes": "Scenes",
+    "shorts": "Shorts",
+    "trailers": "Trailers",
+    "other": "Other",
+    "extras": "",
+    "nc": "",
+}
+
+
+def extras_dir_category(dirname: str) -> str | None:
+    """Canonical extras category for a directory name.
+
+    Returns None when the directory is not an extras directory, and ""
+    for the generic ``Extras`` (classify each file by its own name).
+    """
+    return _EXTRAS_DIR_NAMES.get(dirname.casefold())
+
+
+_RE_RELEASE_GROUP_SUFFIX = re.compile(r"-[A-Za-z0-9]+$")
+
+_RE_SAMPLE = re.compile(r"(?:^|[\W_])sample(?:[\W_]|$)", re.IGNORECASE)
+
+
+def is_sample(stem: str) -> bool:
+    """Torrent sample clips are junk to drop, not extras to keep."""
+    return bool(_RE_SAMPLE.search(stem))
+
+
+def extra_display_name(stem: str, release_group: str = "") -> str:
+    """Clean a torrent extra's filename into its display title.
+
+    Plex and Jellyfin show an extra's filename as its title, so release
+    cruft must go: ``Crafting.Anomalisa-Grym`` → ``Crafting Anomalisa``.
+    A trailing ``-word`` is only stripped when it matches the torrent's
+    known *release_group*, or — when no group is known — in dotted
+    scene-style names; titles ending in hyphenated names ("Q&A with
+    Park Chan-wook") must keep their last word.
+    """
+    name = stem
+    m = _RE_RELEASE_GROUP_SUFFIX.search(stem)
+    if m is not None:
+        suffix = m.group(0)[1:]
+        if (release_group and suffix.casefold() == release_group.casefold()) or (
+            not release_group and " " not in stem
+        ):
+            name = stem[: m.start()]
+    name = name.replace(".", " ").replace("_", " ")
+    return _sanitize_path(" ".join(name.split()))
+
+
+def classify_extra(stem: str, release_group: str = "") -> str:
+    """Map an extra's name to its Plex/Jellyfin extras subdirectory."""
+    name = extra_display_name(stem, release_group).casefold()
+    for keyword, category in _EXTRA_CATEGORIES:
+        if keyword in name:
+            return category
+    return _DEFAULT_EXTRA_CATEGORY
+
+
+def crc_suffixed(dest: Path, crc: str) -> Path:
+    """Disambiguate *dest* with a CRC32 suffix: ``name [ABCD1234].ext``.
+
+    The keep-both convention shared by the anime manifest executor and
+    the movies/television apply path.
+    """
+    return dest.parent / f"{dest.stem} [{crc}]{dest.suffix}"
 
 
 def _format_episode_tag(season: int, episode: int, episodes: list[int] | None) -> str:
@@ -234,6 +333,158 @@ def format_episode_filename(
     if episode_name:
         return f"{concise_name} - {ep_tag} - {episode_name}{meta_str}{hash_str}{ext}"
     return f"{concise_name} - {ep_tag}{meta_str}{hash_str}{ext}"
+
+
+# ---------------------------------------------------------------------------
+# Movie / television naming (Plex conventions, Jellyfin-compatible)
+# ---------------------------------------------------------------------------
+#
+# Provider IDs use Plex's curly-brace syntax ({tmdb-NNN}, {tvdb-NNN}) with
+# only the primary provider's ID embedded: TMDB for movies, TheTVDB for
+# television. Editions use Plex's {edition-Name} marker. The bracketed
+# quality block is ignored by both Plex and Jellyfin during matching.
+
+
+def _title_year(title: str, year: int) -> str:
+    """``Title (Year)``, omitting the year suffix when it is unknown."""
+    title = _sanitize_path(_strip_redundant_year(title, year))
+    return f"{title} ({year})" if year else title
+
+
+def word_prefix(longer: str, shorter: str) -> bool:
+    """True when *shorter* is the word-aligned opening of *longer*.
+
+    Operates on :func:`normalize_title` output; shared by arr domain
+    matching and TheTVDB specials matching so the fuzzy-title rule stays
+    in one place.
+    """
+    return longer == shorter or longer.startswith(shorter + " ")
+
+
+def normalize_title(text: str) -> str:
+    """Normalize a title for comparison: casefolded alphanumeric words.
+
+    Apostrophes are deleted (``Wolf's`` and ``Wolfs`` are the same
+    title) and accents folded (``Fiancée``/``Fiancee``); all other
+    punctuation becomes a word break. Shared by dual-title bracket
+    suppression here and by candidate matching / library-directory
+    reuse in video_ingest, so all title comparisons agree on what "the
+    same title" means.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in decomposed if not unicodedata.combining(c))
+    text = text.replace("'", "").replace("’", "")
+    cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in text.casefold())
+    return " ".join(cleaned.split())
+
+
+def format_display_title(original_title: str, english_title: str) -> str:
+    """``Original [English]`` when both exist and genuinely differ.
+
+    Library convention: directory names lead with the original-language
+    title, with the English title bracketed after it (the movie/TV
+    counterpart of the anime ``JA [EN]`` convention). Falls back to
+    whichever title exists; pairs that differ only in case or punctuation
+    don't earn brackets.
+    """
+    original_title = _sanitize_path(original_title)
+    english_title = _sanitize_path(english_title)
+    if (
+        original_title
+        and english_title
+        and normalize_title(original_title) != normalize_title(english_title)
+    ):
+        return f"{original_title} [{english_title}]"
+    return english_title or original_title
+
+
+def format_movie_dirname(
+    title: str,
+    year: int,
+    tmdb_id: int | None,
+    edition: str = "",
+    original_title: str = "",
+) -> str:
+    """Build a movie directory name.
+
+    ``Original [English] (Year) {tmdb-NNN} {edition-X}`` — the bracketed
+    English title appears only when *original_title* genuinely differs.
+    Plex recommends edition markers of at most 32 characters; longer ones
+    are embedded as-is and left to plan-time validation to flag.
+    """
+    name = _title_year(format_display_title(original_title, title), year)
+    if tmdb_id:
+        name += f" {{tmdb-{tmdb_id}}}"
+    if edition:
+        name += f" {{edition-{_sanitize_path(edition)}}}"
+    return name
+
+
+def format_movie_filename(movie_dirname: str, source: SourceFile) -> str:
+    """Build a movie filename: the directory name plus the quality block.
+
+    Plex's movie naming wants the file named exactly after its folder;
+    the bracketed metadata block and any release hash are appended after
+    since bracketed text is ignored during matching.
+    """
+    ext = source.path.suffix or ".mkv"
+    metadata = build_metadata_block(source)
+    meta_str = f" [{metadata}]" if metadata else ""
+    hash_str = f" [{source.parsed.hash_code}]" if source.parsed.hash_code else ""
+    return f"{movie_dirname}{meta_str}{hash_str}{ext}"
+
+
+def format_tv_series_dirname(
+    title: str, year: int, tvdb_id: int | None, original_title: str = ""
+) -> str:
+    """Build a series directory name.
+
+    ``Original [English] (Year) {tvdb-NNN}`` — the bracketed English title
+    appears only when *original_title* genuinely differs.
+    """
+    name = _title_year(format_display_title(original_title, title), year)
+    if tvdb_id:
+        name += f" {{tvdb-{tvdb_id}}}"
+    return name
+
+
+def _format_padded_episode_tag(
+    season: int, episode: int, episodes: list[int] | None
+) -> str:
+    """Zero-padded ``s01e02`` tag (multi-episode files: ``s01e02-e03``).
+
+    Unlike the anime tag (``s1e02``), the season is zero-padded per the
+    Plex/Jellyfin TV naming examples; specials use season 0 (``s00e05``).
+    """
+    if episodes and len(episodes) > 1:
+        return f"s{season:02d}e{episodes[0]:02d}-e{episodes[-1]:02d}"
+    return f"s{season:02d}e{episode:02d}"
+
+
+def format_tv_episode_filename(
+    series_title: str,
+    year: int,
+    season: int,
+    episode: int,
+    episode_name: str,
+    source: SourceFile,
+    episodes: list[int] | None = None,
+) -> str:
+    """Build a TV episode filename.
+
+    ``Show (Year) - s01e01 - Episode Title [quality block] [hash].ext``
+    """
+    ext = source.path.suffix or ".mkv"
+    metadata = build_metadata_block(source)
+    meta_str = f" [{metadata}]" if metadata else ""
+    hash_str = f" [{source.parsed.hash_code}]" if source.parsed.hash_code else ""
+
+    base = f"{_title_year(series_title, year)} - "
+    base += _format_padded_episode_tag(season, episode, episodes)
+    episode_name = _sanitize_path(episode_name)
+    if episode_name:
+        base += f" - {episode_name}"
+    return f"{base}{meta_str}{hash_str}{ext}"
 
 
 # ---------------------------------------------------------------------------

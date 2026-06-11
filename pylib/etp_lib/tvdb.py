@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from etp_lib.paths import cache_dir
+from etp_lib.provider_cache import load_cached_json, store_cached_json
 from etp_lib.types import (
-    CACHE_MAX_AGE_SECONDS,
     TVDB_MAX_PAGES,
     AnimeInfo,
     Episode,
     EpisodeType,
+    MetadataProvider,
+    SearchCandidate,
     dedup_titles,
 )
 
@@ -31,8 +34,17 @@ def _tvdb_request(endpoint: str, token: str) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+# Bearer tokens last weeks; cache them per key for the process lifetime so
+# a plan run logs in once instead of once per search/fetch call.
+_TOKEN_CACHE: dict[str, str] = {}
+
+
 def tvdb_login(api_key: str) -> str:
-    """Authenticate with TheTVDB and return a bearer token."""
+    """Authenticate with TheTVDB and return a bearer token (cached)."""
+    token = _TOKEN_CACHE.get(api_key)
+    if token is not None:
+        return token
+
     url = f"{_TVDB_API_BASE}/login"
     payload = json.dumps({"apikey": api_key}).encode("utf-8")
     req = urllib.request.Request(url, data=payload, method="POST")
@@ -41,7 +53,9 @@ def tvdb_login(api_key: str) -> str:
 
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return data["data"]["token"]
+    token = data["data"]["token"]
+    _TOKEN_CACHE[api_key] = token
+    return token
 
 
 def _parse_tvdb_json(
@@ -60,8 +74,12 @@ def _parse_tvdb_json(
     raw_aliases = series_data.get("aliases", [])
     translations = translations or {}
 
-    # Canonical translations are preferred; fall back to primary name / aliases.
-    title_ja = translations.get("jpn") or name
+    # Canonical translations are preferred; fall back to primary name /
+    # aliases. Only the series' original-language translation counts as
+    # the original title — a Japanese translation of an American show is
+    # just a translation (マーダーボット is not Murderbot's original name).
+    original_language = series_data.get("originalLanguage") or ""
+    title_ja = translations.get(original_language) or name
     title_en = translations.get("eng") or ""
     if not title_en:
         for alias in raw_aliases:
@@ -151,28 +169,101 @@ def _fetch_tvdb_translations(
     return result
 
 
+def _parse_tvdb_search(results: list[dict]) -> list[SearchCandidate]:
+    """Parse ``/search`` results into candidates, TheTVDB rank order.
+
+    TheTVDB returns ``tvdb_id`` and ``year`` as strings; entries whose ID
+    doesn't parse are dropped.
+    """
+    candidates: list[SearchCandidate] = []
+    for r in results:
+        try:
+            tvdb_id = int(r.get("tvdb_id") or "")
+        except ValueError:
+            continue
+        year_str = r.get("year") or ""
+        try:
+            year = int(year_str)
+        except ValueError:
+            year = 0
+        translations = r.get("translations") or {}
+        candidates.append(
+            SearchCandidate(
+                provider=MetadataProvider.TVDB,
+                id=tvdb_id,
+                title=r.get("name") or "",
+                year=year,
+                original_title=translations.get("eng") or "",
+            )
+        )
+    return candidates
+
+
+def _search_tvdb(
+    query: str, kind: str, api_key: str, no_cache: bool = False
+) -> list[SearchCandidate]:
+    """Search TheTVDB for *kind* (``series`` or ``movie``), with caching."""
+    digest = hashlib.sha1(f"{kind}|{query}".encode()).hexdigest()[:16]
+    cache_file = cache_dir("tvdb") / f"search-{digest}.json"
+
+    cached = load_cached_json(cache_file, no_cache)
+    if isinstance(cached, list):
+        return _parse_tvdb_search(cached)
+
+    token = tvdb_login(api_key)
+    params = urllib.parse.urlencode({"query": query, "type": kind})
+    resp = _tvdb_request(f"/search?{params}", token)
+    results = resp.get("data", [])
+
+    store_cached_json(cache_file, results)
+    return _parse_tvdb_search(results)
+
+
+def search_tvdb_series(
+    query: str, api_key: str, no_cache: bool = False
+) -> list[SearchCandidate]:
+    """Search TheTVDB series by name."""
+    return _search_tvdb(query, "series", api_key, no_cache)
+
+
+def search_tvdb_movies(
+    query: str, api_key: str, no_cache: bool = False
+) -> list[SearchCandidate]:
+    """Search TheTVDB movies by name (cross-check provider for movies)."""
+    return _search_tvdb(query, "movie", api_key, no_cache)
+
+
 def fetch_tvdb_series(
     series_id: int,
     api_key: str,
     no_cache: bool = False,
+    *,
+    cache_name: str = "tvdb",
 ) -> AnimeInfo:
-    """Fetch series info from TheTVDB with caching."""
-    cache_file = cache_dir("tvdb") / f"{series_id}.json"
+    """Fetch series info from TheTVDB with caching.
+
+    *cache_name* selects the cache directory. The anime pipeline's
+    ``build_title_index`` slurps every record in the default ``tvdb``
+    cache into its title-alias index, so callers fetching general
+    (non-anime) television must use a separate cache — a live-action
+    show sharing titles with an anime (Death Note, ONE PIECE) would
+    otherwise merge into the anime's alias group and contaminate
+    download matching.
+    """
+    cache_file = cache_dir(cache_name) / f"{series_id}.json"
 
     # Check cache (24h validity).  Re-fetch if the cached result has no
     # episodes — the entry may have been fetched before episodes were added.
-    if not no_cache and cache_file.exists():
-        age = time.time() - cache_file.stat().st_mtime
-        if age < CACHE_MAX_AGE_SECONDS:
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            info = _parse_tvdb_json(
-                cached["series"],
-                cached["episodes"],
-                series_id,
-                translations=cached.get("translations"),
-            )
-            if info.episodes:
-                return info
+    cached = load_cached_json(cache_file, no_cache)
+    if isinstance(cached, dict):
+        info = _parse_tvdb_json(
+            cached["series"],
+            cached["episodes"],
+            series_id,
+            translations=cached.get("translations"),
+        )
+        if info.episodes:
+            return info
 
     # Login and fetch
     token = tvdb_login(api_key)
@@ -180,9 +271,16 @@ def fetch_tvdb_series(
     series_resp = _tvdb_request(f"/series/{series_id}", token)
     series_data = series_resp.get("data", {})
 
-    # Fetch canonical translations for English and Japanese titles
+    # Fetch canonical translations for English and the series' original
+    # language (library convention: the original-language title leads
+    # directory names, whatever that language is).
     available = series_data.get("nameTranslations", [])
-    want = [lang for lang in ("eng", "jpn") if lang in available]
+    original_language = series_data.get("originalLanguage") or ""
+    want = [
+        lang
+        for lang in dict.fromkeys(("eng", original_language))
+        if lang and lang in available
+    ]
     translations = _fetch_tvdb_translations(series_id, token, want)
 
     # Fetch episodes with English translations when available
@@ -205,6 +303,6 @@ def fetch_tvdb_series(
         "episodes": all_episodes,
         "translations": translations,
     }
-    cache_file.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+    store_cached_json(cache_file, cache_data)
 
     return _parse_tvdb_json(series_data, all_episodes, series_id, translations)

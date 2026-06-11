@@ -1651,3 +1651,187 @@ class TestQARegression:
         assert pm.is_special is expected_special
         if expected_ep is not None:
             assert pm.episode == expected_ep
+
+
+class TestDashedEpisodeBeforeDelimiter:
+    """`Title - 01 - (tags)`: the trailing dash before a bracket/paren
+    block must not glue onto the episode token (regression: Police in a
+    Pod / Shoushimin Series batches parsed as title-only)."""
+
+    @pytest.mark.parametrize(
+        ("name", "title", "episode", "season"),
+        [
+            (
+                "[Pod] Police in a Pod - 01 - (BD 1080p AVC FLAC)",
+                "Police in a Pod",
+                1,
+                None,
+            ),
+            (
+                "[P9] Shoushimin Series - S01E01 - (BD 1080p HEVC Opus) [B21341D8]",
+                "Shoushimin Series",
+                1,
+                1,
+            ),
+            (
+                "[P9] Shoushimin Series - S01E02 - [BD 1080p HEVC Opus] [E9EDD0F7]",
+                "Shoushimin Series",
+                2,
+                1,
+            ),
+        ],
+    )
+    def test_episode_recognized(self, name, title, episode, season):
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+        assert pm.episode == episode
+        assert pm.season == season
+
+
+class TestEpisodeTitleKeepsNumbers:
+    """Once an SxxEyy marker is classified, later numbers and Season/Episode
+    words belong to the episode title (regression: The Expanse specials lost
+    'Episode 1' and 'Season 2 Episode 4' from their titles)."""
+
+    @pytest.mark.parametrize(
+        ("name", "season", "episode", "ep_title"),
+        [
+            (
+                "The Expanse (2015) S00E01 Inside The Expanse꞉ Episode 1"
+                " (1080p BluRay x265 Ghost)",
+                0,
+                1,
+                "Inside The Expanse꞉ Episode 1",
+            ),
+            (
+                "The Expanse (2015) S00E13 The Expanse Aftershow Season 2"
+                " Episode 4 (1080p BluRay x265 Ghost)",
+                0,
+                13,
+                "The Expanse Aftershow Season 2 Episode 4",
+            ),
+        ],
+    )
+    def test_trailing_numbers_stay_in_title(self, name, season, episode, ep_title):
+        pm = mp.parse_component(name)
+        assert pm.series_name == "The Expanse"
+        assert pm.season == season
+        assert pm.episode == episode
+        assert pm.episode_title == ep_title
+
+    def test_bare_episode_before_title_still_recognized(self):
+        pm = mp.parse_component("Columbo - 01 Murder by the Book")
+        assert pm.series_name == "Columbo"
+        assert pm.episode == 1
+        assert pm.episode_title == "Murder by the Book"
+
+
+class TestChannelCountNotEpisode:
+    """Audio channel layouts split into bare digits ("DDP 5 1",
+    "DTSHD-MA.5.1") must not be read as episode numbers (regression:
+    Bourne movies appeared in television plans as s01e05)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "The Bourne Identity 2002 BluRay 1080p DDP 5 1 x264-hallowed",
+            "Hellboy 2004 Directors Cut UHD BluRay 1080p DD Atmos 5 1 HDR10 x265",
+            "The.Bourne.Supremacy.2004.Bluray.1080p.VC1.DTSHD-MA.5.1.Remux-HiFi",
+        ],
+    )
+    def test_no_episode_from_channels(self, name):
+        pm = mp.parse_component(name)
+        assert pm.episode is None
+        assert pm.season is None
+
+    def test_bare_dot_episode_still_recognized(self):
+        pm = mp.parse_component("Show.05.1080p.BluRay.x265-GRP")
+        assert pm.series_name == "Show"
+        assert pm.episode == 5
+
+    @pytest.mark.parametrize(
+        ("name", "title"),
+        [
+            (
+                "Komada.A.Whisky.Family.2023.1080p.BluRay.Opus5.1.x265-eldon",
+                "Komada A Whisky Family",
+            ),
+            ("WataMote.S01.1080p.BluRay.Opus2.0.x265-smol", "WataMote"),
+        ],
+    )
+    def test_opus_channels_are_audio_codec(self, name, title):
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+        assert pm.episode is None
+
+
+class TestAmbiguousSourceWords:
+    """ "It"/"Ma"/"Stan" are streaming-service tags only after the title;
+    in title position they're ordinary English words."""
+
+    @pytest.mark.parametrize(
+        ("name", "title"),
+        [
+            (
+                "Go.For.It.Nakamura-kun.S01E05.Vexing.1080p.CR.WEB-DL-VARYG",
+                "Go For It Nakamura-kun",
+            ),
+            ("Stan.Against.Evil.S01E02.720p.HDTV.x264-GRP", "Stan Against Evil"),
+            ("It.2017.1080p.BluRay.x264-GRP", "It"),
+        ],
+    )
+    def test_title_position_stays_text(self, name, title):
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Show.S01E01.1080p.iT.WEB-DL.H.264-GRP",
+            "Show.S01E01.720p.MA.WEB-DL.H.264-GRP",
+        ],
+    )
+    def test_post_title_position_is_source(self, name):
+        pm = mp.parse_component(name)
+        assert pm.series_name == "Show"
+        assert pm.episode == 1
+
+    @pytest.mark.parametrize(
+        ("name", "title"),
+        [
+            ("Opus.2025.1080p.WEB.H264-FLUX", "Opus"),
+            ("Mr.Hollands.Opus.1995.1080p.BluRay.x264-GRP", "Mr Hollands Opus"),
+        ],
+    )
+    def test_opus_in_title_position_stays_text(self, name, title):
+        """'Opus' is an audio codec only after the title — films named
+        Opus must not parse to an empty/truncated title and vanish."""
+        pm = mp.parse_component(name)
+        assert pm.series_name == title
+
+
+class TestDecimalNumberInTitle:
+    """Channel-layout-shaped decimals in title position are title text
+    (the film '2.0', 'Evangelion 2.0'), not channel counts or decimal
+    episode markers."""
+
+    def test_evangelion_two_point_oh(self):
+        pm = mp.parse_component(
+            "Evangelion.2.0.You.Can.Not.Advance.2009.1080p.BluRay.x264-GRP"
+        )
+        assert pm.series_name == "Evangelion 2.0 You Can Not Advance"
+        assert pm.episode is None
+        assert pm.year == 2009
+
+    def test_film_titled_two_point_oh(self):
+        pm = mp.parse_component("2.0.2018.1080p.BluRay.x264-TT")
+        assert pm.series_name == "2.0"
+        assert pm.episode is None
+        assert pm.year == 2018
+
+    def test_post_metadata_decimal_still_channels(self):
+        pm = mp.parse_component(
+            "The.Bourne.Supremacy.2004.Bluray.1080p.VC1.DTSHD-MA.5.1.Remux-HiFi"
+        )
+        assert pm.episode is None
+        assert pm.season is None

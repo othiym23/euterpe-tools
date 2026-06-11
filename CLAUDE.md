@@ -57,6 +57,10 @@ etp find <pattern> [-R <directory>] [args...]
 etp catalog [--dry-run] [config.kdl]
 etp anime ingest --sonarr|--downloads [--source DIR] [--force] [pattern]
 etp anime episode FILE --anidb ID|--tvdb ID
+etp movies ingest plan --radarr|--downloads [--source DIR] [--force] [--json] [-o FILE] [--refine FILE] [pattern]
+etp movies ingest apply MANIFEST.kdl [--dry-run] [--json]
+etp television ingest plan --sonarr|--downloads [--source DIR] [--force] [--json] [-o FILE] [--refine FILE] [pattern]
+etp television ingest apply MANIFEST.kdl [--dry-run] [--json]
 ```
 
 ## Testing

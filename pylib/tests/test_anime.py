@@ -1115,42 +1115,6 @@ class TestGroupDefaults:
         assert not any("Release group" in p for p in prompts_seen)
 
 
-class TestTriageManifest:
-    """Tests for triage copy-tracking manifest."""
-
-    def test_roundtrip(self, monkeypatch, tmp_path):
-        cache_dir = tmp_path / "triage"
-        cache_dir.mkdir()
-        monkeypatch.setattr(
-            anime, "_triage_manifest_path", lambda: cache_dir / "copied.json"
-        )
-
-        assert anime._load_triage_manifest() == set()
-
-        paths = {"/vol/a.mkv", "/vol/b.mkv"}
-        anime._save_triage_manifest(paths)
-        assert anime._load_triage_manifest() == paths
-
-    def test_corrupt_manifest(self, monkeypatch, tmp_path):
-        manifest = tmp_path / "copied.json"
-        manifest.write_text("not json!!!", encoding="utf-8")
-        monkeypatch.setattr(anime, "_triage_manifest_path", lambda: manifest)
-        assert anime._load_triage_manifest() == set()
-
-    def test_manifest_accumulates(self, monkeypatch, tmp_path):
-        cache_dir = tmp_path / "triage"
-        cache_dir.mkdir()
-        monkeypatch.setattr(
-            anime, "_triage_manifest_path", lambda: cache_dir / "copied.json"
-        )
-
-        anime._save_triage_manifest({"/vol/a.mkv"})
-        loaded = anime._load_triage_manifest()
-        loaded.add("/vol/b.mkv")
-        anime._save_triage_manifest(loaded)
-        assert anime._load_triage_manifest() == {"/vol/a.mkv", "/vol/b.mkv"}
-
-
 class TestMatchToDownloads:
     """Tests for enriching source files with download metadata."""
 

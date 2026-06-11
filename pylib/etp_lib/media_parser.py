@@ -253,9 +253,10 @@ _RE_WORD_SPLIT = re.compile(r"[\s,]+")
 _RE_DASH_SUFFIX = re.compile(r"-[A-Za-z].*$")
 _RE_DASH_GROUP = re.compile(r"^(.+)-([A-Za-z][A-Za-z0-9]+)$")
 
-# Audio codec (compound forms like AAC2.0, DTS-HD MA)
+# Audio codec (compound forms like AAC2.0, DTS-HD MA, Opus5.1)
 _RE_AC = re.compile(
-    r"(?:DTS-HDMA|DTS-HD\s*MA|DTS-HD|DTS|DDP|DD\+|DD|EAC3|E-AC-3|AC3|AAC|FLAC|TrueHD|PCM|LPCM)"
+    r"(?:DTS-?HD\s*MA|DTS-?HDMA|DTS-HD|DTSHD|DTS|DDP|DD\+|DD|EAC3|E-AC-3|AC3"
+    r"|AAC|FLAC|Opus|TrueHD|PCM|LPCM)"
     r"(?:[.\s]?\d\.\d)?",
     re.IGNORECASE,
 )
@@ -663,6 +664,43 @@ _REDISTRIBUTORS = frozenset({"tgx", "eztv", "eztvx.to", "rartv", "ettv", "ion10"
 # of the title (not an episode number): "Part 1", "Vol 2", "Chapter 3"
 _TITLE_NUMBER_PREFIXES = frozenset({"part", "vol", "volume", "chapter", "movie"})
 
+# Service/codec tags that are also ordinary words or real titles
+# ("Stan Against Evil", the film "Opus"); they only count as metadata
+# after the title (i.e. once other metadata has been seen), never in
+# title position.
+_AMBIGUOUS_METADATA_WORDS = frozenset({"it", "ma", "stan", "opus"})
+
+
+def _is_ambiguous_metadata(token: Token | None, text: str, seen_metadata: bool) -> bool:
+    """True when a recognized tag is really a title word by position.
+
+    The single home of the ambiguous-word rule; both the dot-segment
+    scanner and the classifier demote through it.
+    """
+    return (
+        token is not None
+        and token.kind in (TokenKind.SOURCE, TokenKind.AUDIO_CODEC)
+        and text.lower() in _AMBIGUOUS_METADATA_WORDS
+        and not seen_metadata
+    )
+
+
+# Audio channel layouts written as separate digits: front channels then
+# LFE ("5 1", "5.1", "7.1", "2.0"). The single home of the digit sets —
+# four call sites across the tokenizer and classifier use them.
+_CHANNEL_FRONT = "2567"
+_CHANNEL_BACK = "012"
+
+
+def _is_channel_pair(front: str, back: str) -> bool:
+    """True when two single-character digits form a channel layout."""
+    return (
+        len(front) == 1
+        and len(back) == 1
+        and front in _CHANNEL_FRONT
+        and back in _CHANNEL_BACK
+    )
+
 
 def _result_to_token(result: object, text: str) -> Token:
     """Convert a parsy primitive result to a Token for the existing pipeline."""
@@ -957,8 +995,31 @@ def scan_dot_segments(text: str) -> list[Token]:
                     i += 2
                     continue
 
+        # Orphaned channel layout ("DTSHD-MA.5.1": the codec isn't in the
+        # audio vocabulary, leaving its digit pair unconsumed) — claim it
+        # before the single-segment pass misreads "5" as an episode. In
+        # title position (no metadata yet) the digit pair is part of the
+        # title instead ("Evangelion.2.0.You.Can.Not.Advance", the film
+        # "2.0"), so it stays text.
+        if i + 1 < len(raw_parts) and _is_channel_pair(part, raw_parts[i + 1]):
+            seen_metadata = any(t.kind in _METADATA_KINDS for t in tokens)
+            tokens.append(
+                Token(
+                    kind=TokenKind.AUDIO_CODEC if seen_metadata else TokenKind.DOT_TEXT,
+                    text=f"{part}.{raw_parts[i + 1]}",
+                )
+            )
+            i += 2
+            continue
+
         # Single segment
         token = _try_recognize(part)
+        if _is_ambiguous_metadata(
+            token, part, any(t.kind in _METADATA_KINDS for t in tokens)
+        ):
+            # "It"/"Ma"/"Stan"/"Opus" in title position
+            # ("Go.For.It.Nakamura-kun", the film "Opus").
+            token = None
         if token is not None:
             tokens.append(token)
         else:
@@ -1055,20 +1116,13 @@ def _try_recognize(text: str) -> Token | None:
 
 
 def classify_text(text: str) -> TokenKind | None:
-    """Classify a bare text string as a known metadata type.
-
-    Drop-in replacement for media_parser._classify_text_content, using
-    parsy recognizers instead of manual regex/set checks.
-    """
+    """Classify a bare text string as a known metadata type."""
     token = _try_recognize(text.strip())
     return token.kind if token is not None else None
 
 
 def is_metadata_word(word: str) -> bool:
-    """Check if a word (or any of its dash-separated parts) is metadata.
-
-    Drop-in replacement for media_parser._is_metadata_word.
-    """
+    """Check if a word (or any of its dash-separated parts) is metadata."""
     if classify_text(word) is not None:
         return True
     if "-" in word:
@@ -1146,12 +1200,17 @@ def tokenize_component(text: str) -> list[Token]:
         """Flush accumulated bare text as TEXT or DOT_TEXT tokens."""
         if not buf:
             return
-        raw = "".join(buf).strip()
+        # Keep the raw edges for separator splitting: stripping first would
+        # turn a trailing " - " (before a bracket/paren block, as in
+        # "Title - 01 - (BD 1080p)") into a dangling " -" that the
+        # separator regex can't see, gluing the dash onto the episode.
+        raw = "".join(buf)
         buf.clear()
-        if not raw:
+        stripped = raw.strip()
+        if not stripped:
             return
-        if _is_scene_style(raw):
-            tokens.extend(scan_dot_segments(raw))
+        if _is_scene_style(stripped):
+            tokens.extend(scan_dot_segments(stripped))
         else:
             tokens.extend(_split_separators(raw))
 
@@ -1309,9 +1368,22 @@ def _split_text_with_embedded(token: Token) -> list[Token]:
             if not text[pos].isdigit():
                 continue
             # Skip bare numbers after title-context words (Part 1, Vol 2)
+            # and after another bare digit ("DDP 5 1": the second digit
+            # of a space-separated audio channel layout).
             if pos > 0:
                 preceding = text[:pos].rstrip().rsplit(None, 1)
-                if preceding and preceding[-1].lower() in _TITLE_NUMBER_PREFIXES:
+                if preceding and (
+                    preceding[-1].lower() in _TITLE_NUMBER_PREFIXES
+                    or preceding[-1].isdigit()
+                ):
+                    continue
+            # A channel layout written with spaces ("DD 5 1") is not an
+            # episode number.
+            word_end = text.find(" ", pos)
+            word = text[pos:] if word_end < 0 else text[pos:word_end]
+            if word_end >= 0:
+                following = text[word_end:].split()
+                if following and _is_channel_pair(word, following[0]):
                     continue
             bare_result = _bare_episode_parser(text, pos)
             if bare_result.status:
@@ -1388,6 +1460,44 @@ def _classify_paren(token: Token) -> Token | list[Token]:
         return Token(kind=TokenKind.LANGUAGE, text=text)
 
     return token
+
+
+def _is_channel_count_segment(tokens: list[Token], i: int) -> bool:
+    """True when ``tokens[i]`` is one digit of an audio channel layout
+    split across segments ("DTSHD-MA.5.1" → DOT_TEXT '5', DOT_TEXT '1')."""
+
+    def seg(j: int) -> str:
+        if 0 <= j < len(tokens) and tokens[j].kind in (
+            TokenKind.TEXT,
+            TokenKind.DOT_TEXT,
+        ):
+            return tokens[j].text.strip()
+        return ""
+
+    text = tokens[i].text.strip()
+    if not (len(text) == 1 and text.isdigit()):
+        return False
+    return _is_channel_pair(text, seg(i + 1)) or _is_channel_pair(seg(i - 1), text)
+
+
+def _has_numbered_episode(tokens: list[Token]) -> bool:
+    """True when the current path component already has a numbered episode."""
+    for token in reversed(tokens):
+        if token.kind is TokenKind.PATH_SEP:
+            break
+        if token.kind is TokenKind.EPISODE and token.episode is not None:
+            return True
+    return False
+
+
+def _component_has_metadata(tokens: list[Token]) -> bool:
+    """True when the current path component already has a metadata token."""
+    for token in reversed(tokens):
+        if token.kind is TokenKind.PATH_SEP:
+            break
+        if token.kind in _METADATA_KINDS:
+            return True
+    return False
 
 
 def classify(tokens: list[Token]) -> list[Token]:
@@ -1529,6 +1639,25 @@ def classify(tokens: list[Token]) -> list[Token]:
         if token.kind in (TokenKind.TEXT, TokenKind.DOT_TEXT):
             text = token.text.strip()
 
+            # Audio channel counts split across segments ("DTSHD-MA.5.1"):
+            # a lone 2/5/6/7 followed by a lone 0/1/2 is a channel
+            # layout, not an episode number.
+            if _is_channel_count_segment(tokens, i):
+                result.append(Token(kind=TokenKind.UNKNOWN, text=text))
+                continue
+
+            # A channel-layout-shaped decimal in title position is title
+            # text ("Evangelion 2.0", the film "2.0"), not a decimal
+            # episode marker.
+            if (
+                len(text) == 3
+                and text[1] == "."
+                and _is_channel_pair(text[0], text[2])
+                and not _component_has_metadata(result)
+            ):
+                result.append(Token(kind=token.kind, text=text))
+                continue
+
             # Episode/season (full match)?
             ep_token = _classify_episode_text(text)
             if ep_token is not None:
@@ -1545,12 +1674,22 @@ def classify(tokens: list[Token]) -> list[Token]:
             # Known metadata keyword? Use the full token from _try_recognize
             # to preserve numeric fields (version, season, episode, etc.)
             recognized_meta = _try_recognize(text)
+            if _is_ambiguous_metadata(
+                recognized_meta, text, _component_has_metadata(result)
+            ):
+                # "It"/"Ma"/"Stan"/"Opus" in title position
+                # ("Stan Against Evil", the film "Opus").
+                recognized_meta = None
             if recognized_meta is not None:
                 result.append(recognized_meta)
                 continue
 
-            # Try splitting TEXT with embedded episode/season markers
-            if token.kind == TokenKind.TEXT:
+            # Try splitting TEXT with embedded episode/season markers.
+            # A numbered episode already classified in this component
+            # (S00E01, not a bare OVA/SP marker) means later markers are
+            # episode-title text ("Inside The Expanse Episode 1", "The
+            # Expanse Aftershow Season 2 Episode 4"), not new candidates.
+            if token.kind == TokenKind.TEXT and not _has_numbered_episode(result):
                 split = _split_text_with_embedded(token)
                 if len(split) > 1:
                     # Re-classify the split tokens
@@ -1566,9 +1705,11 @@ def classify(tokens: list[Token]) -> list[Token]:
                 meta_start = None
                 for i, w in enumerate(words):
                     if is_metadata_word(w):
-                        # A bare number after Part/Vol/Chapter is a title
-                        # fragment, not metadata (e.g., "Part 1", "Vol 2")
-                        if i > 0 and words[i - 1].lower() in _TITLE_NUMBER_PREFIXES:
+                        # A bare number never starts a metadata block — at
+                        # this point it's a title fragment ("Episode 1",
+                        # "Part 1"); real metadata runs begin with a
+                        # resolution/codec/source keyword.
+                        if w.isdigit():
                             continue
                         meta_start = i
                         break
@@ -2311,6 +2452,11 @@ def _load_tvdb_titles(json_path: str) -> list[str]:
         with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
     except ValueError, OSError:
+        return []
+
+    # The tvdb cache dir also holds search-result caches (JSON arrays);
+    # only series records carry titles.
+    if not isinstance(data, dict):
         return []
 
     titles: list[str] = []

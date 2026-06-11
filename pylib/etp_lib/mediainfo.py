@@ -23,7 +23,10 @@ _VIDEO_CODEC_MAP: dict[str, str] = {
     "MPEG Video": "MPEG2",
 }
 
-# Audio codec normalization: open-source lowercase, proprietary uppercase
+# Audio codec normalization: open-source lowercase, proprietary uppercase.
+# Lossless/lossy families stay distinct — the library's filenames carry
+# "TrueHD" and "EAC3" tags, so collapsing them into AC3/DTS loses real
+# information.
 _AUDIO_CODEC_MAP: dict[str, str] = {
     "AAC": "aac",
     "FLAC": "flac",
@@ -31,27 +34,30 @@ _AUDIO_CODEC_MAP: dict[str, str] = {
     "Vorbis": "vorbis",
     "PCM": "pcm",
     "AC-3": "AC3",
-    "E-AC-3": "AC3",
+    "E-AC-3": "EAC3",
     "DTS": "DTS",
     "DTS-HD": "DTS",
     "DTS-HD MA": "DTS",
     "DTS-HD Master Audio": "DTS",
-    "MLP FBA": "DTS",  # TrueHD/Atmos shows as MLP FBA in some cases
-    "TrueHD": "AC3",  # Dolby TrueHD -> treat as AC3 family
+    "MLP": "TrueHD",  # Dolby TrueHD is carried as MLP
+    "MLP FBA": "TrueHD",  # TrueHD/Atmos shows as MLP FBA in some cases
+    "TrueHD": "TrueHD",
     "MP3": "mp3",
     "MPEG Audio": "mp3",
     "mp2": "mp2",
 }
 
 
-def _resolution_from_mediainfo(height: int, scan_type: str) -> str:
-    """Convert mediainfo height + scan type to a standard resolution tag.
+def _resolution_from_mediainfo(height: int, scan_type: str, width: int = 0) -> str:
+    """Convert mediainfo dimensions + scan type to a standard resolution tag.
 
-    Uses the shared ``normalize_resolution`` table. ``scan_type`` comes from
-    mediainfo's ``ScanType`` field: ``"Progressive"`` or ``"Interlaced"``.
+    Uses the shared ``normalize_resolution`` table, width-aware so cropped
+    widescreen encodes classify by their standard width. ``scan_type``
+    comes from mediainfo's ``ScanType`` field: ``"Progressive"`` or
+    ``"Interlaced"``.
     """
     st = "i" if scan_type.lower().startswith("interlace") else "p"
-    return normalize_resolution(height, scan_type=st)
+    return normalize_resolution(height, scan_type=st, width=width)
 
 
 def _detect_hdr(video_track: dict) -> str:
@@ -108,9 +114,15 @@ def _detect_encoding_lib(video_track: dict) -> str:
     return ""
 
 
+# Still-image "video" tracks (chapter thumbnails, cover art) that must
+# not be mistaken for the main program.
+_STILL_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "GIF", "BMP"})
+
+
 def parse_mediainfo_json(data: dict) -> MediaInfo:
     """Parse mediainfo JSON output into a MediaInfo dataclass."""
-    tracks = data.get("media", {}).get("track", [])
+    # mediainfo emits "media": null for files it cannot open.
+    tracks = (data.get("media") or {}).get("track", [])
 
     video_codec = ""
     resolution = ""
@@ -121,21 +133,25 @@ def parse_mediainfo_json(data: dict) -> MediaInfo:
     encoding_lib = ""
     audio_tracks: list[AudioTrack] = []
 
+    video_tracks = [t for t in tracks if t.get("@type", "") == "Video"]
+    # Prefer the main program over still-image tracks (m4v files often
+    # carry a JPEG "Chapter Images" track beside the real video).
+    main = [t for t in video_tracks if t.get("Format", "") not in _STILL_IMAGE_FORMATS]
+    for track in (main or video_tracks)[:1]:
+        raw_format: str = track.get("Format", "")
+        video_codec = _VIDEO_CODEC_MAP.get(raw_format, raw_format)
+        width = int(track.get("Width", 0))
+        height = int(track.get("Height", 0))
+        bit_depth = int(track.get("BitDepth", 8))
+        scan_type = track.get("ScanType", "Progressive")
+        resolution = _resolution_from_mediainfo(height, scan_type, width)
+        hdr_type = _detect_hdr(track)
+        encoding_lib = _detect_encoding_lib(track)
+
     for track in tracks:
         track_type = track.get("@type", "")
 
-        if track_type == "Video":
-            raw_format: str = track.get("Format", "")
-            video_codec = _VIDEO_CODEC_MAP.get(raw_format, raw_format)
-            width = int(track.get("Width", 0))
-            height = int(track.get("Height", 0))
-            bit_depth = int(track.get("BitDepth", 8))
-            scan_type = track.get("ScanType", "Progressive")
-            resolution = _resolution_from_mediainfo(height, scan_type)
-            hdr_type = _detect_hdr(track)
-            encoding_lib = _detect_encoding_lib(track)
-
-        elif track_type == "Audio":
+        if track_type == "Audio":
             raw_format = track.get("Format", "")
             codec = _normalize_audio_codec(raw_format)
             language = track.get("Language", "")

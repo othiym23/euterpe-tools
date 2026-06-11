@@ -28,8 +28,10 @@ BUILTIN_COMMANDS = {
     "find": "Search indexed files by regex pattern",
     "init": "Create a default configuration file",
     "meta": "Audio metadata scan, read, and CUE sheet display",
+    "movies": "Movie collection ingestion (plan/apply)",
     "query": "Query indexed files and metadata",
     "scan": "Scan a directory and update the database",
+    "television": "Television collection ingestion (plan/apply)",
     "tree": "Display directory tree from indexed database",
 }
 

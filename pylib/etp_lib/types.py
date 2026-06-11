@@ -51,6 +51,7 @@ class BonusType(StrEnum):
 class MetadataProvider(StrEnum):
     ANIDB = "anidb"
     TVDB = "tvdb"
+    TMDB = "tmdb"
 
 
 class ConflictAction(StrEnum):
@@ -67,6 +68,10 @@ class ConflictAction(StrEnum):
 DEFAULT_DOWNLOADS_DIR = Path("/volume1/docker/pvr/data/downloads")
 DEFAULT_ANIME_SOURCE_DIR = Path("/volume1/docker/pvr/data/anime")
 DEFAULT_DEST_DIR = Path("/volume1/video/anime")
+DEFAULT_MOVIES_SOURCE_DIR = Path("/volume1/docker/pvr/data/movies")
+DEFAULT_MOVIES_DEST_DIR = Path("/volume1/video/movies")
+DEFAULT_TELEVISION_SOURCE_DIR = Path("/volume1/docker/pvr/data/television")
+DEFAULT_TELEVISION_DEST_DIR = Path("/volume1/video/television")
 
 # ---------------------------------------------------------------------------
 # Cache / API constants
@@ -96,8 +101,13 @@ class AnimeInfo:
     anidb_id: int | None
     tvdb_id: int | None
     title_ja: str
+    """Original-language title. Japanese for anime (the usual case); when
+    the TheTVDB client serves general television it carries the series'
+    original-language translation, falling back to the primary name."""
     title_en: str
     year: int
+    tmdb_id: int | None = None
+    """Cross-check ID from TMDB; recorded in manifests, never in dir names."""
     title_romaji: str = ""  # x-jat romanization (e.g. "Youjo Senki")
     aliases: list[str] = field(default_factory=list)
     """All known title variants — synonyms, alternate language names, romaji."""
@@ -130,6 +140,52 @@ class AnimeInfo:
             ):
                 return ep.title_en or ep.title_romaji
         return ""
+
+
+@dataclass
+class SearchCandidate:
+    """One search hit from a metadata provider (TMDB or TheTVDB)."""
+
+    provider: MetadataProvider
+    id: int
+    title: str
+    year: int
+    original_title: str = ""
+
+
+@dataclass
+class MovieInfo:
+    """Movie metadata, fetched from TMDB (the primary movie provider)."""
+
+    tmdb_id: int | None
+    title: str
+    year: int
+    original_title: str = ""
+    imdb_id: str = ""  # e.g. "tt0113277"
+    tvdb_id: int | None = None
+    """Cross-check ID from TheTVDB; recorded in manifests, never in dir names."""
+    aliases: list[str] = field(default_factory=list)
+    """All known title variants — original title plus alternative titles."""
+
+    def all_titles(self) -> list[str]:
+        """Return every known title variant, deduped, in priority order."""
+        return dedup_titles((self.title, self.original_title, *self.aliases))
+
+
+@dataclass
+class TmdbTvInfo:
+    """TV series metadata from TMDB, used to cross-check TheTVDB resolution.
+
+    ``tvdb_id`` comes from TMDB's external IDs — when it matches the series
+    ID resolved via TheTVDB, the two providers agree on the series identity.
+    """
+
+    tmdb_id: int
+    title: str
+    year: int
+    original_title: str = ""
+    tvdb_id: int | None = None
+    imdb_id: str = ""
 
 
 @dataclass
@@ -178,6 +234,8 @@ class ParsedMetadata:
     series_name_alt: str = ""  # alternate-language title
     episodes: list[int] = field(default_factory=list)  # multi-episode
     streaming_service: str = ""  # "AMZN", "CR", "NF", etc.
+    year: int | None = None  # release year token from the filename
+    is_criterion: bool = False  # Criterion Collection release
 
 
 @dataclass
@@ -390,3 +448,38 @@ class AnimeConfig:
     series_mappings: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
     # series directory name -> concise name from parser (for title matching)
     concise_names: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class TitleMapping:
+    """Per-title provider ID override from media-ingestion.kdl.
+
+    Keys resolution for a title whose metadata search would otherwise be
+    ambiguous (remakes, same-name shows) or wrong.
+    """
+
+    tmdb_id: int | None = None
+    tvdb_id: int | None = None
+    edition: str = ""  # movies only: "Final Cut", "Criterion Collection", ...
+    domain: str = ""  # owning pipeline ("anime", "television", "movies")
+
+
+@dataclass
+class MediaIngestConfig:
+    """Configuration loaded from media-ingestion.kdl (movies + television)."""
+
+    downloads_dir: Path = field(default_factory=lambda: DEFAULT_DOWNLOADS_DIR)
+    movies_source_dir: Path = field(default_factory=lambda: DEFAULT_MOVIES_SOURCE_DIR)
+    movies_dest_dir: Path = field(default_factory=lambda: DEFAULT_MOVIES_DEST_DIR)
+    television_source_dir: Path = field(
+        default_factory=lambda: DEFAULT_TELEVISION_SOURCE_DIR
+    )
+    television_dest_dir: Path = field(
+        default_factory=lambda: DEFAULT_TELEVISION_DEST_DIR
+    )
+    # casefolded source folder name or parsed title -> provider ID override
+    movie_mappings: dict[str, TitleMapping] = field(default_factory=dict)
+    series_mappings: dict[str, TitleMapping] = field(default_factory=dict)
+    # PVR API endpoints for authoritative ID resolution (keys in media.env)
+    radarr_url: str = ""
+    sonarr_url: str = ""

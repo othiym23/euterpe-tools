@@ -23,6 +23,7 @@ from etp_lib.conflicts import (
 )
 from etp_lib.media_parser import normalize_for_matching, parse_component
 from etp_lib.naming import (
+    crc_suffixed,
     extras_relpath,
     format_episode_filename,
     format_series_dirname,
@@ -773,9 +774,7 @@ def execute_manifest(
                     if not crc:
                         crc = compute_crc32(sf.path)
                         sf.parsed.hash_code = crc
-                    stem = dest_path.stem
-                    ext = dest_path.suffix
-                    dest_path = dest_path.parent / f"{stem} [{crc}]{ext}"
+                    dest_path = crc_suffixed(dest_path, crc)
 
         copied = False
         try:

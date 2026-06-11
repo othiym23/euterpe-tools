@@ -6,12 +6,42 @@ from pathlib import Path
 
 from etp_lib.naming import (
     build_metadata_block,
+    classify_extra,
+    extra_display_name,
+    extras_dir_category,
     extras_relpath,
+    format_display_title,
     format_episode_filename,
+    format_movie_dirname,
+    format_movie_filename,
     format_series_dirname,
+    format_tv_episode_filename,
+    format_tv_series_dirname,
+    normalize_title,
     subtitle_sidecars,
 )
 from etp_lib.types import AudioTrack, MediaInfo, ParsedMetadata, SourceFile
+
+
+def make_western_source(**parsed_overrides: object) -> SourceFile:
+    """A typical western-release source file for movie/TV naming tests."""
+    parsed = ParsedMetadata(release_group="NTb", source_type="Web")
+    for key, value in parsed_overrides.items():
+        setattr(parsed, key, value)
+    return SourceFile(
+        path=Path("source.mkv"),
+        parsed=parsed,
+        media=MediaInfo(
+            video_codec="AVC",
+            resolution="1080p",
+            width=1920,
+            height=1080,
+            bit_depth=8,
+            hdr_type="",
+            audio_tracks=[AudioTrack("EAC3", "en", "English", False)],
+            encoding_lib="x264",
+        ),
+    )
 
 
 class TestSubtitleSidecars:
@@ -391,7 +421,7 @@ class TestFormatEpisodeFilename:
             episode_name="Those Who Challenge the Sun: Part 1",
             source=sf,
         )
-        assert "Those Who Challenge the Sun- Part 1" in result
+        assert "Those Who Challenge the Sun - Part 1" in result
         assert ":" not in result
 
     def test_slash_sanitized_in_concise_name(self):
@@ -422,7 +452,7 @@ class TestDirectoryNaming:
         result = format_series_dirname(
             "鋼の錬金術師 (2009)", "Fullmetal Alchemist: Brotherhood", 2009
         )
-        assert result == "鋼の錬金術師 [Fullmetal Alchemist- Brotherhood] (2009)"
+        assert result == "鋼の錬金術師 [Fullmetal Alchemist - Brotherhood] (2009)"
 
     def test_slash_sanitized(self):
         result = format_series_dirname("Fate/Zero", "Fate/Zero", 2011)
@@ -470,3 +500,281 @@ class TestDirectoryNaming:
         result = format_series_dirname("BEASTARS", "", 2019)
         assert "[]" not in result
         assert result == "BEASTARS (2019)"
+
+
+class TestFormatMovieDirname:
+    """Tests for Plex-convention movie directory naming."""
+
+    def test_basic(self):
+        assert format_movie_dirname("Heat", 1995, 949) == "Heat (1995) {tmdb-949}"
+
+    def test_no_id(self):
+        assert format_movie_dirname("Heat", 1995, None) == "Heat (1995)"
+
+    def test_edition(self):
+        result = format_movie_dirname("Blade Runner", 1982, 78, edition="Final Cut")
+        assert result == "Blade Runner (1982) {tmdb-78} {edition-Final Cut}"
+
+    def test_edition_without_id(self):
+        result = format_movie_dirname("Blade Runner", 1982, None, edition="Final Cut")
+        assert result == "Blade Runner (1982) {edition-Final Cut}"
+
+    def test_unknown_year_omitted(self):
+        assert format_movie_dirname("Mystery", 0, 123) == "Mystery {tmdb-123}"
+
+    def test_sanitizes_title(self):
+        result = format_movie_dirname("Face/Off: Redux", 1997, 754)
+        assert result == "Face - Off - Redux (1997) {tmdb-754}"
+
+    def test_redundant_year_stripped(self):
+        assert format_movie_dirname("Heat (1995)", 1995, 949) == (
+            "Heat (1995) {tmdb-949}"
+        )
+
+
+class TestFormatMovieFilename:
+    """Tests for movie filenames (named exactly after the folder)."""
+
+    def test_dirname_plus_block(self):
+        source = make_western_source()
+        result = format_movie_filename("Heat (1995) {tmdb-949}", source)
+        assert result == "Heat (1995) {tmdb-949} [NTb Web,1080p,AVC,x264,EAC3].mkv"
+
+    def test_no_complete_movie_marker(self):
+        source = make_western_source()
+        result = format_movie_filename("Heat (1995) {tmdb-949}", source)
+        assert "complete movie" not in result
+
+    def test_hash_appended(self):
+        source = make_western_source(hash_code="ABCD1234")
+        result = format_movie_filename("Heat (1995) {tmdb-949}", source)
+        assert result.endswith("[ABCD1234].mkv")
+
+    def test_extension_from_source(self):
+        source = make_western_source()
+        source.path = Path("source.mp4")
+        assert format_movie_filename("Heat (1995)", source).endswith(".mp4")
+
+    def test_no_media_info(self):
+        source = make_western_source()
+        source.media = None
+        assert format_movie_filename("Heat (1995)", source) == "Heat (1995).mkv"
+
+
+class TestFormatTvSeriesDirname:
+    """Tests for Plex-convention series directory naming."""
+
+    def test_basic(self):
+        result = format_tv_series_dirname("Severance", 2022, 371980)
+        assert result == "Severance (2022) {tvdb-371980}"
+
+    def test_no_id(self):
+        assert format_tv_series_dirname("Severance", 2022, None) == "Severance (2022)"
+
+    def test_unknown_year_omitted(self):
+        assert format_tv_series_dirname("Mystery", 0, 5) == "Mystery {tvdb-5}"
+
+    def test_redundant_year_stripped(self):
+        result = format_tv_series_dirname("ONE PIECE (2023)", 2023, 393190)
+        assert result == "ONE PIECE (2023) {tvdb-393190}"
+
+
+class TestFormatTvEpisodeFilename:
+    """Tests for TV episode filenames (zero-padded season tags)."""
+
+    def test_basic(self):
+        source = make_western_source()
+        result = format_tv_episode_filename(
+            "Severance", 2022, 1, 1, "Good News About Hell", source
+        )
+        assert result == (
+            "Severance (2022) - s01e01 - Good News About Hell "
+            "[NTb Web,1080p,AVC,x264,EAC3].mkv"
+        )
+
+    def test_season_zero_padded(self):
+        source = make_western_source()
+        result = format_tv_episode_filename("Show", 2020, 12, 3, "Ep", source)
+        assert " - s12e03 - " in result
+
+    def test_specials_use_season_zero(self):
+        source = make_western_source()
+        result = format_tv_episode_filename("Show", 2020, 0, 5, "Bonus", source)
+        assert " - s00e05 - " in result
+
+    def test_multi_episode_range(self):
+        source = make_western_source()
+        result = format_tv_episode_filename(
+            "Show", 2020, 1, 5, "Two-Parter", source, episodes=[5, 6]
+        )
+        assert " - s01e05-e06 - " in result
+
+    def test_no_episode_title(self):
+        source = make_western_source()
+        result = format_tv_episode_filename("Show", 2020, 1, 1, "", source)
+        assert result == "Show (2020) - s01e01 [NTb Web,1080p,AVC,x264,EAC3].mkv"
+
+    def test_sanitizes_episode_title(self):
+        source = make_western_source()
+        result = format_tv_episode_filename(
+            "Show", 2020, 1, 1, "Either/Or: Part 1", source
+        )
+        assert " - Either - Or - Part 1 " in result
+
+
+class TestFormatDisplayTitle:
+    """Directory names lead with the original-language title."""
+
+    def test_native_with_english_bracketed(self):
+        assert format_display_title("올드보이", "Oldboy") == "올드보이 [Oldboy]"
+
+    def test_identical_titles_no_brackets(self):
+        assert format_display_title("Heat", "Heat") == "Heat"
+
+    def test_punctuation_only_difference_no_brackets(self):
+        assert format_display_title("WALL·E", "WALL-E") == "WALL-E"
+
+    def test_case_only_difference_no_brackets(self):
+        assert format_display_title("ONE PIECE", "One Piece") == "One Piece"
+
+    def test_missing_original_falls_back(self):
+        assert format_display_title("", "Severance") == "Severance"
+
+    def test_missing_english_falls_back(self):
+        assert format_display_title("血は渇いてる", "") == "血は渇いてる"
+
+    def test_latin_original_differs(self):
+        assert format_display_title("La Haine", "Hate") == "La Haine [Hate]"
+
+
+class TestDualTitleDirnames:
+    def test_movie_dirname_with_original(self):
+        result = format_movie_dirname("Oldboy", 2003, 670, original_title="올드보이")
+        assert result == "올드보이 [Oldboy] (2003) {tmdb-670}"
+
+    def test_movie_dirname_with_original_and_edition(self):
+        result = format_movie_dirname(
+            "Blood Is Dry",
+            1960,
+            99,
+            edition="4K Remaster",
+            original_title="血は渇いてる",
+        )
+        assert result == (
+            "血は渇いてる [Blood Is Dry] (1960) {tmdb-99} {edition-4K Remaster}"
+        )
+
+    def test_tv_dirname_with_original(self):
+        result = format_tv_series_dirname(
+            "Ayaka is in Love with Hiroko!",
+            2024,
+            443158,
+            original_title="彩香ちゃんは弘子先輩に恋してる",
+        )
+        assert result == (
+            "彩香ちゃんは弘子先輩に恋してる [Ayaka is in Love with Hiroko!]"
+            " (2024) {tvdb-443158}"
+        )
+
+    def test_identical_original_unchanged(self):
+        assert (
+            format_movie_dirname("Heat", 1995, 949, original_title="Heat")
+            == "Heat (1995) {tmdb-949}"
+        )
+
+
+class TestColonSanitization:
+    """': ' is a title/subtitle separator; bare ':' squeezes to '-'."""
+
+    def test_subtitle_separator(self):
+        result = format_movie_dirname("Hellboy II: The Golden Army", 2008, 11253)
+        assert result == "Hellboy II - The Golden Army (2008) {tmdb-11253}"
+
+    def test_bare_colon_squeezed(self):
+        result = format_tv_series_dirname("Re:ZERO", 2016, 305074)
+        assert result == "Re-ZERO (2016) {tvdb-305074}"
+
+
+class TestExtrasNaming:
+    """Plex/Jellyfin extras subdirectories and display names."""
+
+    def test_display_name_strips_release_cruft(self):
+        assert extra_display_name("Crafting.Anomalisa-Grym") == "Crafting Anomalisa"
+        assert extra_display_name("Intimacy in Miniature-Grym", "Grym") == (
+            "Intimacy in Miniature"
+        )
+        assert extra_display_name("Some_Other_Extra") == "Some Other Extra"
+
+    def test_display_name_keeps_hyphenated_names(self):
+        """A trailing hyphenated name is not release cruft: only the
+        torrent's known group (or a dotted scene-style suffix) strips."""
+        assert (
+            extra_display_name("Q&A with Director Park Chan-wook")
+            == "Q&A with Director Park Chan-wook"
+        )
+        assert (
+            extra_display_name("Interview.with.Bong.Joon-ho", "GRP")
+            == "Interview with Bong Joon-ho"
+        )
+        # No known group + spaces: keep the suffix rather than guess.
+        assert extra_display_name("Intimacy in Miniature-Grym") == (
+            "Intimacy in Miniature-Grym"
+        )
+
+    def test_classification(self):
+        assert classify_extra("Theatrical.Trailer-Grym") == "Trailers"
+        assert classify_extra("Claude Lanzmann Interview-Grym") == "Interviews"
+        assert classify_extra("Deleted.Scenes-GRP") == "Deleted Scenes"
+        assert classify_extra("Behind.The.Scenes-GRP") == "Behind The Scenes"
+        assert classify_extra("The Making of Anomalisa") == "Behind The Scenes"
+        assert classify_extra("Pixar.Short-GRP") == "Shorts"
+
+    def test_default_is_featurettes(self):
+        assert classify_extra("Crafting.Anomalisa-Grym") == "Featurettes"
+
+    def test_extras_dir_category(self):
+        assert extras_dir_category("Featurettes") == "Featurettes"
+        assert extras_dir_category("featurettes") == "Featurettes"
+        assert extras_dir_category("Behind The Scenes") == "Behind The Scenes"
+        assert extras_dir_category("Trailers") == "Trailers"
+        # Generic Extras and anime creditless dirs: classify each file
+        # by its own name.
+        assert extras_dir_category("Extras") == ""
+        assert extras_dir_category("NC") == ""
+        assert extras_dir_category("Season 01") is None
+        assert extras_dir_category("The Expanse (2015) S01") is None
+
+
+class TestNormalizeTitle:
+    """Apostrophes delete, accents fold, other punctuation word-breaks."""
+
+    def test_apostrophe_deleted(self):
+        assert normalize_title("Wolf's Rain") == normalize_title("Wolfs Rain")
+        assert normalize_title("Tamon's B-Side") == "tamons b side"
+
+    def test_curly_apostrophe_deleted(self):
+        assert normalize_title("Marika’s Love Meter") == "marikas love meter"
+
+    def test_accents_folded(self):
+        assert normalize_title("Fiancée") == "fiancee"
+        assert normalize_title("Komada – A Whisky Family") == "komada a whisky family"
+
+    def test_punctuation_breaks_words(self):
+        assert (
+            normalize_title("Re: ZERO, Starting Life in Another World")
+            == "re zero starting life in another world"
+        )
+
+
+class TestModifierColonSanitization:
+    """U+A789/U+2236 colon stand-ins normalize through the colon rules."""
+
+    def test_modifier_colon_in_display_name(self):
+        assert (
+            extra_display_name("Season 4 - It Reaches Out꞉ ProtoMiller's Point of View")
+            == "Season 4 - It Reaches Out - ProtoMiller's Point of View"
+        )
+
+    def test_ratio_colon_in_dirname(self):
+        result = format_tv_series_dirname("Steins∶Gate", 2011, 244061)
+        assert result == "Steins-Gate (2011) {tvdb-244061}"
